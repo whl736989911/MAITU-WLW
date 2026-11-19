@@ -2,6 +2,7 @@ package com.fireplatform.identity;
 
 import com.fireplatform.shared.ApiError;
 import com.fireplatform.shared.DeviceAccessScope;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -185,11 +186,19 @@ public class DeviceScopes implements DeviceAccessScope {
         requireActor(actorId);
         if (placeIds == null || placeIds.isEmpty() || tenantId == null) return false;
         StoredScope scope = stored(actorId, tenantId);
-        if (scope == null) return false;
-        if (ALL.equals(scope.mode())) return true;
-        if (!PLACE.equals(scope.mode())) return false;
-        var reachable = new HashSet<>(jdbc.queryForList("SELECT id FROM " + PLACE_TREE, String.class, actorId));
-        return reachable.containsAll(placeIds);
+        if (scope == null || SET.equals(scope.mode())) return false;
+        var requested = new HashSet<>(placeIds);
+        var bindings = new ArrayList<Object>(requested.size() + 2);
+        String source = "places";
+        if (PLACE.equals(scope.mode())) {
+            source = PLACE_TREE;
+            bindings.add(actorId);
+        }
+        bindings.add(tenantId);
+        bindings.addAll(requested);
+        Long covered = jdbc.queryForObject("SELECT COUNT(DISTINCT id) FROM " + source
+            + " WHERE tenant_id=? AND id IN (" + marks(requested.size()) + ")", Long.class, bindings.toArray());
+        return covered != null && covered == requested.size();
     }
 
     private String visible(String actorId, String tenantExpression, String deviceExpression) {

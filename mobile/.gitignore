@@ -1,0 +1,23 @@
+# Flutter/Dart build and tool output
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# Android build output
+android/.gradle/
+android/local.properties
+android/app/.cxx/
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+.vscode/

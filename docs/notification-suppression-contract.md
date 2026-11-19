@@ -37,6 +37,8 @@
 | POST | `/api/management/suppressions` | `suppressions:write`（密码二次确认） |
 | POST | `/api/management/suppressions/{id}/cancel` | `suppressions:write`（密码二次确认，CAS `expected_revision`） |
 
+屏蔽写请求在重新核验当前权限后，同键同内容重试返回原成功回执，包括时间戳的原偏移和当时的状态；不重新计算状态或追加变更历史。当前状态通过 GET 查询。
+
 ## 界面
 
 新增「通知屏蔽」页（受控模拟通知分组）：列表、创建（范围/设备列表/火警二次确认/到期时间/原因）、取消；两处写操作都走密码二次确认。

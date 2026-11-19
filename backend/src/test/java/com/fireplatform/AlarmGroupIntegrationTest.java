@@ -19,7 +19,7 @@ import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -96,21 +96,28 @@ class AlarmGroupIntegrationTest {
         String a=fire("tenant-a","device-a",base),b=fire("tenant-a","device-a",base.plusSeconds(5));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_sessions",Long.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_members",Long.class)).isEqualTo(2);
+        f.call(HttpMethod.POST,"/api/management/alarms/"+a+"/review",root,"tenant-a","independent-review",Map.of("expected_revision",0,"conclusion","TEST","remark","review before recovery")).andExpect(status().isOk());
+        assertThat(jdbc.queryForMap("SELECT physical_state,response_state FROM alarms WHERE id=?",a))
+            .containsEntry("physical_state","FIRE").containsEntry("response_state","HANDLED");
         assertThat(recover("tenant-a","device-a",a,base.plusSeconds(6))).isTrue();
-        assertThat(jdbc.queryForObject("SELECT physical_state FROM alarms WHERE id=?",String.class,a)).isEqualTo("NORMAL");
+        assertThat(jdbc.queryForMap("SELECT physical_state,response_state,conclusion FROM alarms WHERE id=?",a))
+            .containsEntry("physical_state","NORMAL").containsEntry("response_state","HANDLED").containsEntry("conclusion","TEST");
         assertThat(jdbc.queryForObject("SELECT physical_state FROM alarms WHERE id=?",String.class,b)).isEqualTo("FIRE");
         var session=jdbc.queryForMap("SELECT * FROM alarm_sessions");
         assertThat(session.get("open_slot")).isEqualTo("OPEN");
         var detail=sessionQueries.session("bootstrap-admin","tenant-a",String.valueOf(session.get("id")));
         assertThat(detail.session().memberCount()).isEqualTo(2);
         assertThat(detail.session().activeMemberCount()).isEqualTo(1);
-        assertThat(detail.session().unhandledMemberCount()).isEqualTo(2);
+        assertThat(detail.session().unhandledMemberCount()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_events WHERE event_kind='MEMBER_RECOVERED'",Long.class)).isEqualTo(1);
-        f.call(HttpMethod.POST,"/api/management/alarms/"+a+"/review",root,"tenant-a","independent-review",Map.of("expected_revision",1,"conclusion","TEST","remark","review after recovery")).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT response_state FROM alarms WHERE id=?",String.class,a)).isEqualTo("HANDLED");
         assertThat(jdbc.queryForObject("SELECT response_state FROM alarms WHERE id=?",String.class,b)).isEqualTo("UNHANDLED");
         assertThat(recover("tenant-a","device-a",b,base.plusSeconds(7))).isTrue();
         assertThat(jdbc.queryForMap("SELECT physical_state,response_state FROM alarms WHERE id=?",b)).containsEntry("physical_state","NORMAL").containsEntry("response_state","UNHANDLED");
+        String next=fire("tenant-a","device-a",base.plusSeconds(8));
+        var original=gate.sessionFor("tenant-a",a);
+        assertThat(gate.sessionFor("tenant-a",b).id()).isEqualTo(original.id());
+        assertThat(gate.sessionFor("tenant-a",next).id()).isNotEqualTo(original.id());
+        assertThat(sessionQueries.session("bootstrap-admin","tenant-a",original.id()).session().activeMemberCount()).isZero();
     }
 
     @Test void capturedPolicyRevisionsControlFutureGroupingOnly() throws Exception {
@@ -192,10 +199,18 @@ class AlarmGroupIntegrationTest {
         verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
         verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
         assertThat(jdbc.queryForList("SELECT status FROM alarm_notification_claims",String.class)).containsOnly("UNKNOWN");
-        String c=fire("tenant-a","device-a",base.plusSeconds(10));worker.poll();
+        String originalRule=jdbc.queryForObject("SELECT id FROM notification_rules WHERE tenant_id='tenant-a'",String.class);
+        jdbc.update("UPDATE notification_rules SET enabled=FALSE WHERE id=?",originalRule);
+        jdbc.update("INSERT INTO notification_rules(id,tenant_id,name,enabled,event_scope,created_at) VALUES ('replacement-rule','tenant-a','Replacement',TRUE,'FIRE',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO notification_rule_receivers(tenant_id,rule_id,contact_id,level,channel) "
+            +"SELECT tenant_id,'replacement-rule',contact_id,2,channel FROM notification_rule_receivers WHERE rule_id=?",originalRule);
+        String c=fire("tenant-a","device-a",base.plusSeconds(10));
+        assertThat(recover("tenant-a","device-a",b,base.plusSeconds(11))).isTrue();
+        worker.poll();
         verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
         verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_notification_claims",Long.class)).isEqualTo(2);
+        assertThat(jdbc.queryForList("SELECT DISTINCT rule_id FROM alarm_notification_claims",String.class)).containsExactly(originalRule);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_members WHERE alarm_id=?",Long.class,c)).isEqualTo(1);
     }
 

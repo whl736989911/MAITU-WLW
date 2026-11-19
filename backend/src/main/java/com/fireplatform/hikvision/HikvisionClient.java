@@ -15,11 +15,11 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-/** Fixed vendor origin, verified TLS, read-only API allowlist, no SDK trust-all client. */
+/** Fixed vendor origin, verified TLS and explicitly allowed Artemis paths. */
 @Component
 public class HikvisionClient {
     public enum Stream {
-        UNIT("/api/firepro/v1/getUnit"), DEVICE("/api/device/v2/getDevice"),
+        UNIT("/api/resource/v2/getUnit"), DEVICE("/api/device/v2/getDevice"),
         SENSOR("/api/channel/v2/getSensor"), STATUS("/api/device/v2/getFireDeviceStatus"),
         FAULT("/api/businessData/v2/getFault"), ALARM("/api/businessData/v2/getAlarm"),
         MONITOR("/api/businessData/v2/getMonitor"), HISTORY_MONITOR("/api/businessData/v2/getHistoryMonitor"),
@@ -125,8 +125,10 @@ public class HikvisionClient {
         if (current.signer() == null) throw new Failure("NOT_CONFIGURED");
         var body = json.createObjectNode();
         filters.forEach((key,value)->{if("timeType".equals(key))body.put(key,Integer.parseInt(value));else body.put(key,value);});
-        body.put("pageNo", pageNo).put("pageSize", 100).put("flagId", flagId == null ? "" : flagId)
-            .put("offset", pageNo == 1 ? 0 : 1);
+        body.put("pageNo", pageNo).put("pageSize", 100);
+        if (stream != Stream.UNIT) {
+            body.put("flagId", flagId == null ? "" : flagId).put("offset", pageNo == 1 ? 0 : 1);
+        }
         try {
             byte[] bytes = json.writeValueAsBytes(body);
             var request = current.signer().post(stream.path, bytes, clock.instant(), UUID.randomUUID().toString());
@@ -138,10 +140,10 @@ public class HikvisionClient {
                 JsonNode result = sourceReader.readTree(payload);
                 String code = result == null ? "INVALID_RESPONSE" : result.path("code").asText();
                 if (!"0".equals(code)) throw new Failure(code.matches("0x[0-9A-Fa-f]{8}|[1-9][0-9]{0,5}") ? code : "UPSTREAM_ERROR");
-                JsonNode data = result.path("data"), records = data.path("list");
-                if (!records.isArray() || !data.path("total").canConvertToLong() || data.path("total").asLong() < 0)
+                JsonNode data = result.path("data"), records = data.path("list"), total = data.path("total");
+                if (!records.isArray() || !total.isIntegralNumber() || !total.canConvertToLong() || total.longValue() < 0)
                     throw new Failure("INVALID_PAGE");
-                return new VendorPage(records, data.path("total").asLong(), data.path("flagId").asText(""));
+                return new VendorPage(records, total.longValue(), data.path("flagId").asText(""));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

@@ -9,7 +9,7 @@ import com.fireplatform.deviceservice.VendorLifecycleDriver;
 import com.fireplatform.hikvision.HikvisionClient;
 import com.fireplatform.hikvision.HikvisionConfigSecrets;
 import com.fireplatform.hikvision.HikvisionConfigService;
-import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import org.springframework.stereotype.Component;
 
@@ -30,6 +30,8 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
     public static final String CONTROL_OPERATE = "control.operate";
     public static final String HIK_V1_SILENCE = "hik.v1.silence";
     public static final String CLOUD_DELETE = "cloud.delete";
+    private static final int LOOKUP_PAGE_SIZE = 10;
+    private static final int MAX_LOOKUP_PAGES = 100;
     private static final java.util.regex.Pattern SENSITIVE_PARAMETER =
         java.util.regex.Pattern.compile("(?i).*(password|secret|token|credential|verification.?code).*");
 
@@ -113,7 +115,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
                 case CONTROL_OPERATE -> controlState(call);
                 case HIK_V1_SILENCE -> DriverOutcome.unknown("NO_OFFICIAL_RECEIPT_CONTRACT", null,
                     "V1消音响应仅代表指令下发接受/拒绝；官方未发布终端消音回执");
-                case CLOUD_DELETE -> absence(call, false);
+                case CLOUD_DELETE -> absence(call, false, client.session());
                 default -> DriverOutcome.unknown("NO_OFFICIAL_RECEIPT_CONTRACT", null,
                     "官方未发布该操作的关联回执查询，不能把读取到的任意设备事件当作本指令结果");
             };
@@ -253,16 +255,17 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
     // ---------------- documented cloud delete + absence reconciliation ----------------
 
     private DriverOutcome cloudDelete(DriverCall call, String external) {
-        HikvisionClient.VendorResult result = client.write("/api/device/v2/delete", json.createObjectNode().put("deviceID", external));
+        var session = client.session();
+        HikvisionClient.VendorResult result = session.write("/api/device/v2/delete", json.createObjectNode().put("deviceID", external));
         if (!"0".equals(result.code())) return vendorRejection(result);
-        return absence(call, true);
+        return absence(call, true, session);
     }
 
-    private DriverOutcome absence(DriverCall call, boolean justDeleted) {
+    private DriverOutcome absence(DriverCall call, boolean justDeleted, HikvisionClient.Session session) {
         String external = call.externalDeviceId();
         if (external == null || external.isBlank())
             return DriverOutcome.unknown("CLOUD_ABSENCE_UNVERIFIED", null, "缺少绑定的云设备标识，无法确认云端已无记录");
-        LookupResult lookup = lookup(call.externalSerial(), external);
+        LookupResult lookup = lookup(session, call.externalSerial(), external);
         ObjectNode out = json.createObjectNode();
         out.put("external_device_id", external);
         out.put("lookup_state", lookup.state());
@@ -316,31 +319,69 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
 
     @Override
     public LookupResult lookup(String serial, String externalDeviceId) {
+        return lookup(client.session(), serial, externalDeviceId);
+    }
+
+    private LookupResult lookup(HikvisionClient.Session session, String serial, String externalDeviceId) {
         if (serial == null || serial.isBlank())
             return new LookupResult("UNKNOWN", null, null, "缺少可用于精确查询的序列号");
-        ObjectNode body = json.createObjectNode().put("deviceSerial", serial).put("pageNo", 1).put("pageSize", 10);
+        boolean knownId = externalDeviceId != null && !externalDeviceId.isBlank();
+        String filter = knownId ? "deviceID" : "deviceSerial";
+        String value = knownId ? externalDeviceId : serial;
+        var seenIds = new HashSet<String>();
+        JsonNode match = null;
+        long total = -1;
+        String flag = "";
         try {
-            HikvisionClient.VendorResult result = client.write("/api/device/v3/getDevice", body);
-            if (!"0".equals(result.code()))
-                return new LookupResult("REJECTED", null, bounded(result.data()), "厂商拒绝查询：" + result.msg());
-            JsonNode list = result.data().path("list");
-            if (!list.isArray()) return new LookupResult("UNKNOWN", null, bounded(result.data()), "查询响应结构未确认");
-            List<JsonNode> matches = new ArrayList<>();
-            for (JsonNode row : list) {
-                if (!serial.equals(row.path("deviceSerial").asText())) continue;
-                if (externalDeviceId != null && !externalDeviceId.isBlank() && !externalDeviceId.equals(row.path("deviceID").asText())) continue;
-                matches.add(row);
+            for (int page = 1; page <= MAX_LOOKUP_PAGES; page++) {
+                ObjectNode body = json.createObjectNode().put(filter, value)
+                    .put("pageNo", Integer.toString(page)).put("pageSize", Integer.toString(LOOKUP_PAGE_SIZE))
+                    .put("flagId", flag).put("offset", page == 1 ? "0" : "1");
+                HikvisionClient.VendorResult result = session.write("/api/device/v3/getDevice", body);
+                if (!"0".equals(result.code()))
+                    return new LookupResult("REJECTED", null, bounded(result.data()), "厂商拒绝查询：" + result.msg());
+                JsonNode data = result.data();
+                JsonNode list = data.path("list"), reportedTotal = data.path("total"), reportedPage = data.path("pageNo");
+                if (!list.isArray() || !reportedTotal.isIntegralNumber() || !reportedTotal.canConvertToLong()
+                    || !reportedPage.isIntegralNumber() || !reportedPage.canConvertToInt() || reportedPage.intValue() != page)
+                    return incompleteLookup();
+                if (page == 1) {
+                    total = reportedTotal.longValue();
+                    if (total > (long) LOOKUP_PAGE_SIZE * MAX_LOOKUP_PAGES) return incompleteLookup();
+                }
+                if (total != reportedTotal.longValue() || total < (long) seenIds.size() + list.size()
+                    || (list.isEmpty() && seenIds.size() < total))
+                    return incompleteLookup();
+
+                for (JsonNode row : list) {
+                    String id = row.path("deviceID").textValue(), rowSerial = row.path("deviceSerial").textValue();
+                    if (id == null || id.isBlank() || rowSerial == null || rowSerial.isBlank() || !seenIds.add(id))
+                        return incompleteLookup();
+                    if (knownId && !externalDeviceId.equals(id)) continue;
+                    if (!serial.equals(rowSerial)) {
+                        if (knownId) return new LookupResult("UNKNOWN", null, null, "云设备标识和绑定序列号不一致");
+                        continue;
+                    }
+                    if (match != null)
+                        return new LookupResult("AMBIGUOUS", null, null, "精确序列号匹配到多条云资源，需人工核对");
+                    match = row;
+                }
+                if (seenIds.size() == total) {
+                    if (match != null)
+                        return new LookupResult("FOUND", match.path("deviceID").textValue(), bounded(match), "精确匹配到唯一云资源");
+                    return new LookupResult("NOT_FOUND", null, json.createObjectNode().put("total", total).put("pages_checked", page),
+                        "授权查询完整返回，未发现匹配云资源");
+                }
+                flag = data.path("flagId").asText("");
             }
-            if (matches.size() == 1) {
-                String id = matches.getFirst().path("deviceID").asText("");
-                if (id.isBlank()) return new LookupResult("UNKNOWN", null, bounded(matches.getFirst()), "匹配记录缺少deviceID");
-                return new LookupResult("FOUND", id, bounded(matches.getFirst()), "按精确序列号匹配到唯一云资源");
-            }
-            if (matches.isEmpty()) return new LookupResult("NOT_FOUND", null, bounded(result.data()), "按精确序列号未发现云资源");
-            return new LookupResult("AMBIGUOUS", null, bounded(result.data()), "精确序列号匹配到多条云资源，需人工核对");
+            return incompleteLookup();
         } catch (HikvisionClient.Failure failure) {
             return new LookupResult(mapFailure(failure), null, null, "查询结果未确认");
         }
+    }
+
+    private static LookupResult incompleteLookup() {
+        return new LookupResult("UNKNOWN", null, null, "云端分页响应不完整或记录身份不一致，不能核实查找结果");
     }
 
     @Override
@@ -350,10 +391,11 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         if (externalDeviceId == null || externalDeviceId.isBlank())
             return new CloudResult("BLOCKED", "EXTERNAL_ID_MISSING", null, null, "缺少云设备标识，未发起任何外部请求");
         try {
-            HikvisionClient.VendorResult result = client.write("/api/device/v2/delete", json.createObjectNode().put("deviceID", externalDeviceId));
+            var session = client.session();
+            HikvisionClient.VendorResult result = session.write("/api/device/v2/delete", json.createObjectNode().put("deviceID", externalDeviceId));
             if (!"0".equals(result.code()))
                 return new CloudResult("REJECTED", result.code(), externalDeviceId, bounded(result.data()), "厂商拒绝删除：" + result.msg());
-            LookupResult lookup = lookup(serial, externalDeviceId);
+            LookupResult lookup = lookup(session, serial, externalDeviceId);
             return switch (lookup.state()) {
                 case "NOT_FOUND" -> new CloudResult("SUCCEEDED", "CLOUD_ABSENCE_VERIFIED", externalDeviceId, bounded(lookup.result()),
                     "厂商接受删除且授权查询确认已无该云记录；不代表终端断电或注销");

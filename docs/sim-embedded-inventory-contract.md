@@ -1,4 +1,5 @@
 # P9a3 / N02：内置人工资料与独立人工库存（Frozen v1）
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
 ## 1. 人工决定与不变边界
 
@@ -58,6 +59,6 @@ HTTP成功只精确200/对应DTO；不存在或跨单位资源404，未获单位
 
 ## 7. 写scope和真实出口
 
-写前666文件（637工程+29正式方案）、6历史JAR、N01已认证753raw全hash已实际0，见[基线](<../artifacts/p9a3-before/manifest.json>)。旧Linux三根389/487/520及9704/5424/6211永久只读；仅新Ubuntu工作区构建/运行，工具缓存校验复用，不增加Windows入口。原1239测试/44原flags/旧依赖锁/V1..15不删弱；V16导致latest/schema耦合必须先有效迁移+旧源byte不变真实RED，Root另scope仅pin历史target15/精确50→54和对应其余计数派生，不能>=/过滤新表/改原业务断言/时限。
+写前666文件（637工程+29正式方案）、6历史JAR、N01已认证753raw全hash已实际0，见基线。旧Linux三根389/487/520及9704/5424/6211永久只读；仅新Ubuntu工作区构建/运行，工具缓存校验复用，不增加Windows入口。原1239测试/44原flags/旧依赖锁/V1..15不删弱；V16导致latest/schema耦合必须先有效迁移+旧源byte不变真实RED，Root另scope仅pin历史target15/精确50→54和对应其余计数派生，不能>=/过滤新表/改原业务断言/时限。
 
 BE独占新simembedded/siminventory主代码与新SimEmbedded*/SimInventory*测试、V16与四新权限；Root旧耦合tests/脚本后授权。FE独占新feature lib/panels/库存页、新tests及必需设备详情/台账/shell最窄入口与owner互斥，Root不交写。Native/Chrome各仅新p9a3前缀私有夹具scope；Root独占协调合同/IPC/工具/基线/最终证据。任何跨scope/合同调整先报告，禁止Leaf Linuxcopy/build/长驻运行；Root统一冻结同步并实际Ubuntu单元/完整包/API/原生PG17/H2/真实sandbox Chrome/手机图/原44与ownedcleanup，未真测不能声明有限完成。

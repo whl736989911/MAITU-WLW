@@ -14,15 +14,20 @@ import com.fireplatform.notification.NotificationProviderService;
 import com.fireplatform.notification.NotificationResourceService;
 import com.fireplatform.notification.PaymentOrderService;
 import com.fireplatform.notification.PaymentSecretStorage;
+import com.fireplatform.shared.ApiError;
 import com.fireplatform.transport.WechatPayV2Client;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -137,6 +142,69 @@ class NotificationResourceTest {
         attempts.finish(second.id(),"UNKNOWN","PROVIDER_EXCEPTION",null);
         assertThat(attempts.latest("tenant-a","FIRE","ALARM","alarm-a","contact-a","SMS","INITIAL").attemptNo()).isEqualTo(2);
         assertThat(attempts.list("tenant-a",1,20).total()).isEqualTo(2);
+    }
+    @Test void reserveDebitsNearestPlaceThenAncestorsThenUnitIndependentlyPerChannel() throws Exception {
+        String device = hierarchicalDevice();
+        String unit = recharge(null, "SMS", 1);
+        String ancestor = recharge("n09-root", "SMS", 1);
+        String parent = recharge("n09-mid", "VOICE", 1);
+        String nearest = recharge("n09-leaf", "SMS", 1);
+
+        assertThat(resources.reserve("tenant-a", device, "SMS").accountId()).isEqualTo(nearest);
+        assertThat(resources.reserve("tenant-a", device, "VOICE").accountId()).isEqualTo(parent);
+        assertThat(resources.reserve("tenant-a", device, "SMS").accountId()).isEqualTo(ancestor);
+        assertThat(resources.reserve("tenant-a", device, "SMS").accountId()).isEqualTo(unit);
+        assertThatThrownBy(() -> resources.reserve("tenant-a", device, "SMS"))
+            .isInstanceOfSatisfying(ApiError.class, error -> assertThat(error.code).isEqualTo("NOTIFICATION_RESOURCE_UNAVAILABLE"));
+        assertThatThrownBy(() -> resources.reserve("tenant-a", device, "VOICE"))
+            .isInstanceOfSatisfying(ApiError.class, error -> assertThat(error.code).isEqualTo("NOTIFICATION_RESOURCE_UNAVAILABLE"));
+        assertThat(jdbc.queryForList("SELECT account_id FROM notification_resource_ledger WHERE tenant_id='tenant-a' AND channel='SMS' AND kind='CONSUME' AND quantity=1", String.class))
+            .containsExactlyInAnyOrder(nearest, ancestor, unit);
+        assertThat(jdbc.queryForList("SELECT account_id FROM notification_resource_ledger WHERE tenant_id='tenant-a' AND channel='VOICE' AND kind='CONSUME' AND quantity=1", String.class))
+            .containsExactly(parent);
+    }
+
+    @Test void concurrentReservationsForTheLastPlaceDebitFallBackWithoutOverdrawing() throws Exception {
+        String device = hierarchicalDevice();
+        String ancestor = recharge("n09-root", "SMS", 1);
+        String unit = recharge(null, "SMS", 1);
+        var start = new CyclicBarrier(2);
+        Callable<String> reserve = () -> {
+            start.await(10, TimeUnit.SECONDS);
+            return resources.reserve("tenant-a", device, "SMS").accountId();
+        };
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(reserve);
+            var second = pool.submit(reserve);
+            assertThat(List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS)))
+                .containsExactlyInAnyOrder(ancestor, unit);
+        }
+        assertThat(jdbc.queryForList("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'", Long.class))
+            .containsExactlyInAnyOrder(1L, 1L);
+    }
+
+    @Test void reserveSkipsAnArchivedAncestorWithAnExistingBalance() throws Exception {
+        String device = hierarchicalDevice();
+        String unit = recharge(null, "SMS", 1);
+        String retired = recharge("n09-root", "SMS", 1);
+        jdbc.update("UPDATE places SET archived_at=CURRENT_TIMESTAMP WHERE id='n09-root' AND tenant_id='tenant-a'");
+
+        assertThat(resources.reserve("tenant-a", device, "SMS").accountId()).isEqualTo(unit);
+        assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE id=?", Long.class, retired))
+            .isZero();
+    }
+
+    private String hierarchicalDevice() {
+        jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id) VALUES ('n09-root','tenant-a','Root',NULL),('n09-mid','tenant-a','Mid','n09-root'),('n09-leaf','tenant-a','Leaf','n09-mid')");
+        jdbc.update("UPDATE devices SET place_id='n09-leaf' WHERE id='device-a' AND tenant_id='tenant-a'");
+        return "device-a";
+    }
+
+    private String recharge(String placeId, String channel, long quantity) throws Exception {
+        var input = placeId == null ? org(channel, quantity)
+            : Map.of("owner_type", "PLACE", "owner_id", placeId, "channel", channel, "quantity", quantity);
+        return body(call(HttpMethod.POST, "/api/management/notification-resources/recharge", root, "tenant-a",
+            UUID.randomUUID().toString(), input).andExpect(status().isOk())).get("id").asText();
     }
     private String customerA() throws Exception {
         String token=login("customer-a",INITIAL,"customer");

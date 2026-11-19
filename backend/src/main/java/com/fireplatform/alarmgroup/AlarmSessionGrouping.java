@@ -47,7 +47,9 @@ public class AlarmSessionGrouping {
         OffsetDateTime now=time.now();
         String sessionId;
         boolean opened=false;
-        if(open.isEmpty() || occurredAt.isAfter(open.get().lastSourceAt().plusSeconds(open.get().windowSeconds()))) {
+        // A later source fire starts a new cycle after all prior physical members recover, regardless of review.
+        if(open.isEmpty() || occurredAt.isAfter(open.get().lastSourceAt().plusSeconds(open.get().windowSeconds()))
+                || recoveredBefore(tenantId,open.get().id(),occurredAt)) {
             if(open.isPresent()) {
                 var previous=open.get();
                 jdbc.update("UPDATE alarm_sessions SET open_slot=?,closed_at=?,revision=revision+1,updated_at=? WHERE id=? AND tenant_id=? AND open_slot='OPEN'",
@@ -70,6 +72,17 @@ public class AlarmSessionGrouping {
             if(opened) event(tenantId,sessionId,null,"SESSION_OPENED",occurredAt,now);
             event(tenantId,sessionId,alarmId,"MEMBER_ADDED",occurredAt,now);
         }
+    }
+
+    private boolean recoveredBefore(String tenantId,String sessionId,OffsetDateTime nextSourceAt) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+            SELECT NOT EXISTS(SELECT 1 FROM alarm_session_members m
+                JOIN alarms a ON a.tenant_id=m.tenant_id AND a.id=m.alarm_id
+                WHERE m.tenant_id=? AND m.session_id=? AND a.physical_state='FIRE')
+                AND (SELECT MAX(occurred_at) FROM alarm_session_events
+                    WHERE tenant_id=? AND session_id=? AND event_kind='MEMBER_RECOVERED'
+                    HAVING COUNT(*)=COUNT(occurred_at)) < ?
+            """,Boolean.class,tenantId,sessionId,tenantId,sessionId,nextSourceAt));
     }
 
     /** Recovery is recorded as an independent session fact; it never closes the grouping window or clears another member. */

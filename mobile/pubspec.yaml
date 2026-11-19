@@ -1,0 +1,29 @@
+name: fire_platform_mobile
+description: "消防物联平台客户侧移动端（原生 Android / Flutter）。登录、两路设备、警情处置、海康相机扫码新增。"
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.14.0 <4.0.0'
+  flutter: '>=3.50.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP client against the platform public API.
+  http: ^1.2.0
+  # Session token storage (Android Keystore backed).
+  flutter_secure_storage: ^9.0.0
+  # QR code scanning (camera via system permission). Only reads the raw string;
+  # the app never performs a network request to the scanned URL.
+  mobile_scanner: ^5.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

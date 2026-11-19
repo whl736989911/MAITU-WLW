@@ -612,9 +612,7 @@ public class LegacyDictionaryImporter {
     private static String stableId(String prefix,String value) { return prefix+"-"+UUID.nameUUIDFromBytes(value.getBytes(StandardCharsets.UTF_8)); }
 
     private Path hierarchyPath() {
-        String source=configuredPlaceHierarchy;
-        if(source==null||source.isBlank()) source=System.getenv("LEGACY_PLACE_HIERARCHY_EXPORT");
-        return source==null||source.isBlank()?null:Path.of(source);
+        return configuredPlaceHierarchy==null||configuredPlaceHierarchy.isBlank()?null:Path.of(configuredPlaceHierarchy);
     }
 
     private LegacyPlaceHierarchy placeHierarchy() {
@@ -625,10 +623,11 @@ public class LegacyDictionaryImporter {
     }
 
     private Path appendix() {
-        List<String> candidates=new ArrayList<>(); if(configuredAppendix!=null&&!configuredAppendix.isBlank()) candidates.add(configuredAppendix); String env=System.getenv("LEGACY_APPENDIX"); if(env!=null&&!env.isBlank()) candidates.add(env);
-        candidates.add("/mnt/d/烟感/_incoming/omp-docs/appendix"); candidates.add("D:/烟感/_incoming/omp-docs/appendix");
-        for(String candidate:candidates) { Path path=Path.of(candidate); if(Files.isDirectory(path.resolve("legacy"))&&Files.isDirectory(path.resolve("codecs"))) return path; }
-        throw ApiError.bad("未找到旧平台归档目录；请由运维配置 LEGACY_APPENDIX");
+        if(configuredAppendix==null||configuredAppendix.isBlank()) throw ApiError.bad("未找到旧平台归档目录；请由运维配置 LEGACY_APPENDIX");
+        Path path=Path.of(configuredAppendix);
+        if(!Files.isDirectory(path.resolve("legacy"))||!Files.isDirectory(path.resolve("codecs")))
+            throw ApiError.bad("未找到旧平台归档目录；请由运维配置 LEGACY_APPENDIX");
+        return path;
     }
 
     private static Tsv read(Path file) {

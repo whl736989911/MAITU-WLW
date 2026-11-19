@@ -39,6 +39,7 @@ public class AliyunNotificationClient {
     private volatile String accessKeyId, accessKeySecret, smsSignName, smsTemplateCode, ttsCode, ttsCalledShowNumber;
     private volatile String smsEndpoint, voiceEndpoint;
     private final HttpClient http;
+    private final Duration requestTimeout;
     private volatile boolean enabled;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -50,14 +51,32 @@ public class AliyunNotificationClient {
             @Value("${fire.notification.aliyun.tts-code:}") String ttsCode,
             @Value("${fire.notification.aliyun.tts-called-show-number:}") String ttsCalledShowNumber,
             @Value("${fire.notification.aliyun.sms-endpoint:https://dysmsapi.aliyuncs.com/}") String smsEndpoint,
-            @Value("${fire.notification.aliyun.voice-endpoint:https://dyvmsapi.aliyuncs.com/}") String voiceEndpoint) {
+            @Value("${fire.notification.aliyun.voice-endpoint:https://dyvmsapi.aliyuncs.com/}") String voiceEndpoint,
+            @Value("${fire.notification.aliyun.connect-timeout-ms:5000}") long connectTimeoutMs,
+            @Value("${fire.notification.aliyun.request-timeout-ms:8000}") long requestTimeoutMs) {
         this(accessKeyId, accessKeySecret, smsSignName, smsTemplateCode, ttsCode, ttsCalledShowNumber,
-                smsEndpoint, voiceEndpoint, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build());
+                smsEndpoint, voiceEndpoint, HttpClient.newBuilder().connectTimeout(Duration.ofMillis(connectTimeoutMs)).build(),
+                Duration.ofMillis(requestTimeoutMs));
+    }
+
+    public AliyunNotificationClient(String accessKeyId, String accessKeySecret, String smsSignName,
+            String smsTemplateCode, String ttsCode, String ttsCalledShowNumber, String smsEndpoint, String voiceEndpoint) {
+        this(accessKeyId, accessKeySecret, smsSignName, smsTemplateCode, ttsCode, ttsCalledShowNumber,
+            smsEndpoint, voiceEndpoint, 5_000, 8_000);
     }
 
     AliyunNotificationClient(String accessKeyId, String accessKeySecret, String smsSignName,
             String smsTemplateCode, String ttsCode, String ttsCalledShowNumber,
             String smsEndpoint, String voiceEndpoint, HttpClient http) {
+        this(accessKeyId, accessKeySecret, smsSignName, smsTemplateCode, ttsCode, ttsCalledShowNumber,
+            smsEndpoint, voiceEndpoint, http, Duration.ofSeconds(8));
+    }
+
+    AliyunNotificationClient(String accessKeyId, String accessKeySecret, String smsSignName,
+            String smsTemplateCode, String ttsCode, String ttsCalledShowNumber,
+            String smsEndpoint, String voiceEndpoint, HttpClient http, Duration requestTimeout) {
+        if (requestTimeout.isZero() || requestTimeout.isNegative()) throw new IllegalArgumentException("Aliyun request timeout must be positive");
+        this.requestTimeout = requestTimeout;
         this.http = http;
         apply(new Config(accessKeyId,accessKeySecret,smsSignName,smsTemplateCode,ttsCode,ttsCalledShowNumber,smsEndpoint,voiceEndpoint));
     }
@@ -244,7 +263,7 @@ public class AliyunNotificationClient {
                 .map(e -> percent(e.getKey()) + "=" + percent(e.getValue()))
                 .reduce((a, b) -> a + "&" + b).orElse("");
         HttpResponse<String> response = http.send(
-                HttpRequest.newBuilder(URI.create(endpoint + "?" + query)).GET().timeout(Duration.ofSeconds(8)).build(),
+                HttpRequest.newBuilder(URI.create(endpoint + "?" + query)).GET().timeout(requestTimeout).build(),
                 HttpResponse.BodyHandlers.ofString());
         JsonNode body = response.body() == null || response.body().isBlank() ? null : MAPPER.readTree(response.body());
         return new Raw(response.statusCode(), body);

@@ -326,7 +326,7 @@ public class RuleFlowCompiler {
         for (String scope : List.of("FIRE", "FAULT")) {
             RuleFlowModels.Binding binding = observed.bindings().get(bindingKey("NOTIFICATION_RULE", scope));
             if (binding == null) { dependencies.add(new RuleFlowModels.Dependency("NOTIFICATION_RULE", scope, null, null)); continue; }
-            var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL",
+            var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
                 (rs, n) -> rs.getLong(1), binding.consumerId(), tenant);
             if (rows.isEmpty()) {
                 issues.add(new RuleFlowModels.Issue(null, "ERROR", "DEPENDENCY_MISSING", "规则流绑定的" + scope + "通知规则已不存在；请重新发布以重建消费者。"));

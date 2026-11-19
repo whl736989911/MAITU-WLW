@@ -16,7 +16,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.*;
 import org.springframework.boot.availability.*;
-import org.springframework.boot.test.autoconfigure.web.servlet.*;
+import org.springframework.boot.webmvc.test.autoconfigure.*;
 import org.springframework.boot.test.context.*;
 import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;

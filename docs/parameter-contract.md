@@ -1,5 +1,7 @@
 # P3b1：单位/设备离线阈值覆盖与生效追溯
 
+> 下文保留 P3b1 阶段的历史接口与验收记录。当前版本已接入多级位置覆盖（以最近有值的祖先为准）和连接未确认 `UNKNOWN`；现行判定见[整体架构](iot-platform-architecture.md)第 7.1 节。
+
 ## 边界与继承
 
 承接P1..P5a。补可消费的分层参数，不承诺完整参数系统。此次只开放offline_threshold_minutes的GLOBAL→TENANT→DEVICE继承（设备优先单位优先全局）；产品层和更多参数后续另定，不展示假生效层。default_page_size仍GLOBAL_ONLY，继续由现有分页消费者使用。电量scale/offset/min/max仍为不可变产品版本字段，不借本接口改旧模板/历史。

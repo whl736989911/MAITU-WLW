@@ -22,15 +22,15 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-@SpringBootTest(properties={"app.roles=all","fire.hikvision.enabled=false","app.data-transfer-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","app.storage=h2-dev","spring.datasource.url=jdbc:h2:mem:hikvision-direct-create;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
+@SpringBootTest(properties={"app.roles=api","fire.hikvision.enabled=false","app.data-transfer-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","app.storage=h2-dev","spring.datasource.url=jdbc:h2:mem:hikvision-direct-create;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
 @AutoConfigureMockMvc @ActiveProfiles("test")
 class HikvisionDirectCreateIntegrationTest {
     @DynamicPropertySource static void environment(DynamicPropertyRegistry registry) { IngestionIntegrationTest.environment(registry); }
@@ -41,7 +41,7 @@ class HikvisionDirectCreateIntegrationTest {
     @Autowired JsonPointerParser parser;
     @Autowired HikvisionClient client;
     @Autowired HikvisionIngestion ingestion;
-    @SpyBean HikvisionConfigService configuration;
+    @MockitoSpyBean HikvisionConfigService configuration;
     IngestionIntegrationTest fixture;
     HttpServer server;
     AtomicInteger adds = new AtomicInteger();
@@ -123,6 +123,61 @@ class HikvisionDirectCreateIntegrationTest {
         Map<String,Object> changed=new java.util.HashMap<>(input);changed.put("verification_code","different-code");
         fixture.call(org.springframework.http.HttpMethod.POST,"/api/management/vendor-devices/hikvision-create",fixture.root,"tenant-a",key,changed).andExpect(status().isConflict());
         assertThat(adds.get()).isEqualTo(1);
+    }
+
+    @Test void syncReadsUnitsWithoutACursorAndDoesNotCheckpointARepeatedAlarmPage() throws Exception {
+        JsonNode created = fixture.body(fixture.call(org.springframework.http.HttpMethod.POST,
+            "/api/management/vendor-devices/hikvision-create", fixture.root, "tenant-a",
+            "direct-" + UUID.randomUUID(), payload(serial)).andExpect(status().isOk()));
+        String device = created.path("registration").path("device_id").asText();
+        OffsetDateTime observed = OffsetDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        Map<String, Object> alarm = Map.of("alarmID", "polled-" + external, "resourceID", external,
+            "alarmType", "200001", "alarmStartTime", observed.toString(), "alarmState", "0");
+        var repeatedPage = new java.util.concurrent.atomic.AtomicBoolean();
+        server.createContext("/artemis/api/", exchange -> {
+            try (exchange) {
+                JsonNode request = json.readTree(exchange.getRequestBody());
+                int page = request.path("pageNo").asInt();
+                String path = exchange.getRequestURI().getPath();
+                List<?> rows = List.of();
+                int total = 0;
+                if (path.equals("/artemis/api/resource/v2/getUnit") && !request.has("flagId") && !request.has("offset")) {
+                    rows = List.of(Map.of("unitID", "fixture-unit-" + page));
+                    total = 2;
+                } else if (path.equals("/artemis/api/businessData/v2/getAlarm") && request.path("timeType").asInt() == 1) {
+                    rows = page == 1 || repeatedPage.get() ? List.of(Map.of("resourceID", external, "alarmID", "older-" + external,
+                        "alarmType", "200001", "alarmStartTime", observed.minusHours(1).toString(), "alarmState", "0")) : List.of(alarm);
+                    total = 2;
+                } else if (!List.of("/artemis/api/device/v2/getDevice", "/artemis/api/channel/v2/getSensor",
+                    "/artemis/api/device/v2/getFireDeviceStatus", "/artemis/api/businessData/v2/getFault",
+                    "/artemis/api/businessData/v2/getAlarm", "/artemis/api/businessData/v2/getHistoryMonitor",
+                    "/artemis/api/businessData/v2/getMonitor", "/artemis/api/businessData/v2/getTraditionMsg").contains(path)) {
+                    exchange.sendResponseHeaders(404, -1);
+                    return;
+                }
+                byte[] body = json.writeValueAsBytes(Map.of("code", "0", "data", Map.of("list", rows, "total", total)));
+                exchange.sendResponseHeaders(200, body.length);
+                exchange.getResponseBody().write(body);
+            }
+        });
+
+        for (int i = 0; i < 2; i++) {
+            fixture.call(org.springframework.http.HttpMethod.POST, "/api/management/hikvision/sync",
+                fixture.root, null, null, null).andExpect(status().isOk());
+        }
+        assertThat(jdbc.queryForList("SELECT external_key FROM hikvision_raw_records WHERE stream_kind='UNIT'", String.class))
+            .contains("fixture-unit-1", "fixture-unit-2");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id=?", Long.class, device)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT source_start_time FROM hikvision_alarm_state WHERE source_alarm_id=?",
+            OffsetDateTime.class, "polled-" + external).toInstant()).isEqualTo(observed.toInstant());
+
+        String checkpointQuery = "SELECT last_success_at FROM hikvision_stream_state WHERE stream_kind='ALARM'";
+        OffsetDateTime checkpoint = jdbc.queryForObject(checkpointQuery, OffsetDateTime.class);
+        repeatedPage.set(true);
+        fixture.call(org.springframework.http.HttpMethod.POST, "/api/management/hikvision/sync",
+            fixture.root, null, null, null).andExpect(status().isServiceUnavailable());
+        assertThat(jdbc.queryForObject(checkpointQuery, OffsetDateTime.class)).isEqualTo(checkpoint);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id=?", Long.class, device)).isEqualTo(1L);
     }
 
     @Test void rejectedUnknownAndWrongTenantRemainNonAssetsAndNeverRepeatAdd() throws Exception {

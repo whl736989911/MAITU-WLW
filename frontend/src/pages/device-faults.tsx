@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageHelp } from '@/components/page-tools'
-import { Empty, ErrorNotice, PageHeading } from '@/components/common'
+import { Empty, ErrorNotice, Loading, PageHeading } from '@/components/common'
 import { dateTime } from '@/lib/format'
 import { useSession } from '@/lib/store'
 import { publishObjectChange } from '@/lib/object-events'
@@ -19,6 +19,7 @@ import './duty-faults.css'
 export function DeviceFaultsPage() {
   const session = useSession()
   const scope = JSON.stringify([session.generation, session.audience, session.scopeTenantIds, session.scopePlaceIds, session.scopeInitialized])
+  if (!session.user || session.user.must_change_password || !session.permissions.includes('device:read')) return <Empty title="当前账户无设备故障查看权限"/>
   return <FaultsContent key={scope}/>
 }
 
@@ -77,16 +78,15 @@ function FaultsContent() {
       {filterError && <Alert type="error" title={filterError} showIcon/>}
     </Card>
     </details>
-    {empty ? <Empty title="当前范围未选择"/> : <>
-      {result.error != null && <ErrorNotice error={result.error} retry={result.refresh}/>}
-      {result.data && <Row gutter={[16, 16]} style={{ margin: '0 0 16px' }}>
+    {!session.scopeInitialized ? <Loading/> : empty ? <Empty title="当前范围未选择"/> : result.loading ? <Loading/> : result.error != null ? <ErrorNotice error={result.error} retry={result.refresh}/> : result.data ? <>
+      <Row gutter={[16, 16]} style={{ margin: '0 0 16px' }}>
         <Col span={12}><Card size="small"><Statistic title="匹配故障设备" value={result.data.total}/></Card></Col>
         <Col span={12}><Card size="small"><Statistic title="本页来源事件" value={result.data.items.reduce((total, device) => total + device.event_count, 0)}/></Card></Col>
-      </Row>}
+      </Row>
       <Card title="有故障记录的设备" size="small">
-        <Table<DeviceFaultSummary> rowKey={device => JSON.stringify([device.tenant_id, device.device_id])} size="small" columns={columns} dataSource={result.data?.items ?? []} loading={result.loading} scroll={{ x: 1290 }} locale={{ emptyText: enabled ? '当前筛选没有已报告的故障' : '范围正在确认' }} pagination={{ current: result.data?.page ?? page, pageSize: result.data?.size ?? 20, total: result.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}/>
+        <Table<DeviceFaultSummary> rowKey={device => JSON.stringify([device.tenant_id, device.device_id])} size="small" columns={columns} dataSource={result.data.items} scroll={{ x: 1290 }} locale={{ emptyText: '当前筛选没有已报告的故障' }} pagination={{ current: result.data.page, pageSize: result.data.size, total: result.data.total, showSizeChanger: false, onChange: setPage }}/>
       </Card>
-    </>}
+    </> : <div className="notice" role="alert">未确认设备故障查询结果。</div>}
     {selected && <FaultDeviceDrawer key={JSON.stringify([selected.tenant_id, selected.device_id])} device={selected} onClose={() => setSelected(null)}/>}
   </section>
 }
@@ -134,6 +134,7 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
     { title: '版本', dataIndex: 'revision', width: 70 },
     { title: '处置', dataIndex: 'handled', width: 90, render: value => value ? '已处置' : '未处置' },
     { title: '操作时间', dataIndex: 'updated_at', width: 175, render: dateTime },
+    { title: '处理人', dataIndex: 'updated_by', width: 160, render: value => value || '未记录' },
     { title: '说明', dataIndex: 'note', render: value => value || '未填写' },
   ]
   return <Drawer open destroyOnHidden size="min(1040px, 100vw)" title={device.device_name ?? device.device_id} onClose={onClose}>
@@ -143,8 +144,7 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
       <Tabs activeKey={tab} onChange={key => { if (!action.busy) setTab(key) }} items={[
         { key: 'history', label: '全部来源故障历史', children: <>
           <div className="list-toolbar"><Button variant="outline" onClick={events.refresh}>刷新历史</Button><DataTransferActions kind="FAULTS" tenantId={session.audience === 'customer' ? session.user?.tenant_id ?? undefined : undefined} filters={filters} selectedIds={selectedIds}/></div>
-          {events.error != null && <ErrorNotice error={events.error} retry={events.refresh}/>}
-          <Table<FaultEvent> rowKey="id" size="small" columns={eventColumns} dataSource={events.data?.items ?? []} loading={events.loading} scroll={{ x: 940 }} rowSelection={{ selectedRowKeys: selectedIds, onChange: keys => setSelectedIds(keys.map(String)), preserveSelectedRowKeys: true }} pagination={{ current: events.data?.page ?? page, pageSize: events.data?.size ?? 20, total: events.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}/>
+          {events.loading ? <Loading/> : events.error != null ? <ErrorNotice error={events.error} retry={events.refresh}/> : !events.data ? <div className="notice" role="alert">未确认本设备来源故障记录。</div> : <Table<FaultEvent> rowKey="id" size="small" columns={eventColumns} dataSource={events.data.items} scroll={{ x: 940 }} locale={{ emptyText: '本页没有来源故障事件' }} rowSelection={{ selectedRowKeys: selectedIds, onChange: keys => setSelectedIds(keys.map(String)), preserveSelectedRowKeys: true }} pagination={{ current: events.data.page, pageSize: events.data.size, total: events.data.total, showSizeChanger: false, onChange: setPage }}/>}
         </> },
         { key: 'detail', label: '事件详情与处置', disabled: !selected, children: selected && <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered items={[
@@ -167,8 +167,7 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
           </details>
           <details className="secondary-controls" style={{ width: '100%' }}>
             <summary>本地处置历史</summary>
-            {history.error != null && <ErrorNotice error={history.error} retry={history.refresh}/>}
-            <Table<FaultHandling> rowKey="revision" size="small" columns={handlingColumns} dataSource={history.data ?? []} loading={history.loading} pagination={false} scroll={{ x: 600 }}/>
+            {history.loading ? <Loading/> : history.error != null ? <ErrorNotice error={history.error} retry={history.refresh}/> : !history.data ? <div className="notice" role="alert">未确认本地处置历史。</div> : <Table<FaultHandling> rowKey="revision" size="small" columns={handlingColumns} dataSource={history.data} locale={{ emptyText: '没有本地处置历史' }} pagination={false} scroll={{ x: 700 }}/>}
           </details>
           {selected.device_id && <ConvertFaultToWorkOrder key={selected.id} faultId={selected.id} deviceId={selected.device_id} tenantId={selected.tenant_id} defaultTitle={selected.fault_label || undefined}/>}
           <Alert type="info" showIcon title="人工处置不等于设备恢复" description="这里只记录本地处置与审计，不改写来源故障、观察时间或设备物理状态，不向设备发送指令。"/>
@@ -177,7 +176,7 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
             {action.error != null && <ErrorNotice error={action.error}/>}
             <Button type="submit" disabled={action.busy}>{action.busy ? '保存中…' : selected.handling?.handled ? '重新打开本地处置' : '记录本地处置'}</Button>
           </form>}
-          {session.audience === 'management' && session.permissions.includes('alarm-base:read') && <AlarmConfigVoice tenantId={selected.tenant_id} sourceId={selected.id} eventType="FAULT" occurredAt={selected.observed_at ?? '来源未提供发生时间'}/>}
+          {tab === 'detail' && !events.loading && events.error == null && selected.kind === 'FAULT' && selected.tenant_id === device.tenant_id && selected.device_id === device.device_id && <AlarmConfigVoice tenantId={selected.tenant_id} deviceId={device.device_id} sourceId={selected.id} eventType="FAULT" occurredAt={selected.observed_at ? dateTime(selected.observed_at) : '来源观察时间未知'}/>}
         </Space> },
       ]}/>
     </Space>

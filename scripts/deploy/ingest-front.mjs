@@ -30,13 +30,31 @@ function authorized(header) {
   return ok;
 }
 
-function headersOf(req) {
-  const out = {};
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (key.toLowerCase() === "x-ingest-token" || key.toLowerCase() === "authorization") continue;
-    out[key] = Array.isArray(value) ? value.join(", ") : String(value ?? "");
+function diagnosticHeaders(contentType) {
+  const mediaType = contentType?.split(";", 1)[0].trim().toLowerCase();
+  switch (mediaType) {
+    case "application/json":
+    case "application/x-www-form-urlencoded":
+    case "application/octet-stream":
+    case "text/plain":
+      return { "Content-Type": mediaType };
+    default:
+      return {};
   }
-  return out;
+}
+
+// Keep these route classifications aligned with the Java registry and CAT1 normalizer.
+const ttlPlatforms = new Set(["lorawan_turbo", "aep_turbo", "tyy_turbo", "oceanconnect_turbo", "turmass", "maitu_mqtt", "formttl"]);
+
+function cat1Category(label) {
+  const value = label.toLowerCase();
+  if (value.includes("fault")) return "fault";
+  if (value.includes("recover") && (value.includes("alarm") || value.includes("fire"))) return "alarmRecovery";
+  if (value.includes("alarm")) return "alarm";
+  if (value.includes("heartbeat")) return "heartbeat";
+  if (value.includes("param")) return "param";
+  if (value.includes("offline")) return "offline";
+  return "other";
 }
 
 const mirrorPrefix = /^(?:\/api)?\/ingest\/(ttl|cat1)(?=\/|$)/;
@@ -47,13 +65,26 @@ function route(requestUrl, originalUri) {
   const original = (originalUri || requestPath).split("?")[0].replace(mirrorPrefix, "");
   if (channel === "ttl") {
     const ttl = original.match(/^(?:\/api)?\/api\/notify\/v1\/[^/]+\/([A-Za-z0-9_]+)\/telemetry\/?$/);
-    return { ingress: "HTTP_NOTIFY", original, platform: ttl?.[1] ?? null, messageType: null };
+    const platform = ttl?.[1] ?? null;
+    const known = ttlPlatforms.has(platform);
+    return {
+      ingress: "HTTP_NOTIFY",
+      canonical: known ? `/api/notify/v1/{redacted}/${platform}/telemetry` : "/api/ingest/ttl",
+      platform: platform === null || known ? platform : "unknown",
+      messageType: null,
+    };
   }
   if (channel === "cat1") {
     const cat1 = original.match(/^(?:\/api)?\/v1\/formttl\/([A-Za-z0-9_-]+)\/telemetry\/?$/);
-    return { ingress: "HTTP_FORM_TTL", original, platform: "formttl", messageType: cat1?.[1] ?? null };
+    const messageType = cat1 ? cat1Category(cat1[1]) : null;
+    return {
+      ingress: "HTTP_FORM_TTL",
+      canonical: messageType !== null ? `/v1/formttl/${messageType}/telemetry` : "/api/ingest/cat1",
+      platform: "formttl",
+      messageType,
+    };
   }
-  return { ingress: "HTTP_NOTIFY", original, platform: null, messageType: null };
+  return { ingress: "HTTP_NOTIFY", canonical: "/api/ingest/ttl", platform: null, messageType: null };
 }
 
 const server = http.createServer((req, res) => {
@@ -101,11 +132,11 @@ const server = http.createServer((req, res) => {
     const stored = {
       id: sha,
       ingress: r.ingress,
-      original_uri: r.original.slice(0, 500),
+      original_uri: r.canonical,
       platform: r.platform,
       message_type: r.messageType,
       body: body.toString("utf8"),
-      headers: headersOf(req),
+      headers: diagnosticHeaders(req.headers["content-type"]),
       sha256: sha,
       received_at: new Date().toISOString(),
       attempts: 0,

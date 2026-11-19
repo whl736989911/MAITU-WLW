@@ -11,6 +11,7 @@ import { ErrorNotice, Loading, PageHeading } from '@/components/common'
 import { useSession } from '@/lib/store'
 import { PageHelp } from '@/components/page-tools'
 import { WechatConfigPanel } from '@/components/wechat-config'
+import './notification-provider.css'
 
 type Form = { smsEnabled: boolean; voiceEnabled: boolean; sign: string; smsCode: string; ttsCode: string; called: string; smsEndpoint: string; voiceEndpoint: string; accessKeyId: string; accessKeySecret: string; testModeEnabled: boolean; testPhone: string }
 const empty: Form = { smsEnabled: false, voiceEnabled: false, sign: '', smsCode: '', ttsCode: '', called: '', smsEndpoint: 'https://dysmsapi.aliyuncs.com/', voiceEndpoint: 'https://dyvmsapi.aliyuncs.com/', accessKeyId: '', accessKeySecret: '', testModeEnabled: false, testPhone: '' }
@@ -41,7 +42,7 @@ export function NotificationProviderPage() {
     try { setTestResult(await api.testNotificationProvider({ channel: testChannel, phone: testPhone })) }
     catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
-  return <>
+  return <div className="notification-provider-workspace">
     <PageHeading eyebrow="NOTIFICATION · 通道配置" title="短信与语音通道" description="配置真实通知通道、短信模板和语音模板。">
       <Button type="button" variant="outline" onClick={() => { provider.refresh(); status.refresh() }}><RefreshCw/>刷新</Button>
       <PageHelp title="通知通道与凭据"><p>短信与语音共用阿里云 AccessKey，分别配置模板及启用状态。页面中的全部配置通过同一个保存动作提交。</p><p>AccessKey ID 仅显示遮罩，Secret 只写不读；凭据输入留空表示保持现有值。保存需当前登录会话与服务端版本校验。</p><p>测试发送会真实调用短信或语音接口，可能计费。厂商受理不表示短信送达或语音接听。</p></PageHelp>
@@ -94,5 +95,5 @@ export function NotificationProviderPage() {
     </> : null}
     <WechatConfigPanel/>
     {error && <div role="alert" className="notice danger-note">{error}</div>}{notice && <div role="status" className="notice success-note">{notice}</div>}
-  </>
+  </div>
 }

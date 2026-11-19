@@ -16,7 +16,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -37,6 +37,8 @@ class HikvisionVendorDeviceCreationTest {
     String serial, external;
 
     @BeforeEach void setup() throws Exception {
+        for (String table : List.of("hikvision_alarm_state","hikvision_fault_state","hikvision_raw_records","hikvision_discovered_devices"))
+            jdbc.update("DELETE FROM " + table);
         fixture=new IngestionIntegrationTest();fixture.mvc=mvc;fixture.json=json;fixture.jdbc=jdbc;fixture.bootstrap=bootstrap;fixture.parser=parser;fixture.reset();
         serial="hik-"+UUID.randomUUID();external="cloud-"+UUID.randomUUID();
         ingestion.accept(HikvisionClient.Stream.DEVICE,json.valueToTree(List.of(Map.of("deviceID",external,"deviceSerial",serial,"deviceName","Discovered fixture","deviceType","600002","deviceModel","800235"))),OffsetDateTime.now().minusMinutes(1));
@@ -74,5 +76,45 @@ class HikvisionVendorDeviceCreationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id='device-a'",Long.class)).isZero();
         fixture.call(org.springframework.http.HttpMethod.POST,"/api/management/vendor-devices",fixture.root,"tenant-a","conflict-"+UUID.randomUUID(),payload).andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE device_eui=?",Long.class,serial)).isEqualTo(1);
+    }
+
+    @Test void bindReplaysOnlyTheExactResourceAndOwnershipWindow() throws Exception {
+        var received = OffsetDateTime.now().withNano(0);
+        var postOwnership = received.plusHours(1);
+        String other = "unbound-" + UUID.randomUUID();
+        var eligible = json.valueToTree(List.of(Map.of("alarmID","eligible", "resourceID",external,
+            "alarmType","200001", "alarmStartTime",postOwnership.toString(), "alarmState","0")));
+        var historical = json.valueToTree(List.of(Map.of("alarmID","historical", "resourceID",external,
+            "alarmType","200001", "alarmStartTime",received.minusHours(1).toString(), "alarmState","0")));
+        var unrelated = json.valueToTree(List.of(Map.of("alarmID","unrelated", "resourceID",other,
+            "alarmType","200001", "alarmStartTime",postOwnership.plusSeconds(1).toString(), "alarmState","0")));
+        ingestion.accept(HikvisionClient.Stream.ALARM, eligible, received, "800235", "HIKVISION_POLL");
+        ingestion.accept(HikvisionClient.Stream.ALARM, eligible, received.plusSeconds(1), "800235", "HIKVISION_PUSH");
+        ingestion.accept(HikvisionClient.Stream.ALARM, historical, received, "800235", "HIKVISION_PUSH");
+        ingestion.accept(HikvisionClient.Stream.ALARM, unrelated, received, "800235", "HIKVISION_PUSH");
+
+        var payload = Map.of("source","HIKVISION_FIRECLOUD", "name","Local vendor asset", "serial",serial, "place_id",fixture.placeId);
+        var key = "bind-" + UUID.randomUUID();
+        String id = fixture.body(fixture.call(org.springframework.http.HttpMethod.POST,
+            "/api/management/vendor-devices",fixture.root,"tenant-a",key,payload).andExpect(status().isOk())).get("id").asText();
+        fixture.call(org.springframework.http.HttpMethod.POST,"/api/management/vendor-devices",
+            fixture.root,"tenant-a",key,payload).andExpect(status().isOk());
+        ingestion.replay(external, postOwnership.plusSeconds(2));
+
+        assertThat(jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id=? AND tenant_id='tenant-a'",OffsetDateTime.class,id))
+            .isEqualTo(postOwnership);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id=? AND tenant_id='tenant-a' AND physical_state='FIRE'",Long.class,id))
+            .isEqualTo(1L);
+        assertThat(jdbc.queryForList("SELECT ingress FROM hikvision_raw_records WHERE external_device_id=? AND external_key='eligible' AND applied_device_id=?",String.class,external,id))
+            .containsExactlyInAnyOrder("HIKVISION_POLL","HIKVISION_PUSH");
+        assertThat(jdbc.queryForObject("SELECT apply_error FROM hikvision_raw_records WHERE external_device_id=? AND external_key='historical'",String.class,external))
+            .isEqualTo("PRE_OWNERSHIP_HISTORY");
+        assertThat(jdbc.queryForObject("SELECT apply_error FROM hikvision_raw_records WHERE external_device_id=? AND external_key='unrelated'",String.class,other))
+            .isEqualTo("PENDING_ASSIGNMENT");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM alarm_configuration_outcomes o JOIN alarms a ON a.id=o.alarm_id AND a.tenant_id=o.tenant_id
+            WHERE a.device_id=? AND o.outcome_kind='NOTIFICATION_GATE'
+            """, Long.class,id)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE device_id=?",Long.class,id)).isZero();
     }
 }

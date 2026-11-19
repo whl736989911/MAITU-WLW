@@ -142,13 +142,14 @@ public class RuleFlowTransactions {
         if (flow.publishedRevision() == null || !flow.publishedRevision().equals(snapshot.publishedRevision()))
             throw ApiError.conflict("REVISION_CONFLICT", "规则流发布版本已变化，请刷新");
         if ("ARCHIVED".equals(flow.status())) throw ApiError.conflict("FLOW_ARCHIVED", "已归档规则流不能启用");
-        if (flow.enabled() == enabled) {
-            Result unchanged = new Result(flow.publishedRevision(), plan, List.copyOf(queries.bindings(tenant, flowId, flow.publishedRevision()).values()));
+        Map<String, RuleFlowModels.Binding> bindings = queries.bindings(tenant, flowId, flow.publishedRevision());
+        boolean changesState = flow.enabled() != enabled;
+        assertActivationBindings(tenant, bindings, changesState);
+        if (!changesState) {
+            Result unchanged = new Result(flow.publishedRevision(), plan, List.copyOf(bindings.values()));
             idem.save(actor.user().id(), enabled ? "rule-flow-enable" : "rule-flow-disable", key, hash, unchanged);
             return unchanged;
         }
-        Map<String, RuleFlowModels.Binding> bindings = queries.bindings(tenant, flowId, flow.publishedRevision());
-        assertNoDrift(tenant, flowId, bindings);
         List<RuleFlowModels.Binding> written = apply(actor, tenant, flowId, flow.name(), flow.publishedRevision(), plan, enabled,
             bindings, trimmed, requestId);
         OffsetDateTime now = time.now();
@@ -194,7 +195,7 @@ public class RuleFlowTransactions {
             RuleFlowModels.Binding binding = existing.get(RuleFlowCompiler.bindingKey("NOTIFICATION_RULE", scope));
             Long expectedRevision = null;
             if (binding != null) {
-                var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL",
+                var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
                     (rs, n) -> rs.getLong(1), binding.consumerId(), tenant);
                 if (rows.isEmpty()) throw ApiError.conflict("DEPENDENCY_MISSING", "绑定的通知规则已不存在，请重新发布");
                 if (rows.getFirst() != binding.consumerRevision())
@@ -218,7 +219,8 @@ public class RuleFlowTransactions {
             Map<String, Object> saved = notifications.rule(actor, tenant, binding == null ? null : binding.consumerId(),
                 key, input, requestId);
             String consumerId = String.valueOf(saved.get("id"));
-            long revision = jdbc.queryForObject("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=?", Long.class, consumerId, tenant);
+            long revision = jdbc.queryForObject("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
+                Long.class, consumerId, tenant);
             written.add(new RuleFlowModels.Binding("NOTIFICATION_RULE", scope, consumerId, revision,
                 List.of("enabled", "event_scope", "receivers", "sms_escalation_interval_seconds", "voice_escalation_interval_seconds"),
                 time.now()));
@@ -282,7 +284,7 @@ public class RuleFlowTransactions {
                         List.of("enabled"), time.now()));
                 }
                 case "NOTIFICATION_RULE" -> {
-                    var rows = jdbc.query("SELECT revision,name,event_scope,sms_escalation_interval_seconds,voice_escalation_interval_seconds FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL",
+                    var rows = jdbc.query("SELECT revision,name,event_scope,sms_escalation_interval_seconds,voice_escalation_interval_seconds FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
                         (rs, n) -> new Object[]{rs.getLong(1), rs.getString(2), rs.getString(3), rs.getObject(4, Integer.class), rs.getObject(5, Integer.class)},
                         binding.consumerId(), tenant);
                     if (rows.isEmpty()) continue;
@@ -290,8 +292,12 @@ public class RuleFlowTransactions {
                     if (((Number) row[0]).longValue() != binding.consumerRevision())
                         throw ApiError.conflict("DEPENDENCY_DRIFT", "通知规则已在规则流之外被修改，无法安全停用；请先在通知页面核对");
                     List<NotificationInputs.Receiver> receivers = new ArrayList<>();
-                    jdbc.query("SELECT channel,contact_id,level FROM notification_rule_receivers WHERE tenant_id=? AND rule_id=? ORDER BY channel,level,contact_id",
-                        (rs, n) -> { receivers.add(new NotificationInputs.Receiver(rs.getString(1), rs.getString(2), rs.getLong(3))); return null; },
+                    jdbc.query("""
+                        SELECT rr.channel,rr.contact_id,rr.level FROM notification_rule_receivers rr
+                        JOIN notification_rules r ON r.tenant_id=rr.tenant_id AND r.id=rr.rule_id
+                        WHERE rr.tenant_id=? AND rr.rule_id=? AND r.legacy_mode IS NULL AND r.scope_type='UNIT'
+                        ORDER BY rr.channel,rr.level,rr.contact_id
+                        """, (rs, n) -> { receivers.add(new NotificationInputs.Receiver(rs.getString(1), rs.getString(2), rs.getLong(3))); return null; },
                         tenant, binding.consumerId());
                     if (receivers.isEmpty()) continue;
                     Integer smsSeconds = (Integer) row[3], voiceSeconds = (Integer) row[4];
@@ -300,8 +306,8 @@ public class RuleFlowTransactions {
                         ((Number) row[0]).longValue(), reason);
                     notifications.rule(actor, tenant, binding.consumerId(),
                         "ruleflow:" + flowId + ":" + flowRevision + ":" + row[0] + ":rule:off:" + binding.scopeKey().toLowerCase(), input, requestId);
-                    long revision = jdbc.queryForObject("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=?", Long.class,
-                        binding.consumerId(), tenant);
+                    long revision = jdbc.queryForObject("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
+                        Long.class, binding.consumerId(), tenant);
                     written.add(new RuleFlowModels.Binding("NOTIFICATION_RULE", binding.scopeKey(), binding.consumerId(), revision,
                         List.of("enabled"), time.now()));
                 }
@@ -358,14 +364,15 @@ public class RuleFlowTransactions {
         }
     }
 
-    /** Enable/disable must observe exactly the consumer revisions recorded at publish, never a silently edited value. */
-    private void assertNoDrift(String tenant, String flowId, Map<String, RuleFlowModels.Binding> bindings) {
+    /** A state change requires exact consumer revisions; even an unchanged result must not return a non-UNIT rule as live. */
+    private void assertActivationBindings(String tenant, Map<String, RuleFlowModels.Binding> bindings, boolean changesState) {
         for (RuleFlowModels.Binding binding : bindings.values()) {
+            if (!changesState && !"NOTIFICATION_RULE".equals(binding.consumerKind())) continue;
             long current = switch (binding.consumerKind()) {
                 case "ALARM_BASE_CONFIGURATION" -> currentBaseRevision(tenant);
                 case "ALARM_MERGE_POLICY" -> mergeQueries.policy(tenant).revision();
                 case "NOTIFICATION_RULE" -> {
-                    var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL",
+                    var rows = jdbc.query("SELECT revision FROM notification_rules WHERE id=? AND tenant_id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
                         (rs, n) -> rs.getLong(1), binding.consumerId(), tenant);
                     yield rows.isEmpty() ? -1 : rows.getFirst();
                 }
@@ -381,7 +388,7 @@ public class RuleFlowTransactions {
                 }
                 default -> binding.consumerRevision();
             };
-            if (current != binding.consumerRevision())
+            if (current < 0 || (changesState && current != binding.consumerRevision()))
                 throw ApiError.conflict("DEPENDENCY_DRIFT", binding.consumerKind() + "(" + binding.scopeKey()
                     + ") 已在规则流之外被修改（绑定修订 " + binding.consumerRevision() + "，当前 " + current + "）；请重新发布前先核对");
         }

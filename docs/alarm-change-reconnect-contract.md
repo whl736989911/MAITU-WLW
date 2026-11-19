@@ -1,12 +1,13 @@
 # P8b3 显式选择的有界信号自动重连（本地有限验证完成）
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
-最终C8CE **597项/34阶段/6原图/只自有清理**actual0，[最终合并证明](<../backend/p8b3-final-verification-proof.json>)与[验证记录](<verification.md>)锁同hash，不复用D896候选。默认仍关，数字集中配置；无自动业务补拉/实体刷新、无生产/真实厂商/WSS/HA/无丢失认证。
+最终C8CE **597项/34阶段/6原图/只自有清理**actual0，最终合并证明与验证记录锁同hash，不复用D896候选。默认仍关，数字集中配置；无自动业务补拉/实体刷新、无生产/真实厂商/WSS/HA/无丢失认证。
 
 ## 工作账本
 
 - Goal：goal-2ed11442-649d-458c-802e-ef97131307cc。2026-10-26 09:18用户继续开发；P8b2已完成，不resume已complete旧goal。
 - Core：①重连只恢复同owner的失效提示通道，不读/推进人工HTTP C/T、实体或统计；②每次用户选择只有不可续期window及单调retry budget，恢复成功/心跳/短暂连接不重置预算，明确撤权停止。
-- Verified01：gap后Root读P8b2完整账本和路线，原最终CDBA/30440123bytes仍精确相同，原223+315=538与32阶段为既有出口；未当成新切片通过。原byte独占归档[基线](<../artifacts/p8b2-CDBAA4D3F67E1402.jar>)。
+- Verified01：gap后Root读P8b2完整账本和路线，原最终CDBA/30440123bytes仍精确相同，原223+315=538与32阶段为既有出口；未当成新切片通过。原byte独占归档基线。
 - Verified02：39/40并行严格只读，尚无任何新source/build/test/服务；两owner独立指出普通same-origin GET不保证Origin，不能把原B2 POST缺Origin拒绝照搬进GET。新policy无票/无Cookie认证，GET缺Origin可放行，出现则仍strict allowlist；真正ticket POST/Upgrade继续原strict Origin，不信Host/Forwarded。
 - Verified03：Root读B2 Socket73行/Panel46行/strict parser30行及controller28/policy26行。现connect()在首frame前resolve并吞失败，不能作为重连成功证明；新supervisor须消费可选typed ready/ended，不parse中文state。原B2手动所有315断言/2workers/isolation/timeouts不改。
 - Frozen04：39/40独立只读均认可最小独立GET与可选typed生命周期；Root冻结：已有当前B2手动首valid才可opt-in、点击T0、同次server connect timeout界定policy GET与auto bootstrap预响应、不在loading原conn失效后arm、成功不续预算。N最后一次可在剩余window结算，window/stop只取消未valid候选并保healthy；429/503、精确native失效与deadline见下文白名单。无任何source/build/动态成功据此产生。

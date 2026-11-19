@@ -1,0 +1,36 @@
+.notification-contacts-workspace {
+  min-width: 0;
+}
+
+.notification-contacts-workspace .ant-tabs-nav {
+  margin-bottom: 20px;
+}
+
+.notification-contacts-workspace .ant-tabs-tab {
+  min-height: 42px;
+}
+
+.notification-contact-transfers,
+.notification-contact-transfers .data-transfer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notification-contacts-workspace .ant-tabs-content-holder,
+.notification-contacts-workspace .ant-tabs-tabpane {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .notification-contacts-workspace .ant-tabs-nav {
+    display: block;
+  }
+
+  .notification-contact-transfers {
+    justify-content: flex-start;
+    padding: 8px 0;
+  }
+}

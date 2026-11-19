@@ -10,7 +10,7 @@ import com.fireplatform.shared.*;
 import java.util.*;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.server.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties={"app.roles=api","app.alarm-change-read-enabled=true","app.alarm-change-ws-enabled=true","app.alarm-change-ws-allowed-origins=http://channel.test","app.alarm-change-ws-max-connections=4","app.alarm-change-ws-max-per-session=2","app.storage=h2-dev","spring.datasource.url=jdbc:h2:mem:alarm-channel;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
-@AutoConfigureMockMvc(print=org.springframework.boot.test.autoconfigure.web.servlet.MockMvcPrint.NONE) @ActiveProfiles("test") @org.springframework.context.annotation.Import(AlarmChangeChannelIntegrationTest.Observation.class)
+@AutoConfigureMockMvc(print=org.springframework.boot.webmvc.test.autoconfigure.MockMvcPrint.NONE) @ActiveProfiles("test") @org.springframework.context.annotation.Import(AlarmChangeChannelIntegrationTest.Observation.class)
 class AlarmChangeChannelIntegrationTest {
     @DynamicPropertySource static void environment(DynamicPropertyRegistry r){IngestionIntegrationTest.environment(r);}
     @org.springframework.boot.test.context.TestConfiguration static class Observation {

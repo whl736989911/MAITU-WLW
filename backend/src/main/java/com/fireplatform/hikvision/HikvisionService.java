@@ -1,5 +1,6 @@
 package com.fireplatform.hikvision;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fireplatform.configuration.RuntimeConfig;
 import com.fireplatform.identity.AuthService;
 import com.fireplatform.identity.CoordinationFence;
@@ -33,6 +34,7 @@ public class HikvisionService {
         String sourceStatus,OffsetDateTime sourceUpdatedAt,OffsetDateTime lastObservedAt,Boolean online,
         long sensorCount,String localDeviceId,String localTenantId,String localPlaceId,String assignmentState,long revision) { }
     private static final DateTimeFormatter VENDOR_TIME=DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSxxx");
+    private static final int DEEP_PAGINATION_THRESHOLD = 10_000;
     private static final String EVENT_STREAMS="('FAULT','ALARM','MONITOR','HISTORY_MONITOR','DEVICE_EVENT')";
     private final JdbcTemplate jdbc;
     private final HikvisionClient client;
@@ -155,15 +157,26 @@ public class HikvisionService {
     private static String vendorTime(OffsetDateTime time){return VENDOR_TIME.format(time.withOffsetSameInstant(ZoneOffset.ofHours(8)));}
     private void fetch(HikvisionClient.Stream kind,Map<String,String> filters,String token,HikvisionConfigService.Runtime config) {
         try {
-            int page=1;long count=0;String flag="";
-            while(true) {
+            long count=0, total=-1;
+            String flag="";
+            JsonNode previous=null;
+            for(int page=1;;page++) {
                 if(jdbc.update("UPDATE hikvision_sync_state SET lease_until=? WHERE source_key='HIKVISION_FIRECLOUD' AND lease_token=?",OffsetDateTime.now(clock).plusMinutes(3),token)!=1)throw new HikvisionClient.Failure("SYNC_LEASE_LOST");
                 var response=config.session().read(kind,page,flag,filters);
-                ingestion.accept(kind,response.records(),OffsetDateTime.now(clock),config.modelScope());
-                count+=response.records().size();
-                if(count>=response.total())break;
-                if(response.records().isEmpty()||response.flagId()==null||response.flagId().isBlank()||response.flagId().equals(flag))throw new HikvisionClient.Failure("INCOMPLETE_PAGINATION");
-                flag=response.flagId();page++;
+                if(page==1)total=response.total();
+                var records=response.records();
+                if(response.total()!=total || records.size()>total-count
+                    || (records.isEmpty() && count<total) || records.equals(previous))
+                    throw new HikvisionClient.Failure("INCOMPLETE_PAGINATION");
+                ingestion.accept(kind,records,OffsetDateTime.now(clock),config.modelScope());
+                count+=records.size();
+                if(count==total)break;
+                String nextFlag=response.flagId();
+                if(kind!=HikvisionClient.Stream.UNIT && count>=DEEP_PAGINATION_THRESHOLD
+                    && (nextFlag.isBlank()||nextFlag.equals(flag)))
+                    throw new HikvisionClient.Failure("INCOMPLETE_PAGINATION");
+                previous=records;
+                flag=nextFlag;
             }
             if(kind==HikvisionClient.Stream.UNIT||kind==HikvisionClient.Stream.DEVICE||kind==HikvisionClient.Stream.SENSOR||kind==HikvisionClient.Stream.STATUS)success(kind,OffsetDateTime.now(clock));
         } catch(RuntimeException e) {

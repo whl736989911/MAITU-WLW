@@ -29,7 +29,11 @@ public class AlarmReminderScheduler implements ReminderScheduling {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void schedule(String tenantId, String alarmId, OffsetDateTime occurredAt) {
-        var delivery = configuration.deliveryPolicy(tenantId, "FIRE", "SMS");
+        var identity=jdbc.queryForMap("""
+            SELECT a.device_id,d.model FROM alarms a JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id
+            WHERE a.tenant_id=? AND a.id=?
+            """,tenantId,alarmId);
+        var delivery=reminderPolicy(tenantId,(String)identity.get("device_id"),(String)identity.get("model"));
         if (!delivery.enabled() || !delivery.receiveAlarm() || !delivery.pushMessage() || delivery.pushPeriodHours() < 1) {
             cancelForAlarm(tenantId, alarmId);
             return;
@@ -47,10 +51,16 @@ public class AlarmReminderScheduler implements ReminderScheduling {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void reconcileTenant(String tenantId) {
-        var rows = jdbc.queryForList("SELECT s.alarm_id,s.period_hours,a.occurred_at FROM alarm_reminder_schedule s JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id WHERE s.tenant_id=? AND s.status='WAITING' FOR UPDATE", tenantId);
+        var rows = jdbc.queryForList("""
+            SELECT s.alarm_id,s.period_hours,a.occurred_at,a.device_id,d.model
+            FROM (SELECT tenant_id,alarm_id,period_hours FROM alarm_reminder_schedule
+                  WHERE tenant_id=? AND status='WAITING' ORDER BY alarm_id FOR UPDATE) s
+            JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id
+            JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id
+            """, tenantId);
         for (var row : rows) {
             String alarmId = String.valueOf(row.get("alarm_id"));
-            var delivery = configuration.deliveryPolicy(tenantId, "FIRE", "SMS");
+            var delivery = reminderPolicy(tenantId,(String)row.get("device_id"),(String)row.get("model"));
             int period = delivery.pushPeriodHours();
             if (!delivery.enabled() || !delivery.receiveAlarm() || !delivery.pushMessage() || period < 1) {
                 cancelForAlarm(tenantId, alarmId);
@@ -68,16 +78,16 @@ public class AlarmReminderScheduler implements ReminderScheduling {
     @Scheduled(initialDelayString = "${fire.alarm-reminder-initial-delay-ms:30000}", fixedDelayString = "${fire.alarm-reminder-scan-ms:15000}")
     @Transactional
     public int processDue() {
-        List<java.util.Map<String, Object>> due = jdbc.queryForList("SELECT s.tenant_id,s.alarm_id,s.cycle_number,s.cycle_started_at,s.period_hours,a.response_state,a.occurred_at FROM (SELECT tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at FROM alarm_reminder_schedule WHERE status='WAITING' AND next_due_at<=" + time.expression() + " ORDER BY next_due_at,tenant_id,alarm_id LIMIT 100 FOR UPDATE SKIP LOCKED) s LEFT JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id ORDER BY s.next_due_at,s.tenant_id,s.alarm_id");
+        List<java.util.Map<String, Object>> due = jdbc.queryForList("SELECT s.tenant_id,s.alarm_id,s.cycle_number,s.cycle_started_at,s.period_hours,a.response_state,a.occurred_at,a.device_id,d.model FROM (SELECT tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at FROM alarm_reminder_schedule WHERE status='WAITING' AND next_due_at<=" + time.expression() + " ORDER BY next_due_at,tenant_id,alarm_id LIMIT 100 FOR UPDATE SKIP LOCKED) s LEFT JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id LEFT JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id ORDER BY s.next_due_at,s.tenant_id,s.alarm_id");
         int accepted = 0;
         for (var row : due) {
             String tenantId = String.valueOf(row.get("tenant_id"));
             String alarmId = String.valueOf(row.get("alarm_id"));
-            if (row.get("response_state") == null || "HANDLED".equals(row.get("response_state"))) {
+            if (row.get("response_state") == null || "HANDLED".equals(row.get("response_state")) || row.get("model")==null) {
                 cancelForAlarm(tenantId, alarmId);
                 continue;
             }
-            var policy = configuration.deliveryPolicy(tenantId, "FIRE", "SMS");
+            var policy = reminderPolicy(tenantId,(String)row.get("device_id"),(String)row.get("model"));
             int period = policy.pushPeriodHours();
             if (!policy.enabled() || !policy.receiveAlarm() || !policy.pushMessage() || period < 1) {
                 cancelForAlarm(tenantId, alarmId);
@@ -102,6 +112,12 @@ public class AlarmReminderScheduler implements ReminderScheduling {
             }
         }
         return accepted;
+    }
+
+    private AlarmBaseConfigurationQueries.DeliveryPolicy reminderPolicy(String tenantId,String deviceId,String model) {
+        var rule=configuration.effectiveForDevice(tenantId,deviceId,"FIRE");
+        if (!rule.subscribed(model,"FIRE")) return new AlarmBaseConfigurationQueries.DeliveryPolicy(false,false,false,0);
+        return rule.deliveryPolicy("SMS");
     }
 
     private void cancelForAlarm(String tenantId, String alarmId) {

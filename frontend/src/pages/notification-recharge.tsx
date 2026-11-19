@@ -14,6 +14,7 @@ import { Empty, ErrorNotice, Loading, PageHeading, Pager } from '@/components/co
 import { PageHelp } from '@/components/page-tools'
 import { dateTime } from '@/lib/format'
 import './notification-resources.css'
+import './notification-recharge.css'
 
 const accountKey = (item: { owner_type: string; owner_id: string }) => `${item.owner_type}:${item.owner_id}`
 const kindNames: Record<string, string> = { RECHARGE: '充值', ADJUST: '调整', CONSUME: '扣减', REFUND: '退回' }
@@ -52,7 +53,7 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const [page, setPage] = useState(1)
   const orders = useResource(`customer-recharge-orders:${page}`, signal => api.customerRechargeOrders(page, signal))
   const [owner, setOwner] = useState(''), [channel, setChannel] = useState<'SMS'|'VOICE'>('SMS'), [quantity, setQuantity] = useState('100')
-  const [notice, setNotice] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [created, setCreated] = useState<NotificationCustomerOrder | null>(null)
+  const [notice, setNotice] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [created, setCreated] = useState<NotificationCustomerOrder | null>(null), [reviewing, setReviewing] = useState(false)
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null), [orderReadError, setOrderReadError] = useState<unknown>()
   const selectedOrder = useResource(`customer-recharge-order:${selectedOrderId}`, async signal => confirmedOrder(await api.customerRechargeOrder(selectedOrderId!, signal), selectedOrderId!), !!selectedOrderId)
   useEffect(() => {
@@ -66,7 +67,7 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const [ledgerOwner, setLedgerOwner] = useState(''), [ledgerPage, setLedgerPage] = useState(1)
   const retry = useRef<{ intent: string; key: string } | null>(null)
   const destinations = options.data?.destinations
-  const selectedOwner = owner || (destinations?.[0] ? accountKey(destinations[0]) : '')
+  const selectedOwner = owner
   const destination = destinations?.find(item => accountKey(item) === selectedOwner)
   const accountsByOwner = new Map((balances.data ?? []).map(account => [accountKey(account), account] as const))
   const ledgerAccount = ledgerOwner ? accountsByOwner.get(ledgerOwner) : undefined
@@ -98,14 +99,19 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   }, [created?.id, created?.status, orders.refresh, options.refresh, balances.refresh])
   function viewOrder(id: string) { setCreated(null); setOrderReadError(undefined); setSelectedOrderId(id) }
   function closeOrder() { setCreated(null); setSelectedOrderId(null); setOrderReadError(undefined) }
-  function refresh() { options.refresh(); orders.refresh(); balances.refresh(); if (created) viewOrder(created.id); else if (selectedOrderId) selectedOrder.refresh() }
+  function refresh() { setReviewing(false); options.refresh(); orders.refresh(); balances.refresh(); if (created) viewOrder(created.id); else if (selectedOrderId) selectedOrder.refresh() }
   function showLedger(key: string) { setLedgerOwner(key); setLedgerPage(1) }
   async function submit(event: FormEvent) {
-    event.preventDefault(); setError(''); setNotice(''); closeOrder()
-    if (!destination) { setError(owner ? '所选充值账户已不可用，请重新选择账户' : '没有可用的充值账户'); return }
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    if (!destination) { setError(owner ? '所选充值账户已不可用，请重新选择账户' : '请明确选择充值账户'); return }
     const count = Number(quantity)
     if (!Number.isInteger(count) || count <= 0 || count > 1_000_000) { setError('数量必须是 1 至 1,000,000 的整数'); return }
     if (amount == null) { setError('资源单价未配置，请联系平台管理员'); return }
+    if (!reviewing) { setReviewing(true); return }
+    setReviewing(false)
+    closeOrder()
     const intent = JSON.stringify([destination.owner_type, destination.owner_id, channel, count])
     if (!retry.current || retry.current.intent !== intent) retry.current = { intent, key: crypto.randomUUID() }
     const key = retry.current.key
@@ -137,7 +143,22 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       </section>}
     </CardContent></Card>
     {canWrite ? <><div className="notice"><Coins size={15}/>充值金额按平台当前单价计算。微信支付参数接入前，订单只能创建，不能完成在线支付。</div>{options.loading ? <Loading/> : options.error != null ? <ErrorNotice error={options.error} retry={options.refresh}/> : options.data && <>
-      <Card><CardContent><h2 className="section-heading">新建充值订单</h2>{!destinations?.length ? <Empty title="当前没有可充值账户">请联系平台管理员配置充值权限。</Empty> : <form className="provider-grid" onSubmit={submit}><div className="form-stack"><div className="field"><Label>充值到</Label><select className="native-select" value={selectedOwner} onChange={e => setOwner(e.target.value)}>{owner && !destination && <option value={owner}>所选账户已不可用，请重新选择</option>}{destinations?.map(item => <option key={accountKey(item)} value={accountKey(item)}>{item.owner_name}（{item.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}）</option>)}</select></div><div className="field"><Label>资源类型</Label><select className="native-select" value={channel} onChange={e => setChannel(e.target.value as 'SMS'|'VOICE')}><option value="SMS">短信</option><option value="VOICE">语音（次）</option></select></div><div className="field"><Label>{channel === 'SMS' ? '短信条数' : '语音次数'}</Label><Input type="number" min={1} max={1000000} value={quantity} onChange={e => setQuantity(e.target.value)}/></div></div><div className="form-stack"><div className="detail-list"><div><dt>单价</dt><dd>{unit == null ? '未配置' : `${unit} 分/${channel === 'SMS' ? '条' : '次'}`}</dd></div><div><dt>应付金额</dt><dd>{amount == null ? '—' : `${(amount / 100).toFixed(2)} 元`}</dd></div></div><Button disabled={busy || amount == null} type="submit">{busy ? '创建中…' : '生成充值订单'}</Button></div></form>}</CardContent></Card>
+      <Card className="customer-recharge-order-form"><CardContent><h2 className="section-heading">新建充值订单</h2>{!destinations?.length ? <Empty title="当前没有可充值账户">请联系平台管理员配置充值权限。</Empty> : <form className="customer-recharge-form" onSubmit={submit}>
+        <div className="customer-recharge-fields">
+          <div className="field"><Label htmlFor="recharge-owner">充值账户</Label><select id="recharge-owner" className="native-select" value={selectedOwner} required onChange={e => { setOwner(e.target.value); setReviewing(false) }}><option value="">请明确选择充值账户</option>{owner && !destination && <option value={owner}>所选账户已不可用，请重新选择</option>}{destinations.map(item => <option key={accountKey(item)} value={accountKey(item)}>{item.owner_name}（{item.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}）</option>)}</select><p className="muted-note">充值仅针对明确选中的单位或位置账户。</p></div>
+          <div className="field"><Label htmlFor="recharge-channel">资源类型</Label><select id="recharge-channel" className="native-select" value={channel} onChange={e => { setChannel(e.target.value as 'SMS'|'VOICE'); setReviewing(false) }}><option value="SMS">短信</option><option value="VOICE">语音（次）</option></select></div>
+          <div className="field"><Label htmlFor="recharge-quantity">{channel === 'SMS' ? '短信条数' : '语音次数'}</Label><Input id="recharge-quantity" type="number" min={1} max={1000000} value={quantity} onChange={e => { setQuantity(e.target.value); setReviewing(false) }}/></div>
+        </div>
+        <div className="customer-recharge-checkout">
+          <dl className="detail-list"><div><dt>单价</dt><dd>{unit == null ? '未配置' : `${unit} 分/${channel === 'SMS' ? '条' : '次'}`}</dd></div><div><dt>应付金额</dt><dd>{amount == null ? '—' : `${(amount / 100).toFixed(2)} 元`}</dd></div></dl>
+          {reviewing ? <section className="customer-recharge-review" role="status" aria-label="订单确认">
+            <h3>请确认充值订单</h3>
+            <dl><div><dt>充值账户</dt><dd>{destination!.owner_name} · {destination!.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}</dd></div><div><dt>充值内容</dt><dd>{channel === 'SMS' ? `短信 ${quantity} 条` : `语音 ${quantity} 次`}</dd></div><div><dt>应付金额</dt><dd>{(amount! / 100).toFixed(2)} 元</dd></div></dl>
+            <p>确认后仅创建充值订单，不会自动完成支付或保证资源到账。</p>
+            <div className="customer-recharge-actions"><Button type="button" variant="outline" disabled={busy} onClick={() => setReviewing(false)}>返回修改</Button><Button type="submit" disabled={busy}>{busy ? '创建中…' : '确认创建订单'}</Button></div>
+          </section> : <Button type="submit" disabled={busy || amount == null}>{busy ? '创建中…' : '审核充值订单'}</Button>}
+        </div>
+      </form>}</CardContent></Card>
     </>}</> : null}
     {(selectedOrderId || created) && <section id="customer-recharge-order" style={{ scrollMarginTop: 80 }}><Card><CardContent>
       <div className="demo-side-head"><h2 className="section-heading"><QrCode size={18}/>{created?.status === 'PENDING' ? '待支付订单' : '充值订单'}</h2><div className="notification-actions">{created && <Button type="button" variant="outline" onClick={() => viewOrder(created.id)}>刷新订单</Button>}<Button type="button" variant="outline" title="只关闭当前详情，不取消订单或支付" onClick={closeOrder}>关闭详情</Button></div></div>

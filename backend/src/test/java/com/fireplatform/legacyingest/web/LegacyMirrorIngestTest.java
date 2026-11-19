@@ -15,7 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -86,22 +86,45 @@ class LegacyMirrorIngestTest {
     }
 
     @Test void acceptedRawRemainsDurableAfterImmediateParsing() throws Exception {
-        mvc.perform(post("/api/ingest/ttl/api/api/notify/v1/x/lorawan_turbo/telemetry")
+        mvc.perform(post("/api/ingest/ttl/api/api/notify/v1/synthetic-fallback-token/lorawan_turbo/telemetry")
                 .header("X-Ingest-Token", "mirror-secret")
-                .header("X-Original-Uri", "/api/api/notify/v1/x/lorawan_turbo/telemetry")
+                .header("X-Original-Uri", "/api/api/notify/v1/synthetic-path-token/lorawan_turbo/telemetry?q=synthetic-query")
+                .header("Cookie", "sid=synthetic-cookie")
+                .header("Authorization", "Bearer synthetic-authorization")
+                .header("X-Forwarded-For", "192.0.2.42")
+                .header("X-Debug-Extra", "synthetic-header")
                 .contentType(MediaType.APPLICATION_JSON).content(LORAWAN))
             .andExpect(status().isAccepted())
             .andExpect(jsonPath("$.status").value("ACCEPTED"))
             .andExpect(jsonPath("$.duplicate").value(false));
         intake.drain();
         Path queued = onlyFile("done", ".json");
-        var stored = json.readTree(Files.readString(queued));
+        String raw = Files.readString(queued);
+        var stored = json.readTree(raw);
         assertThat(stored.path("body").asText()).isEqualTo(LORAWAN);
-        assertThat(stored.path("original_uri").asText()).isEqualTo("/api/api/notify/v1/x/lorawan_turbo/telemetry");
+        assertThat(stored.path("original_uri").asText()).isEqualTo("/api/notify/v1/{redacted}/lorawan_turbo/telemetry");
+        assertThat(stored.path("headers")).isEqualTo(json.createObjectNode().put("Content-Type", "application/json"));
+        assertThat(raw).doesNotContain("synthetic-", "mirror-secret", "192.0.2.42", "X-Original-Uri", "Cookie", "Authorization");
         intake.drain();
         assertThat(count("queue", ".json")).isZero();
         assertThat(count("done", ".json")).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT state FROM legacy_ingest_messages", String.class)).isEqualTo("PENDING_DECODER");
+        assertThat(jdbc.queryForObject("SELECT vendor_platform FROM legacy_ingest_messages", String.class)).isEqualTo("lorawan_turbo");
+    }
+
+    @Test void legacyQueueMetadataDoesNotPreventProcessing() throws Exception {
+        String id = "a".repeat(64);
+        Path queue = Files.createDirectories(SPOOL_DIR.resolve("queue"));
+        var legacy = json.createObjectNode()
+            .put("id", id).put("ingress", "HTTP_NOTIFY")
+            .put("original_uri", "/api/api/notify/v1/synthetic-old-token/lorawan_turbo/telemetry")
+            .put("platform", "lorawan_turbo").putNull("message_type").put("body", LORAWAN)
+            .put("sha256", id).put("received_at", "2026-11-01T20:22:59Z").put("attempts", 0);
+        legacy.putObject("headers").put("Cookie", "synthetic-old-cookie");
+        Files.writeString(queue.resolve(id + ".json"), json.writeValueAsString(legacy));
+        intake.drain();
+        assertThat(SPOOL_DIR.resolve("done").resolve(id + ".json")).exists();
+        assertThat(jdbc.queryForObject("SELECT vendor_platform FROM legacy_ingest_messages", String.class)).isEqualTo("lorawan_turbo");
     }
 
     @Test void sameBodyIsDeduplicatedBySha256() throws Exception {
@@ -141,17 +164,36 @@ class LegacyMirrorIngestTest {
         assertThat(Files.readString(SPOOL_DIR.resolve("dead").resolve(deadFile.getFileName() + ".error"))).isNotBlank();
     }
 
+    @Test void unknownTtlLabelAndProxyQueryAreNotDurable() throws Exception {
+        mvc.perform(post("/ingest/ttl").header("X-Ingest-Token", "mirror-secret")
+                .header("X-Original-Uri", "/api/notify/v1/synthetic-token/synthetic_unknown_label/telemetry?q=synthetic-query")
+                .contentType("application/json; profile=synthetic-parameter").content(LORAWAN))
+            .andExpect(status().isAccepted());
+        intake.drain();
+        Path dead = onlyFile("dead", ".json");
+        String raw = Files.readString(dead);
+        var stored = json.readTree(raw);
+        assertThat(raw).doesNotContain("synthetic-", "synthetic_unknown_label");
+        assertThat(stored.path("original_uri").asText()).isEqualTo("/api/ingest/ttl");
+        assertThat(stored.path("body").asText()).isEqualTo(LORAWAN);
+        assertThat(Files.readString(dead.resolveSibling(dead.getFileName() + ".error"))).contains("旧平台类型无效");
+    }
+
     @Test void cat1AlarmAndFaultUseBodyMessageType() throws Exception {
         String alarm = """
             {"deviceName":"0000000000000002","deviceId":"0000000000000002","messageType":"Alarm",
              "deviceStateCode":"1001001","params":"{\\"deviceStateCode\\":\\"1001001\\",\\"deviceState\\":\\"火灾报警\\",\\"battery\\":75}",
              "ts":1793568000000}""";
-        mvc.perform(post("/ingest/cat1/api/v1/formttl/alarms/telemetry")
+        String routeAlarm = alarm.replace("\"messageType\":\"Alarm\",", "");
+        mvc.perform(post("/ingest/cat1/api/v1/formttl/synthetic-alarm-label/telemetry")
                 .header("X-Ingest-Token", "mirror-secret")
-                .contentType(MediaType.APPLICATION_JSON).content(alarm)).andExpect(status().isAccepted());
+                .contentType(MediaType.APPLICATION_JSON).content(routeAlarm)).andExpect(status().isAccepted());
         intake.drain();
         assertThat(jdbc.queryForObject("SELECT physical_state FROM devices WHERE id='d2'", String.class)).isEqualTo("FIRE");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id='d2'", Integer.class)).isEqualTo(1);
+        String storedAlarm = Files.readString(onlyFile("done", ".json"));
+        assertThat(storedAlarm).doesNotContain("synthetic-alarm-label");
+        assertThat(json.readTree(storedAlarm).path("original_uri").asText()).isEqualTo("/v1/formttl/alarm/telemetry");
 
         String fault = alarm.replace("\"Alarm\"", "\"Fault\"")
             .replace("1793568000000", "1793568060000")
@@ -170,7 +212,7 @@ class LegacyMirrorIngestTest {
                 .contentType(MediaType.APPLICATION_JSON).content(LWM2M)).andExpect(status().isAccepted());
         intake.drain();
         var row = jdbc.queryForMap("SELECT vendor_device_id,device_id,observed_at FROM legacy_ingest_messages");
-        assertThat(row.get("vendor_device_id")).isEqualTo("d632df53dd3e4a488530cb7efcff945a");
+        assertThat(row.get("vendor_device_id")).isEqualTo("00000000000000000000000000000001");
         assertThat(row.get("device_id")).isEqualTo("d3");
         assertThat(row.get("observed_at").toString()).startsWith("2026-11-01T20:22:59");
     }

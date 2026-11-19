@@ -16,7 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -323,6 +323,22 @@ class N04IdentityAccessIntegrationTest {
         call(HttpMethod.PUT,"/api/management/users/"+targetId+"/scope",root,"tenant-a","place-foreign",
             Map.of("mode","PLACE_SUBTREE","device_ids",List.of(),"place_ids",List.of("n04-tenant-b"),"expected_revision",2,"reason","跨单位位置"))
             .andExpect(status().isNotFound());
+    }
+
+    @Test void structuralCoverageNeverBorrowsPlaceAuthorityFromAnotherUnit() throws Exception {
+        String root = root();
+        String actor = platform(root, "n04-place-multiunit", List.of("device:read"), List.of("tenant-a", "tenant-b"))
+            .path("id").asText();
+        String assignment = "/api/management/platform-users/" + actor + "/scope";
+        call(HttpMethod.PUT, assignment, root, "tenant-a", "multiunit-scope-a", assignPlaceScope(List.of("n04-root"), 0))
+            .andExpect(status().isOk());
+        call(HttpMethod.PUT, assignment, root, "tenant-b", "multiunit-scope-b", assignPlaceScope(List.of("n04-tenant-b"), 0))
+            .andExpect(status().isOk());
+
+        assertThat(deviceScopes.coversPlaces(actor, "tenant-a", List.of("n04-child"))).isTrue();
+        assertThat(deviceScopes.coversPlaces(actor, "tenant-b", List.of("n04-tenant-b"))).isTrue();
+        assertThat(deviceScopes.coversPlaces(actor, "tenant-a", List.of("n04-child", "n04-tenant-b"))).isFalse();
+        assertThat(deviceScopes.coversPlaces("bootstrap-admin", "tenant-a", List.of("n04-tenant-b"))).isFalse();
     }
 
     @Test void selfProtectedTypeAndDelegationBoundsAreEnforced() throws Exception {

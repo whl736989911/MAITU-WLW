@@ -2,7 +2,10 @@ import { DataTransferActions } from '@/components/data-transfer-actions'
 import { useState,type FormEvent } from 'react'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
-import { queryFaults, sourceFaultRecoveryText, type FaultEvent } from '@/lib/duty-api'
+import { getFaultHandlingHistory, queryFaults, sourceFaultRecoveryText, type FaultEvent } from '@/lib/duty-api'
+import { beijingInput, canonicalAlarmInstant } from '@/lib/alarm-workbench'
+import { dateTime } from '@/lib/format'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Card,CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,25 +13,110 @@ import { Empty,ErrorNotice,Loading,PageHeading,Pager } from '@/components/common
 import { PageHelp } from '@/components/page-tools'
 import { ConvertFaultToWorkOrder } from '@/components/convert-fault-to-work-order'
 import './duty-faults.css'
-export function FaultHistoryPage(){
- const session=useSession()
- const scope=JSON.stringify([session.generation,session.audience,session.scopeTenantIds,session.scopePlaceIds,session.scopeInitialized])
- return <FaultHistoryContent key={scope}/>
+export function FaultHistoryPage() {
+  const session = useSession()
+  if (!session.user || session.user.must_change_password || !session.permissions.includes('device:read')) return <Empty title="当前账户无故障历史读取权限"/>
+  const scope = JSON.stringify([session.generation, session.audience, session.scopeTenantIds, session.scopePlaceIds, session.scopeInitialized])
+  return <FaultHistoryContent key={scope}/>
 }
-function FaultHistoryContent(){
- const session=useSession(),scopeKey=`${session.scopeTenantIds.join(',')}:${session.scopePlaceIds.join(',')}:${session.scopeInitialized}`,empty=session.scopeInitialized&&session.scopeTenantIds.length===0&&session.scopePlaceIds.length===0
- const [page,setPage]=useState(1),[keyword,setKeyword]=useState(''),[applied,setApplied]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState(''),[appliedRange,setAppliedRange]=useState({from:'',to:''}),[selected,setSelected]=useState<FaultEvent|null>(null)
- const result=useResource(`fault-history:${scopeKey}:${page}:${applied}:${JSON.stringify(appliedRange)}`,signal=>queryFaults(page,applied,appliedRange.from,appliedRange.to,signal),session.scopeInitialized&&!empty&&session.permissions.includes('device:read'))
- const data=result.data
- function changePage(next:number){setSelected(null);setPage(next)}
- function applyFilters(event:FormEvent){event.preventDefault();setApplied(keyword.trim());setAppliedRange({from:from?new Date(from).toISOString():'',to:to?new Date(to).toISOString():''});changePage(1)}
- return <section className="duty-fault-page">
-  <PageHeading eyebrow="DUTY · FAULT HISTORY" title="故障历史" description="筛选已存来源 FAULT 事件及人工处置记录。"><PageHelp title="故障来源口径"><div className="form-stack"><p>只列出持久化来源明确标记为 FAULT 的事件；离线或未上报状态不会推断为故障。</p><p>时间筛选依据来源观察时间。未知时间不会以来源报文时间或接收时间替代。</p><p>原始载荷不在普通设备读取接口暴露；当前查询遵循左侧单位与位置范围。</p></div></PageHelp><Button type="button" variant="outline" onClick={()=>result.refresh()}>刷新故障历史</Button><DataTransferActions kind="FAULTS" label="导出故障" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword: applied, from: appliedRange.from, to: appliedRange.to }}/></PageHeading>
-  <details className="secondary-controls"><summary>筛选故障记录{(applied || appliedRange.from || appliedRange.to) && ' · 已启用筛选'}</summary>
-  <Card><CardContent><form className="device-workbench-grid" onSubmit={applyFilters}><label className="field">设备名、位置或事件方法<Input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="匹配已存设备与事件方法"/></label><label className="field">开始时间<Input type="datetime-local" value={from} onChange={e=>setFrom(e.target.value)}/></label><label className="field">结束时间<Input type="datetime-local" value={to} onChange={e=>setTo(e.target.value)}/></label><Button type="submit">筛选历史</Button><Button type="button" variant="outline" onClick={()=>{setKeyword('');setApplied('');setFrom('');setTo('');setAppliedRange({from:'',to:''});changePage(1)}}>清除筛选</Button></form></CardContent></Card>
-  </details>
-  {empty?<Empty title="当前范围未选择"/>:result.loading?<Loading/>:result.error!=null?<ErrorNotice error={result.error} retry={result.refresh}/>:!data?<Empty title="故障历史尚未确认"/>:<><div className="device-workbench-metrics"><div><span>匹配 FAULT 事件</span><strong>{data.total}</strong></div><div><span>本页来源事件</span><strong>{data.items.length}</strong></div></div><Card><CardContent>{data.items.length?data.items.map(event=><button type="button" key={event.id} className="duty-event-row duty-event-button" onClick={()=>setSelected(event)}><strong>{event.device_name??event.device_id??'无设备关联'}</strong><time>{event.observed_at??'观察时间未知'}</time><span>{event.fault_label}{event.fault_code?` (${event.fault_code})`:''} · {event.method??'来源未标注方法'} · {sourceFaultRecoveryText(event)} · {event.handling?.handled?'本地已处置':'本地未处置/无记录'}</span><small>{event.device_address??'地址未记录'} · 来源故障ID {event.source_fault_id??'未报告'} · 报文 {event.source_message_at??'未知'} · 接收 {event.received_at??'未知'}</small></button>):<Empty title={data.total?'本页无故障事件':'未检索到已报告故障事件'}/>}<Pager page={data.page} size={data.size} total={data.total} onChange={changePage}/></CardContent></Card></>}
-  {selected&&<Card><CardContent><h2>故障事件详情</h2><dl><dt>事件ID</dt><dd>{selected.id}</dd><dt>来源故障ID</dt><dd>{selected.source_fault_id??'未报告'}</dd><dt>来源恢复状态</dt><dd>{sourceFaultRecoveryText(selected)}</dd><dt>故障类型</dt><dd>{selected.fault_label}{selected.fault_code?` (${selected.fault_code})`:''}</dd><dt>来源方法</dt><dd>{selected.method??'未记录方法'}</dd><dt>观察时间</dt><dd>{selected.observed_at??'未知（未回退为接收时间）'}</dd><dt>来源报文时间</dt><dd>{selected.source_message_at??'未知'} · {selected.source_time_field??'来源字段未记录'}（非故障发生时间）</dd><dt>接收时间</dt><dd>{selected.received_at??'未知'}（接收记录，不是故障发生时间）</dd><dt>事件入库时间</dt><dd>{selected.created_at}</dd><dt>设备</dt><dd>{selected.device_name??selected.device_id??'未关联设备'} · {selected.device_address??'地址未知'}</dd><dt>本地人工处置</dt><dd>{selected.handling?.handled?'已处理':selected.handling?'未处理':'无本地处理记录'}</dd><dt>位置ID</dt><dd>{selected.place_id??'未记录位置'}</dd></dl><p className="muted-note">来源恢复时间仅表示来源报告，不能自动视作本地已处置或替代现场核查。平台报文时间与接收时间均不是已确认的故障发生时间。</p><Button type="button" variant="outline" onClick={()=>setSelected(null)}>关闭详情</Button></CardContent></Card>}
-  {selected?.device_id&&<ConvertFaultToWorkOrder faultId={selected.id} deviceId={selected.device_id} tenantId={selected.tenant_id}/>}
- </section>
+
+function FaultHistoryContent() {
+  const session = useSession()
+  const empty = session.scopeInitialized && !session.scopeTenantIds.length && !session.scopePlaceIds.length
+  const enabled = session.scopeInitialized && !empty
+  const [page, setPage] = useState(1), [keyword, setKeyword] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState('')
+  const [applied, setApplied] = useState({ keyword: '', from: '', to: '' })
+  const [selected, setSelected] = useState<FaultEvent | null>(null), [filterError, setFilterError] = useState<unknown>()
+  const result = useResource(`fault-history:${JSON.stringify([page, applied])}`, signal => queryFaults(page, applied.keyword, applied.from, applied.to, signal), enabled)
+  const data = !result.loading && result.error == null ? result.data : undefined
+
+  function changePage(next: number) { setSelected(null); setPage(next) }
+  function applyFilters(event: FormEvent) {
+    event.preventDefault()
+    try {
+      const start = beijingInput(from), end = beijingInput(to)
+      if (start && end && canonicalAlarmInstant(start) >= canonicalAlarmInstant(end)) throw new Error('开始时间必须早于结束时间。')
+      setApplied({ keyword: keyword.trim(), from: start ?? '', to: end ?? '' }); setFilterError(undefined); changePage(1)
+    } catch (error) { setFilterError(error) }
+  }
+  function refresh() { setSelected(null); result.refresh() }
+
+  return <section className="duty-fault-page">
+    <PageHeading eyebrow="运行中心 / 历史" title="故障历史" description="查询来源明确报告的故障，核对来源恢复和历次人工处置。">
+      <PageHelp title="故障来源口径"><p>只显示已存来源 FAULT 事件。离线不等于故障，接收时间不替代来源观察时间，人工处置不代表来源恢复。</p></PageHelp>
+      <Button type="button" variant="outline" disabled={!enabled} onClick={refresh}>刷新故障历史</Button>
+      {enabled && <DataTransferActions kind="FAULTS" label="导出故障" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), ...applied }}/>}
+    </PageHeading>
+    <details className="secondary-controls">
+      <summary>筛选故障记录{(applied.keyword || applied.from || applied.to) && ' · 已启用筛选'}</summary>
+      <Card><CardContent>
+        <form className="device-workbench-grid" onSubmit={applyFilters}>
+          <label className="field">设备名、位置或事件方法<Input value={keyword} onChange={e => setKeyword(e.target.value)}/></label>
+          <label className="field">观察时间从（北京时间）<Input type="datetime-local" value={from} onChange={e => setFrom(e.target.value)}/></label>
+          <label className="field">至（不含）<Input type="datetime-local" value={to} onChange={e => setTo(e.target.value)}/></label>
+          <div className="list-toolbar">
+            <Button type="submit" disabled={!enabled}>筛选历史</Button>
+            <Button type="button" variant="outline" onClick={() => { setKeyword(''); setFrom(''); setTo(''); setApplied({ keyword: '', from: '', to: '' }); setFilterError(undefined); changePage(1) }}>清除筛选</Button>
+          </div>
+        </form>
+        {filterError != null && <ErrorNotice error={filterError}/>}
+      </CardContent></Card>
+    </details>
+    {!session.scopeInitialized ? <Loading/> : empty ? <Empty title="当前范围未选择">请在左侧选择单位或位置。</Empty> :
+      result.loading ? <Loading/> : result.error != null ? <ErrorNotice error={result.error} retry={refresh}/> :
+      !data ? <div className="notice" role="alert">故障历史响应未确认。</div> : <Card><CardContent>
+        <div className="section-header"><h2>来源故障记录</h2><span className="muted-note">当前筛选共 {data.total} 条</span></div>
+        {data.items.length ? <Table>
+          <TableHeader><TableRow><TableHead>设备 / 地址</TableHead><TableHead>故障类型</TableHead><TableHead>来源观察时间</TableHead><TableHead>来源恢复</TableHead><TableHead>人工处置</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+          <TableBody>{data.items.map(event => <TableRow key={`${event.tenant_id}:${event.id}`}>
+            <TableCell><strong>{event.device_name ?? event.device_id ?? '无设备关联'}</strong><div className="table-sub">{event.device_address ?? '地址未记录'}</div></TableCell>
+            <TableCell>{event.fault_label || '类型待识别'}{event.fault_code ? ` (${event.fault_code})` : ''}</TableCell>
+            <TableCell>{event.observed_at ? dateTime(event.observed_at) : '观察时间未知'}</TableCell>
+            <TableCell>{sourceFaultRecoveryText(event, dateTime)}</TableCell>
+            <TableCell>{event.handling ? event.handling.handled ? '已处置' : '未处置' : '尚未记录'}</TableCell>
+            <TableCell><Button type="button" variant="outline" size="sm" aria-label={`查看 ${event.device_name ?? event.device_id ?? event.id} 故障详情`} onClick={() => setSelected(event)}>查看详情</Button></TableCell>
+          </TableRow>)}</TableBody>
+        </Table> : <Empty title={data.total ? '本页无故障事件' : '当前筛选没有已报告的故障事件'}>{data.total > 0 && <Button type="button" variant="outline" onClick={() => changePage(1)}>返回第 1 页</Button>}</Empty>}
+        <Pager page={data.page} size={data.size} total={data.total} onChange={changePage}/>
+      </CardContent></Card>}
+    {data && selected && <Card><CardContent>
+      <div className="section-header">
+        <h2 tabIndex={-1} ref={heading => { heading?.focus() }}>故障事件详情</h2>
+        <Button type="button" variant="outline" size="sm" onClick={() => setSelected(null)}>关闭详情</Button>
+      </div>
+      <p>{selected.device_name ?? selected.device_id ?? '未关联设备'} · {selected.fault_label || '类型待识别'}</p>
+      <FaultEvidence key={`${selected.tenant_id}:${selected.id}`} event={selected}/>
+    </CardContent></Card>}
+  </section>
+}
+
+function FaultEvidence({ event }: { event: FaultEvent }) {
+  const history = useResource(`fault-handling-evidence:${event.tenant_id}:${event.id}`, async signal => {
+    const entries = await getFaultHandlingHistory(event.id, event.tenant_id, signal)
+    if (entries.some(entry => entry?.event_id !== event.id || entry.tenant_id !== event.tenant_id)) throw new Error('本地处置记录归属未确认')
+    return entries
+  })
+  return <div className="form-stack">
+    <h3>来源事实</h3>
+    <dl>
+      <dt>平台事件 ID</dt><dd className="mono">{event.id}</dd>
+      <dt>厂商故障 ID</dt><dd>{event.source_fault_id ?? '未报告'}</dd>
+      <dt>安装地址</dt><dd>{event.device_address ?? '地址未记录'}</dd>
+      <dt>位置 ID</dt><dd>{event.place_id ?? '未记录位置'}</dd>
+      <dt>类型 / 来源方法</dt><dd>{event.fault_label || '类型待识别'} · {event.fault_code ?? '编码未提供'} · {event.method ?? '方法未提供'}</dd>
+      <dt>来源恢复</dt><dd>{sourceFaultRecoveryText(event, dateTime)}</dd>
+      <dt>来源观察时间</dt><dd>{event.observed_at ? dateTime(event.observed_at) : '未知（不以接收时间替代）'}</dd>
+      <dt>来源报文时间</dt><dd>{event.source_message_at ? dateTime(event.source_message_at) : '未知'} · {event.source_time_field ?? '来源字段未记录'}</dd>
+      <dt>平台接收时间</dt><dd>{event.received_at ? dateTime(event.received_at) : '接收时间未知'}</dd>
+      <dt>平台入库时间</dt><dd>{dateTime(event.created_at)}</dd>
+    </dl>
+    <div className="section-header"><h3>本地处置历史</h3><Button type="button" variant="outline" size="sm" onClick={history.refresh}>刷新处置历史</Button></div>
+    <p className="muted-note">本地记录不改变来源故障或恢复状态。</p>
+    {history.loading ? <Loading/> : history.error != null ? <ErrorNotice error={history.error} retry={history.refresh}/> :
+      !history.data ? <div className="notice" role="alert">本地处置历史未确认。</div> : !history.data.length ? <Empty title="尚无本地处置记录"/> :
+      <Table><TableHeader><TableRow><TableHead>版本</TableHead><TableHead>处置</TableHead><TableHead>操作人</TableHead><TableHead>操作时间</TableHead><TableHead>说明</TableHead></TableRow></TableHeader>
+        <TableBody>{history.data.map(entry => <TableRow key={entry.revision}><TableCell>{entry.revision}</TableCell><TableCell>{entry.handled ? '已处置' : '未处置'}</TableCell><TableCell>{entry.updated_by || '未记录'}</TableCell><TableCell>{dateTime(entry.updated_at)}</TableCell><TableCell>{entry.note || '未填写'}</TableCell></TableRow>)}</TableBody>
+      </Table>}
+    {event.device_id && <ConvertFaultToWorkOrder faultId={event.id} deviceId={event.device_id} tenantId={event.tenant_id}/>}
+  </div>
 }

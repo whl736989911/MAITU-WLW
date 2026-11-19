@@ -1,5 +1,7 @@
 package com.fireplatform.notification;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fireplatform.alarmgroup.AlarmSessionNotificationGate;
 import com.fireplatform.transport.AliyunNotificationClient;
 import com.fireplatform.transport.NotificationSpool;
@@ -18,6 +20,7 @@ import org.springframework.stereotype.Service;
 public class RealNotificationService {
     public record Stats(boolean enabled, long sent, long failed, OffsetDateTime cursor) { }
     private static final Logger log = LoggerFactory.getLogger(RealNotificationService.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final JdbcTemplate jdbc;
     private final ContactPhoneStorage phones;
     private final AliyunNotificationClient client;
@@ -55,9 +58,9 @@ public class RealNotificationService {
         List<Map<String, Object>> events = new ArrayList<>(jdbc.queryForList(
                 "SELECT a.id,a.tenant_id,a.device_id,a.device_name,a.address,a.occurred_at,a.source_time_known,a.physical_state,a.response_state,d.model AS device_model,'FIRE' AS event_kind,'ALARM' AS source_kind,a.event_type AS event_code FROM alarms a JOIN devices d ON d.id=a.device_id AND d.tenant_id=a.tenant_id WHERE a.event_type='FIRE' AND a.is_simulated=FALSE AND a.occurred_at>? AND NOT EXISTS(SELECT 1 FROM real_notification_completions c WHERE c.tenant_id=a.tenant_id AND c.source_kind='ALARM' AND c.source_id=a.id) ORDER BY a.occurred_at,a.id LIMIT 20", cursor));
         events.addAll(jdbc.queryForList(
-                "SELECT f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,f.event_code,f.occurred_at,f.source_kind,'FAULT' AS event_kind,NULL AS physical_state,NULL AS response_state FROM ("+
-                "SELECT e.id AS source_id,e.tenant_id,e.device_id,e.business_code AS event_code,e.observed_at AS occurred_at,'LEGACY_FAULT' AS source_kind FROM legacy_ingest_events e JOIN alarm_configuration_outcomes o ON o.tenant_id=e.tenant_id AND o.source_id=e.id AND o.source_kind='LEGACY_FAULT' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE e.kind='FAULT' AND e.observed_at>? "+
-                "UNION ALL SELECT r.id,r.tenant_id,r.device_id,o.event_type,o.occurred_at,'RAW_FAULT' FROM raw_messages r JOIN alarm_configuration_outcomes o ON o.tenant_id=r.tenant_id AND o.source_id=r.id AND o.source_kind='FAULT_MESSAGE' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE r.device_id IS NOT NULL AND o.occurred_at>?) f JOIN devices d ON d.id=f.device_id AND d.tenant_id=f.tenant_id WHERE d.is_simulated=FALSE AND NOT EXISTS(SELECT 1 FROM real_notification_completions c WHERE c.tenant_id=f.tenant_id AND c.source_kind=f.source_kind AND c.source_id=f.source_id) ORDER BY f.occurred_at,f.source_id LIMIT 20",cursor,cursor));
+                "SELECT f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,f.event_code,f.subscription_detail,f.occurred_at,f.source_kind,'FAULT' AS event_kind,NULL AS physical_state,NULL AS response_state FROM ("+
+                "SELECT e.id AS source_id,e.tenant_id,e.device_id,e.business_code AS event_code,CAST(NULL AS VARCHAR) AS subscription_detail,e.observed_at AS occurred_at,'LEGACY_FAULT' AS source_kind FROM legacy_ingest_events e JOIN alarm_configuration_outcomes o ON o.tenant_id=e.tenant_id AND o.source_id=e.id AND o.source_kind='LEGACY_FAULT' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE e.kind='FAULT' AND e.observed_at>? "+
+                "UNION ALL SELECT r.id,r.tenant_id,r.device_id,NULL,o.detail_json,o.occurred_at,'RAW_FAULT' FROM raw_messages r JOIN alarm_configuration_outcomes o ON o.tenant_id=r.tenant_id AND o.source_id=r.id AND o.source_kind='FAULT_MESSAGE' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE r.device_id IS NOT NULL AND o.occurred_at>?) f JOIN devices d ON d.id=f.device_id AND d.tenant_id=f.tenant_id WHERE d.is_simulated=FALSE AND NOT EXISTS(SELECT 1 FROM real_notification_completions c WHERE c.tenant_id=f.tenant_id AND c.source_kind=f.source_kind AND c.source_id=f.source_id) ORDER BY f.occurred_at,f.source_id LIMIT 20",cursor,cursor));
         if (events.isEmpty()) return;
         events.sort(Comparator.comparing((Map<String,Object> e)->(OffsetDateTime)e.get("occurred_at")).thenComparing(e->String.valueOf(e.get("id"))));
         for (Map<String, Object> event : events) {
@@ -112,10 +115,23 @@ public class RealNotificationService {
         if(level<1||intervalSeconds<0)throw new IllegalArgumentException("Invalid notification level schedule");
         return anchor.plusSeconds(Math.multiplyExact((long)level-1,intervalSeconds));
     }
+    private static String sourceEventCode(Map<String,Object> event,String sourceKind) {
+        if(!"RAW_FAULT".equals(sourceKind))return (String)event.get("event_code");
+        if(!(event.get("subscription_detail") instanceof String detail))return null;
+        try {
+            var code=JSON.readTree(detail);
+            if(code==null)return null;
+            var value=code.path("event_code");
+            return value.isTextual()&&!value.textValue().isBlank()?value.textValue():null;
+        } catch(JsonProcessingException invalid){
+            return null;
+        }
+    }
     private boolean sendAlarm(Map<String, Object> alarm,String occurrenceKey,OffsetDateTime cycleStartedAt) {
         boolean initial=occurrenceKey.equals("INITIAL");
         String tenant=String.valueOf(alarm.get("tenant_id")),sourceId=String.valueOf(alarm.get("id")),deviceId=String.valueOf(alarm.get("device_id")),deviceModel=String.valueOf(alarm.get("device_model"));
-        String eventKind=String.valueOf(alarm.get("event_kind")),eventCode=String.valueOf(alarm.get("event_code")),sourceKind=String.valueOf(alarm.get("source_kind"));
+        String eventKind=String.valueOf(alarm.get("event_kind")),sourceKind=String.valueOf(alarm.get("source_kind"));
+        String eventCode=sourceEventCode(alarm,sourceKind);
         boolean fire="FIRE".equals(eventKind);
         var mergeSession=merge!=null&&fire&&"ALARM".equals(sourceKind)?merge.sessionFor(tenant,sourceId):null;
         if(mergeSession!=null) {
@@ -128,40 +144,42 @@ public class RealNotificationService {
             eventCode=String.valueOf(active.get("event_code"));
         }
         String spoolId=fire?sourceId:sourceKind+"__"+sourceId;
+        if(eventCode==null||eventCode.isBlank()) { spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","NOTIFICATION_EVENT_CODE_UNAVAILABLE",null);return true; }
         if(fire&&!"FIRE".equals(alarm.get("physical_state"))) { spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","ALARM_RECOVERED",null);return true; }
         if(suppressions.blocked(tenant,deviceId,fire,sourceId)) { spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","NOTIFICATION_SUPPRESSED",null);return true; }
         if(fire&&"HANDLED".equals(alarm.get("response_state"))) { spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","ALARM_HANDLED",null);return true; }
-        if(!baseConfiguration.subscribed(tenant,eventKind,deviceModel,eventCode)) { spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","NOTIFICATION_SUBSCRIPTION_DISABLED",null);return true; }
+        if(!baseConfiguration.effectiveForDevice(tenant,deviceId,eventKind).subscribed(deviceModel,eventCode)) {
+            spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","NOTIFICATION_SUBSCRIPTION_DISABLED",null);return true;
+        }
         String testPhone=provider.testRecipient();
-        List<Map<String,Object>> contacts=jdbc.queryForList(
-                "SELECT c.id AS contact_id,c.name,c.phone_cipher,c.phone_nonce,c.wechat_binding_id,rr.channel,rr.level,r.id AS rule_id,r.sms_escalation_interval_seconds,r.voice_escalation_interval_seconds,r.wechat_escalation_interval_seconds FROM notification_rules r JOIN notification_rule_receivers rr ON rr.rule_id=r.id JOIN notification_contacts c ON c.id=rr.contact_id AND c.tenant_id=r.tenant_id WHERE r.tenant_id=? AND r.legacy_mode IS NULL AND r.enabled=TRUE AND r.event_scope=? AND c.enabled=TRUE ORDER BY rr.channel,rr.level,c.id",tenant,eventKind);
+        var contacts=NotificationRecipients.resolve(jdbc,tenant,deviceId,eventKind);
+        OffsetDateTime scheduleAnchor=cycleStartedAt!=null?cycleStartedAt:(alarm.get("occurred_at") instanceof OffsetDateTime occurredAt?occurredAt:null);
         Map<String,String> params=paramsFor(alarm,fire,eventCode);
         boolean pending=false;
-        for(Map<String,Object> contact:contacts) {
-            String contactId=String.valueOf(contact.get("contact_id"));
-            if(testPhone!=null&&"WECHAT".equals(String.valueOf(contact.get("channel"))))continue;
-            if(testPhone==null&&"WECHAT".equals(String.valueOf(contact.get("channel")))) {
-                int level=Math.toIntExact(((Number)contact.get("level")).longValue());
-                long intervalSeconds=contact.get("wechat_escalation_interval_seconds") instanceof Number n?n.longValue():0L;
-                OffsetDateTime scheduleAnchor=cycleStartedAt!=null?cycleStartedAt:(alarm.get("occurred_at") instanceof OffsetDateTime occurredAt?occurredAt:null);
-                if(scheduleAnchor!=null&&escalationDueAt(scheduleAnchor,level,intervalSeconds).isAfter(time.now())){pending=true;continue;}
+        for(var contact:contacts) {
+            String contactId=contact.contactId(),channel=contact.channel();
+            if(testPhone!=null&&"WECHAT".equals(channel))continue;
+            if(scheduleAnchor!=null&&scheduleAnchor.plusSeconds(contact.delaySeconds()).isAfter(time.now())){pending=true;continue;}
+            int level=contact.level();
+            if("WECHAT".equals(channel)) {
                 String sendAlarmId=sourceId;
                 Map<String,Object> currentAlarm=alarm;
                 if(mergeSession!=null) {
                     var active=merge.representative(tenant,mergeSession.id());
                     if(active==null) { spool.markDead(occurrenceKey,spoolId,contactId,"WECHAT","ALARM_RECOVERED",null);return true; }
-                    currentAlarm=active; sendAlarmId=String.valueOf(active.get("id"));
+                    if(!sourceId.equals(active.get("id")))return false;
+                    currentAlarm=active;
                 } else if(fire&&"HANDLED".equals(jdbc.queryForObject("SELECT response_state FROM alarms WHERE tenant_id=? AND id=?",String.class,tenant,sourceId))){spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","ALARM_HANDLED",null);return true;}
-                var delivery=baseConfiguration.deliveryPolicy(tenant,eventKind,"WECHAT");
-                if(!baseConfiguration.subscribed(tenant,eventKind,deviceModel,eventCode)){spool.markDead(occurrenceKey,spoolId,contactId,"WECHAT","NOTIFICATION_SUBSCRIPTION_DISABLED",null);continue;}
+                var effective=baseConfiguration.effectiveForDevice(tenant,deviceId,eventKind);
+                var delivery=effective.deliveryPolicy("WECHAT");
+                if(!effective.subscribed(deviceModel,eventCode)){spool.markDead(occurrenceKey,spoolId,contactId,"WECHAT","NOTIFICATION_SUBSCRIPTION_DISABLED",null);continue;}
                 var policy=channelPolicies.effectiveForDevice(tenant,deviceId,"WECHAT");
                 if(suppressions.blocked(tenant,deviceId,fire,sendAlarmId)||!delivery.enabled()||!delivery.receiveAlarm()||!policy.enabled()){spool.markDead(occurrenceKey,spoolId,contactId,"WECHAT","NOTIFICATION_POLICY_DISABLED",null);continue;}
                 if(spool.isDone(occurrenceKey,spoolId,contactId,"WECHAT"))continue;
                 if(spool.isDead(occurrenceKey,spoolId,contactId,"WECHAT"))continue;
                 int nextAttempt=1;String claimId=null;
                 if(mergeSession!=null) {
-                    String ruleKey=contact.get("rule_id")==null?"TEST_OVERRIDE":String.valueOf(contact.get("rule_id"));
-                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,ruleKey,contactId,"WECHAT",level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
+                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,contact.ruleId(),contactId,"WECHAT",level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
                     if(!decision.proceed()) {
                         if("RETRY_EXHAUSTED".equals(decision.reason())) spool.markDead(occurrenceKey,spoolId,contactId,"WECHAT","SESSION_RETRY_EXHAUSTED",null);
                         else spool.markDone(occurrenceKey,spoolId,contactId,"WECHAT","SESSION_"+decision.reason(),null);
@@ -209,35 +227,27 @@ public class RealNotificationService {
             }
             String phone;
             if(testPhone!=null)phone=testPhone;
-            else try { phone=phones.reveal(tenant,String.valueOf(contact.get("phone_cipher")),String.valueOf(contact.get("phone_nonce"))); }
+            else try { phone=phones.reveal(tenant,contact.phoneCipher(),contact.phoneNonce()); }
             catch(RuntimeException error) { spool.markDead(occurrenceKey,spoolId,contactId,"DECRYPT","PHONE_UNAVAILABLE",null);continue; }
-            for(String channel:List.of("SMS","VOICE")) {
-                if(!channel.equals(contact.get("channel")))continue;
-                int level=Math.toIntExact(((Number)contact.get("level")).longValue());
-                String intervalColumn=channel.equals("SMS")?"sms_escalation_interval_seconds":"voice_escalation_interval_seconds";
-                long intervalSeconds=contact.get(intervalColumn) instanceof Number n?n.longValue():0L;
-                OffsetDateTime scheduleAnchor=cycleStartedAt!=null?cycleStartedAt:(alarm.get("occurred_at") instanceof OffsetDateTime occurredAt?occurredAt:null);
-                if(scheduleAnchor!=null&&escalationDueAt(scheduleAnchor,level,intervalSeconds).isAfter(time.now())){pending=true;continue;}
+            if("SMS".equals(channel)||"VOICE".equals(channel)) {
                 if(channel.equals("SMS")?!client.enabled():!client.voiceReady()){String code=channel+"_PROVIDER_NOT_READY";if(attempts.latest(tenant,eventKind,sourceKind,sourceId,contactId,channel,occurrenceKey)==null){var unavailable=attempts.begin(tenant,eventKind,sourceKind,sourceId,deviceId,contactId,channel,occurrenceKey,1,null,null);attempts.finish(unavailable.id(),"RESOURCE_UNAVAILABLE",code,null);}spool.markDead(occurrenceKey,spoolId,contactId,channel,code,null);continue;}
                 String sendAlarmId=sourceId;
                 if(mergeSession!=null) {
                     // Re-resolve immediately before external work: the first member may recover while another stays active.
                     var active=merge.representative(tenant,mergeSession.id());
                     if(active==null) { spool.markDead(occurrenceKey,spoolId,contactId,channel,"ALARM_RECOVERED",null);return true; }
-                    String activeId=String.valueOf(active.get("id"));
-                    if(!activeId.equals(sourceId)) params=paramsFor(active,fire,eventCode);
-                    sendAlarmId=activeId;
+                    if(!sourceId.equals(active.get("id")))return false;
                 } else if(fire&&"HANDLED".equals(jdbc.queryForObject("SELECT response_state FROM alarms WHERE tenant_id=? AND id=?",String.class,tenant,sourceId))){spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","ALARM_HANDLED",null);return true;}
-                var delivery=baseConfiguration.deliveryPolicy(tenant,eventKind,channel);
-                if(!baseConfiguration.subscribed(tenant,eventKind,deviceModel,eventCode)){spool.markDead(occurrenceKey,spoolId,contactId,channel,"NOTIFICATION_SUBSCRIPTION_DISABLED",null);continue;}
+                var effective=baseConfiguration.effectiveForDevice(tenant,deviceId,eventKind);
+                var delivery=effective.deliveryPolicy(channel);
+                if(!effective.subscribed(deviceModel,eventCode)){spool.markDead(occurrenceKey,spoolId,contactId,channel,"NOTIFICATION_SUBSCRIPTION_DISABLED",null);continue;}
                 var policy=channelPolicies.effectiveForDevice(tenant,deviceId,channel);
                 if(suppressions.blocked(tenant,deviceId,fire,sendAlarmId)||!delivery.enabled()||!delivery.receiveAlarm()||("SMS".equals(channel)&&!delivery.pushMessage())||!policy.enabled()){spool.markDead(occurrenceKey,spoolId,contactId,channel,"NOTIFICATION_POLICY_DISABLED",null);continue;}
                 String key=initial?spoolId+"__"+contactId+"__"+channel:spoolId+"__"+occurrenceKey.replace(':','_')+"__"+contactId+"__"+channel;
                 if(spool.isDone(occurrenceKey,spoolId,contactId,channel)||spool.isDead(occurrenceKey,spoolId,contactId,channel))continue;
                 int nextAttempt=1;String claimId=null;
                 if(mergeSession!=null) {
-                    String ruleKey=contact.get("rule_id")==null?"TEST_OVERRIDE":String.valueOf(contact.get("rule_id"));
-                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,ruleKey,contactId,channel,level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
+                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,contact.ruleId(),contactId,channel,level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
                     if(!decision.proceed()) {
                         if("RETRY_EXHAUSTED".equals(decision.reason())) spool.markDead(occurrenceKey,spoolId,contactId,channel,"SESSION_RETRY_EXHAUSTED",null);
                         else spool.markDone(occurrenceKey,spoolId,contactId,channel,"SESSION_"+decision.reason(),null);

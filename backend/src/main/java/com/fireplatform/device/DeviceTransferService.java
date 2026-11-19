@@ -37,7 +37,11 @@ public class DeviceTransferService {
         idem.validateKey(key);
         String fingerprint=idem.fingerprint(List.of(sourceTenant,sourceId,input.expectedRevision(),input.targetTenantId(),input.targetPlaceId(),input.reason()));
         Result replay=idem.replay(actor.user().id(),"device-controlled-transfer",key,fingerprint,Result.class);
-        if(replay!=null) return replay;
+        if(replay!=null) {
+            scopes.requireDevice(actor.user().id(),sourceTenant,sourceId);
+            scopes.requireDevice(actor.user().id(),input.targetTenantId(),replay.target().id());
+            return replay;
+        }
         String targetId=move(actor,sourceTenant,sourceId,input.targetTenantId(),input.targetPlaceId(),input.expectedRevision(),input.reason(),requestId);
         String transferId=jdbc.queryForObject("SELECT id FROM device_transfers WHERE target_device_id=?",String.class,targetId);
         Result result=new Result(devices.device(actor.user().id(),sourceTenant,sourceId,false),
@@ -84,8 +88,9 @@ public class DeviceTransferService {
         if(aliasConflicts>0)throw ApiError.conflict("TRANSFER_ALIAS_CONFLICT","目标单位已有相同类型的厂商标识，须先核实重复映射；整批移交不会覆盖既有映射");
         String id=UUID.randomUUID().toString();
         OffsetDateTime transferredAt=OffsetDateTime.now(clock);
+        String transferReason=reason.trim();
         int archived=jdbc.update("UPDATE devices SET archived_at=?,archived_reason=?,archived_by=?,identity_slot=?,revision=revision+1 WHERE id=? AND tenant_id=? AND revision=? AND archived_at IS NULL",
-            transferredAt,"跨单位移交；目标资产="+id+"；"+reason.trim(),actor.user().id(),"HISTORY:"+sourceId,sourceId,sourceTenant,expectedRevision);
+            transferredAt,transferReason,actor.user().id(),"HISTORY:"+sourceId,sourceId,sourceTenant,expectedRevision);
         if(archived!=1)throw ApiError.conflict("REVISION_CONFLICT","设备已更新或已归档，请刷新");
         jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,place_id,physical_state,is_simulated,product_id,product_version_id,product_name,version_number,revision,integration_state,system_type,device_category,ownership_from) VALUES (?,?,?,?,?,?,?,'UNKNOWN',FALSE,?,?,?,?,0,'PENDING_INTEGRATION',?,?,?)",
             id,targetTenant,source.name(),source.deviceEui(),source.model(),source.address(),targetPlace,source.productId(),source.productVersionId(),source.productName(),source.versionNumber(),source.systemType(),source.deviceCategory(),transferredAt);
@@ -94,7 +99,7 @@ public class DeviceTransferService {
         if(!hikvision.isEmpty())jdbc.update("UPDATE hikvision_discovered_devices SET local_device_id=?,event_history_from=?,revision=revision+1 WHERE local_device_id=?",id,transferredAt,sourceId);
         String transferId=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO device_transfers(id,source_device_id,source_tenant_id,target_device_id,target_tenant_id,actor_id,reason,occurred_at) VALUES (?,?,?,?,?,?,?,?)",
-            transferId,sourceId,sourceTenant,id,targetTenant,actor.user().id(),reason.trim(),transferredAt);
+            transferId,sourceId,sourceTenant,id,targetTenant,actor.user().id(),transferReason,transferredAt);
         var aliases=jdbc.queryForList("SELECT id,kind,alias_value FROM device_aliases WHERE device_id=? AND tenant_id=? ORDER BY id FOR UPDATE",sourceId,sourceTenant);
         for(var alias:aliases) {
             jdbc.update("INSERT INTO device_transfer_alias_history(id,transfer_id,alias_id,kind,alias_value,source_tenant_id,source_device_id,target_tenant_id,target_device_id,occurred_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -103,7 +108,7 @@ public class DeviceTransferService {
         jdbc.update("UPDATE device_aliases SET tenant_id=?,device_id=? WHERE tenant_id=? AND device_id=?",targetTenant,id,sourceTenant,sourceId);
         if(binding.isPresent()) {
             var old=binding.get();
-            sourceBindings.release(old.id(),actor.user().id(),"跨单位移交："+reason.trim(),old.pendingRisk());
+            sourceBindings.release(old.id(),actor.user().id(),transferReason,old.pendingRisk());
             sourceBindings.bind(targetTenant,id,old.driverKey(),old.externalId(),old.serial(),old.accountFingerprint(),actor.user().id());
         }
         audit.record(actor.user().id(),sourceTenant,"DEVICE_TRANSFER_OUT",transferId,"SUCCESS",requestId);
@@ -117,7 +122,10 @@ public class DeviceTransferService {
         idem.validateKey(key);
         String fingerprint=idem.fingerprint(List.of(tenant,deviceId,input.expectedRevision(),input.reason()));
         var replay=idem.replay(actor.user().id(),"device-archive",key,fingerprint,DeviceQueryService.DeviceRow.class);
-        if(replay!=null) return replay;
+        if(replay!=null) {
+            scopes.requireDevice(actor.user().id(),tenant,deviceId);
+            return replay;
+        }
         var device=devices.device(actor.user().id(),tenant,deviceId,true);
         if(device.revision()!=input.expectedRevision()) throw ApiError.conflict("REVISION_CONFLICT","设备已更新，请刷新");
         if(device.isSimulated()) throw ApiError.conflict("SIMULATED_DEVICE_ARCHIVE_FORBIDDEN","模拟设备不能作为真实资产归档");

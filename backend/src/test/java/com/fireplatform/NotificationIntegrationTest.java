@@ -14,7 +14,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,8 +35,12 @@ class NotificationIntegrationTest {
     @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired Bootstrap bootstrap; @Autowired JsonPointerParser parser; @Autowired ContactPhoneStorage phones; @Autowired DatabaseTime time; @Autowired NotificationChannelPolicyService channelPolicies; @Autowired NotificationProviderAttemptService providerAttempts; @Autowired com.fireplatform.configuration.AlarmBaseConfigurationQueries baseConfiguration; @Autowired NotificationProviderService providerService;
     @Autowired NotificationResourceService realResources;
     IngestionIntegrationTest f;
-    @BeforeEach void reset()throws Exception{clear(jdbc);f=new IngestionIntegrationTest();f.mvc=mvc;f.json=json;f.jdbc=jdbc;f.bootstrap=bootstrap;f.parser=parser;f.reset();jdbc.update("INSERT INTO notification_channel_policies(id,tenant_id,scope_type,scope_key,sms_enabled,voice_enabled,revision,changed_at) VALUES ('test-policy-a','tenant-a','UNIT','tenant-a',TRUE,TRUE,1,CURRENT_TIMESTAMP)");}
-    static void clear(JdbcTemplate jdbc){jdbc.update("DELETE FROM notification_provider_attempts");jdbc.update("DELETE FROM notification_resource_ledger");jdbc.update("DELETE FROM notification_resource_accounts");jdbc.update("DELETE FROM real_notification_completions");jdbc.update("DELETE FROM notification_channel_policies");jdbc.update("UPDATE devices SET place_id=NULL WHERE place_id IN ('policy-parent','policy-child')");jdbc.update("DELETE FROM places WHERE id IN ('policy-child','policy-parent')");for(String table:List.of("notification_rule_receivers","notification_rules","notification_templates","notification_contacts"))jdbc.update("DELETE FROM "+table);jdbc.update("UPDATE notification_contact_key_guard SET fingerprint=NULL WHERE id=1");}
+    @BeforeEach void reset()throws Exception{
+        jdbc.update("DELETE FROM alarm_scoped_policies");
+        clear(jdbc);f=new IngestionIntegrationTest();f.mvc=mvc;f.json=json;f.jdbc=jdbc;f.bootstrap=bootstrap;f.parser=parser;f.reset();
+        jdbc.update("INSERT INTO notification_channel_policies(id,tenant_id,scope_type,scope_key,sms_enabled,voice_enabled,revision,changed_at) VALUES ('test-policy-a','tenant-a','UNIT','tenant-a',TRUE,TRUE,1,CURRENT_TIMESTAMP)");
+    }
+    static void clear(JdbcTemplate jdbc){jdbc.update("DELETE FROM notification_provider_attempts");jdbc.update("DELETE FROM notification_resource_ledger");jdbc.update("DELETE FROM notification_resource_accounts");jdbc.update("DELETE FROM real_notification_completions");jdbc.update("DELETE FROM notification_channel_policies");for(String table:List.of("notification_rule_receivers","notification_rules","notification_templates","notification_contacts"))jdbc.update("DELETE FROM "+table);jdbc.update("UPDATE devices SET place_id=NULL WHERE place_id IN ('policy-parent','policy-child')");jdbc.update("DELETE FROM places WHERE id IN ('policy-child','policy-parent')");jdbc.update("UPDATE notification_contact_key_guard SET fingerprint=NULL WHERE id=1");}
     Map<String,Object> contactInput(String name,String phone,boolean enabled){var out=new HashMap<String,Object>();out.put("name",name);out.put("contact_type","FIRE_RESPONSIBLE");out.put("phone",phone);out.put("enabled",enabled);out.put("reason","Explicit contact fixture");return out;}
     ResultActions call(HttpMethod method,String path,String tenant,String key,Object body)throws Exception{return f.call(method,"/api/management"+path,f.root,tenant,key,body);}
     JsonNode contact(String name,String phone)throws Exception{return f.body(call(HttpMethod.POST,"/notification-contacts","tenant-a",UUID.randomUUID().toString(),contactInput(name,phone,true)).andExpect(status().isCreated()));}
@@ -202,6 +206,185 @@ class NotificationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id IN (?,?)",Long.class,fire,fault)).isEqualTo(4L);
         assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
         assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
+    }
+
+    @Test void scopedRecipientRulesShareTheEffectivePreviewAndRealFireDispatch(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client = initialNotificationClient();
+        jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id) VALUES "
+            + "('notify-root','tenant-a','Root',NULL),('notify-leaf','tenant-a','Leaf','notify-root'),"
+            + "('notify-sibling','tenant-a','Sibling','notify-root')");
+        jdbc.update("UPDATE devices SET place_id='notify-leaf' WHERE tenant_id='tenant-a' AND id='device-a'");
+        String unitContact = jdbc.queryForObject("SELECT id FROM notification_contacts WHERE tenant_id='tenant-a'", String.class);
+        String parent = contact("Parent", "13800005381").path("id").asText();
+        String leaf = contact("Leaf", "13800005382").path("id").asText();
+        String unrelated = contact("Unrelated", "13800005383").path("id").asText();
+        scopedSmsRule("PLACE", "notify-root", 0, Map.of(parent, 1));
+        scopedSmsRule("PLACE", "notify-leaf", 0, Map.of(leaf, 1));
+        scopedSmsRule("PLACE", "notify-sibling", 0, Map.of(unrelated, 1));
+        String deviceRule = scopedSmsRule("DEVICE", "device-a", 10, Map.of(parent, 1, unitContact, 2));
+
+        Map<String,JsonNode> sms = new HashMap<>();
+        var preview = f.body(call(HttpMethod.GET, "/notification-rules/effective?deviceId=device-a&eventScope=FIRE",
+            "tenant-a", null, null).andExpect(status().isOk()));
+        preview.path("receivers").forEach(r -> { if ("SMS".equals(r.path("channel").asText())) sms.put(r.path("contact_id").asText(), r); });
+        assertThat(sms.keySet()).containsExactlyInAnyOrder(unitContact, parent, leaf);
+        assertThat(sms.get(unitContact).path("source_scope_type").asText()).isEqualTo("UNIT");
+        assertThat(sms.get(unitContact).path("delay_seconds").asLong()).isZero();
+        assertThat(sms.get(parent).path("source_rule_id").asText()).isEqualTo(deviceRule);
+        assertThat(sms.get(leaf).path("source_scope_id").asText()).isEqualTo("notify-leaf");
+
+        new NotificationSpool(spool.toString()).writeCursor(time.now().minusMinutes(10));
+        String alarm = initialNotificationEvent("FIRE", time.now().minusMinutes(1));
+        var worker = initialNotificationWorker(client, spool);
+        worker.dispatchInitialAlarm("tenant-a", alarm);
+        worker.poll();
+        assertThat(jdbc.queryForList("SELECT contact_id FROM notification_provider_attempts WHERE source_id=? AND channel='SMS' AND status='SENT'", String.class, alarm))
+            .containsExactlyInAnyOrder(unitContact, parent, leaf);
+        assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'", Long.class)).isEqualTo(3L);
+        assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'", Long.class)).isEqualTo(1L);
+    }
+
+    @Test void faultDispatchUsesEvidenceCodesFromBothSourcesAndNeverRequeuesHistoricalExclusions(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        String source=f.sid(f.source("tenant-a",false));
+        var occurred=time.now().minusMinutes(1);
+        String legacy=initialNotificationEvent("FAULT",occurred);
+        String raw=rawFault(source,"raw-subscribed","SUBSCRIBED","{\"event_code\":\"SENSOR_FAULT\"}",occurred);
+        String excluded=rawFault(source,"raw-excluded","EXCLUDED_BY_SUBSCRIPTION","{\"event_code\":\"SENSOR_FAULT\"}",occurred);
+        String missing=rawFault(source,"raw-without-code","SUBSCRIBED","{}",occurred);
+        new NotificationSpool(spool.toString()).writeCursor(occurred.minusSeconds(1));
+        var worker=initialNotificationWorker(client,spool);
+        worker.poll();worker.poll();
+
+        for(String code:List.of("LOW_BATTERY","SENSOR_FAULT")){
+            org.mockito.Mockito.verify(client).sendSms(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.argThat(p->code.equals(p.get("event_code"))),org.mockito.ArgumentMatchers.anyString());
+        }
+        assertThat(jdbc.queryForList("SELECT source_id FROM notification_provider_attempts WHERE tenant_id='tenant-a' AND channel='SMS'",String.class))
+            .containsExactlyInAnyOrder(raw,legacy).doesNotContain(excluded,missing);
+        assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
+    }
+
+    @Test void scopedFaultSubscriptionBlocksOnlyMatchingEvidenceBeforeAttemptAndDebit(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        String source=f.sid(f.source("tenant-a",false));
+        var occurred=time.now().minusMinutes(1);
+        String legacy=initialNotificationEvent("FAULT",occurred);
+        String raw=rawFault(source,"raw-excluded-at-send","SUBSCRIBED","{\"event_code\":\"SENSOR_FAULT\"}",occurred);
+        String fire=initialNotificationEvent("FIRE",occurred);
+        var value=Map.of("subscriptions",Map.of("legacy-model",List.of("SENSOR_FAULT")),"receive_alarm",true,
+            "push_message",true,"push_period_hours",0,"voice_enabled",false,"voice_types",List.of(),
+            "voice_fields",List.of(),"voice_continuous",false,"silence_minutes",0);
+        call(HttpMethod.PUT,"/alarm-base-configuration/FAULT/scopes/DEVICE/device-a?tenant_id=tenant-a",null,UUID.randomUUID().toString(),
+            Map.of("expected_revision",0,"reason","Suppress only the scoped fault code","value",value)).andExpect(status().isOk());
+        new NotificationSpool(spool.toString()).writeCursor(occurred.minusSeconds(1));
+        var worker=initialNotificationWorker(client,spool);
+        worker.poll();worker.poll();
+
+        assertThat(jdbc.queryForList("SELECT source_id FROM notification_provider_attempts WHERE tenant_id='tenant-a' AND channel='SMS'",String.class))
+            .containsExactlyInAnyOrder(fire,legacy).doesNotContain(raw);
+        assertThat(jdbc.queryForList("SELECT source_id FROM notification_provider_attempts WHERE tenant_id='tenant-a' AND channel='VOICE'",String.class))
+            .containsExactlyInAnyOrder(fire,legacy).doesNotContain(raw);
+        assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
+    }
+
+    private String rawFault(String source,String raw,String outcome,String detail,OffsetDateTime at) {
+        byte[] payload={123,125};
+        jdbc.update("INSERT INTO raw_messages(id,tenant_id,source_id,source_name,source_message_id,vendor_device_id,device_id,device_name,device_address,received_at,payload_utf8,payload_bytes,payload_sha256,binding_state,capture_provenance) "
+            +"VALUES (?,'tenant-a',?,'Fixture',?,'vendor-device','device-a','Device','Address',?,?,2,?,'BOUND','AUTHENTICATED_SOURCE')",
+            raw,source,raw,at,payload,com.fireplatform.ingestion.IngestionLimits.sha256(payload));
+        jdbc.update("INSERT INTO alarm_configuration_outcomes(id,tenant_id,raw_message_id,source_kind,source_id,event_type,configuration_revision,outcome_kind,outcome,detail_json,occurred_at) "
+            +"VALUES (?,'tenant-a',?,'FAULT_MESSAGE',?,'FAULT',1,'SUBSCRIPTION',?,?,?)",
+            UUID.randomUUID().toString(),raw,raw,outcome,detail,at);
+        return raw;
+    }
+
+    @Test void managementRuleTargetsReflectUsableScopeNotSidebarOrNotificationPermission() throws Exception {
+        String path = "/api/management/notification-rules/targets";
+        String username = "scoped-notification-operator";
+        String actor = f.body(f.call(HttpMethod.POST,"/api/management/platform-users",f.root,null,"scoped-notify-user",
+            Map.of("username",username,"name",username,"initial_password",INITIAL,
+                "permissions",List.of("notification-config:read","notification-config:write"),"tenant_ids",List.of("tenant-a")))
+            .andExpect(status().isOk())).path("id").asText();
+        String initial = f.login(username,INITIAL,"management");
+        f.call(HttpMethod.POST,"/api/auth/change-password",initial,null,null,Map.of("current_password",INITIAL,"new_password",PASSWORD))
+            .andExpect(status().isNoContent());
+        String token = f.login(username,PASSWORD,"management");
+        f.call(HttpMethod.GET,path,token,"tenant-b",null,null).andExpect(status().isForbidden());
+        f.call(HttpMethod.GET,path,token,"tenant-a",null,null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.access").value("NONE")).andExpect(jsonPath("$.items").isEmpty());
+
+        jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,integration_state) VALUES "
+            + "('hidden-notify-device','tenant-a','Hidden device','hidden-notify-eui','model','hidden address','NORMAL','LEGACY_UNVERIFIED'),"
+            + "('archived-notify-device','tenant-a','Archived device','archived-notify-eui','model','archived address','NORMAL','LEGACY_UNVERIFIED')");
+        jdbc.update("UPDATE devices SET archived_at=CURRENT_TIMESTAMP,archived_reason='Fixture archive',archived_by='bootstrap-admin',"
+            + "identity_slot='HISTORY:archived-notify-device' WHERE id='archived-notify-device'");
+        jdbc.update("INSERT INTO user_device_scopes(user_id,tenant_id,mode,revision) VALUES (?,'tenant-a','DEVICE_SET',1)",actor);
+        jdbc.update("INSERT INTO user_device_scope_devices(user_id,tenant_id,device_id) VALUES "
+            + "(?,'tenant-a','device-a'),(?,'tenant-a','archived-notify-device')",actor,actor);
+        var limited = f.body(f.call(HttpMethod.GET,path+"?scope_selected=true&scope_tenant_ids=",token,"tenant-a",null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.tenant_id").value("tenant-a"))
+            .andExpect(jsonPath("$.access").value("DEVICE_ONLY")).andExpect(jsonPath("$.total").value(1)));
+        assertThat(limited.path("items").findValuesAsText("id")).containsExactly("device-a");
+        assertThat(limited.path("items").get(0)).isEqualTo(json.createObjectNode().put("id","device-a").put("name","园区A烟感01"));
+        f.call(HttpMethod.GET,path+"?targetId=hidden-notify-device",token,"tenant-a",null,null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.access").value("DEVICE_ONLY")).andExpect(jsonPath("$.items").isEmpty());
+        f.call(HttpMethod.GET,path+"?scopeType=PLACE",token,"tenant-a",null,null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items").isEmpty());
+        f.call(HttpMethod.GET,"/api/management/notification-rules/effective?deviceId=device-a&eventScope=FAULT",token,"tenant-a",null,null)
+            .andExpect(status().isOk());
+        f.call(HttpMethod.GET,"/api/management/notification-rules/effective?deviceId=hidden-notify-device&eventScope=FAULT",token,"tenant-a",null,null)
+            .andExpect(status().isNotFound());
+
+        String receiver = contact("Scoped recipient","13800005375").path("id").asText();
+        var input = ruleInput("Scoped draft",List.of(Map.of("channel","SMS","contact_id",receiver,"level",1),
+            Map.of("channel","VOICE","contact_id",receiver,"level",1)),0,0);
+        input.put("enabled",false);
+        input.put("scope_type","UNIT"); input.put("scope_id","tenant-a");
+        f.call(HttpMethod.POST,"/api/management/notification-rules",token,"tenant-a","deny-unit-notify",input).andExpect(status().isForbidden());
+        input.put("scope_type","PLACE"); input.put("scope_id",f.placeId);
+        f.call(HttpMethod.POST,"/api/management/notification-rules",token,"tenant-a","deny-place-notify",input).andExpect(status().isForbidden());
+        input.put("scope_type","DEVICE"); input.put("scope_id","device-a");
+        f.call(HttpMethod.POST,"/api/management/notification-rules",token,"tenant-a","allow-device-notify",input).andExpect(status().isCreated());
+
+        jdbc.update("UPDATE devices SET place_id=? WHERE id='device-a'",f.placeId);
+        jdbc.update("UPDATE user_device_scopes SET mode='PLACE_SUBTREE',revision=2 WHERE user_id=? AND tenant_id='tenant-a'",actor);
+        jdbc.update("DELETE FROM user_device_scope_devices WHERE user_id=?",actor);
+        jdbc.update("INSERT INTO user_device_scope_places(user_id,tenant_id,place_id) VALUES (?,'tenant-a',?)",actor,f.placeId);
+        f.call(HttpMethod.GET,path,token,"tenant-a",null,null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.access").value("DEVICE_ONLY")).andExpect(jsonPath("$.items[0].id").value("device-a"));
+        jdbc.update("UPDATE devices SET place_id=NULL WHERE id='device-a'");
+        f.call(HttpMethod.GET,path,token,"tenant-a",null,null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.access").value("NONE")).andExpect(jsonPath("$.items").isEmpty());
+
+        f.call(HttpMethod.GET,path+"?scopeType=PLACE&targetId="+f.placeId,f.root,"tenant-a",null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.access").value("ALL"))
+            .andExpect(jsonPath("$.items[0].id").value(f.placeId));
+    }
+
+    @Test void scopedRuleRejectsForeignDeviceAndCannotRetargetAnExistingRule() throws Exception {
+        String recipient = contact("Scoped receiver", "13800005385").path("id").asText();
+        String id = scopedSmsRule("DEVICE", "device-a", 0, Map.of(recipient, 1));
+        var input = ruleInput("Wrong tenant", List.of(Map.of("channel","SMS","contact_id",recipient,"level",1)), 0, 0);
+        input.put("scope_type", "DEVICE"); input.put("scope_id", "device-b");
+        call(HttpMethod.POST, "/notification-rules", "tenant-a", UUID.randomUUID().toString(), input).andExpect(status().isNotFound());
+        input.put("scope_type", "UNIT"); input.put("scope_id", "tenant-a"); input.put("expected_revision", 0);
+        call(HttpMethod.PUT, "/notification-rules/"+id, "tenant-a", UUID.randomUUID().toString(), input).andExpect(status().isBadRequest());
+        call(HttpMethod.GET, "/notification-rules/"+id, "tenant-a", null, null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.scope_id").value("device-a")).andExpect(jsonPath("$.revision").value(0));
+    }
+
+    private String scopedSmsRule(String scopeType, String scopeId, int interval, Map<String,Integer> levels) throws Exception {
+        var receivers = levels.entrySet().stream()
+            .map(r -> Map.<String,Object>of("channel","SMS","contact_id",r.getKey(),"level",r.getValue())).toList();
+        var input = ruleInput(scopeId + " Fire recipients", receivers, interval, 0);
+        input.put("scope_type", scopeType); input.put("scope_id", scopeId);
+        return f.body(call(HttpMethod.POST, "/notification-rules", "tenant-a", UUID.randomUUID().toString(), input)
+            .andExpect(status().isCreated())).path("id").asText();
     }
     @Test void missingChannelResourcesProduceNoProviderCallNoLedgerEntryAndNoRepeatScan(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();

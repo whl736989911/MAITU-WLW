@@ -96,8 +96,8 @@ function parentOptions(places: PlaceNode[], exceptId?: string) {
 
 function PlaceMetadataEditor({ editor, places, close, saved }: { editor: Exclude<Editor, null | { mode: 'move' }>; places: PlaceNode[]; close: () => void; saved: (message: string) => void }) {
   const place = editor.mode === 'create' ? null : editor.place
-  const [name, setName] = useState(place?.name ?? ''), [parentId, setParentId] = useState(place?.parent_id ?? '')
-  const options = parentOptions(places, place?.id)
+  const [name, setName] = useState(place?.name ?? ''), [parentId, setParentId] = useState('')
+  const options = editor.mode === 'create' ? parentOptions(places) : []
   if (editor.mode === 'delete') return <><SheetHeader className="review-header"><SheetTitle>删除位置 · 影响预览</SheetTitle></SheetHeader><div className="review-body">
     <Descriptions column={1} size="small" items={[
       { key: 'path', label: '完整路径', children: placePath(editor.place, places) },
@@ -109,19 +109,18 @@ function PlaceMetadataEditor({ editor, places, close, saved }: { editor: Exclude
     <CustomerWriteGate store={customerPlaceDeleteMutation} title="确认删除空位置" submitLabel="确认删除" warning="删除只影响当前空位置；不会删除设备、报警、历史或云端资源。" summary={<><p>{placePath(editor.place, places)}</p><p>expected_revision：{editor.place.revision}</p></>} buildRequest={() => ({ path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'DELETE', body: { expected_revision: editor.place.revision }, display: `删除空位置 ${placePath(editor.place, places)}` })} onSaved={() => saved('位置已归档；设备与历史未改变。')}><div/></CustomerWriteGate>
     <Button type="button" variant="ghost" onClick={close}>取消</Button>
   </div></>
-  return <><SheetHeader className="review-header"><SheetTitle>{editor.mode === 'create' ? '新建本单位位置' : '编辑本单位位置'}</SheetTitle></SheetHeader><div className="review-body">
+  return <><SheetHeader className="review-header"><SheetTitle>{editor.mode === 'create' ? '新建本单位位置' : '修改位置名称'}</SheetTitle></SheetHeader><div className="review-body">
     {editor.mode === 'create' ? <CustomerWriteGate store={customerPlaceCreateMutation} title="新建位置" submitLabel="确认新建" warning="位置创建只写入本单位真实位置树；不会自动创建或移动设备。" summary={<><p>名称：{name.trim() || '未填写'}</p><p>上级：{parentId ? options.find(item => item.id === parentId)?.label : '顶级位置'}</p></>} buildRequest={() => {
       if (!name.trim()) throw new Error('请填写位置名称')
       return { path: '/places', method: 'POST', body: { name: name.trim(), parent_place_id: parentId || null }, display: `新建位置 ${name.trim()}` }
     }} onSaved={() => saved('位置已新建；可在设备或位置设置中继续使用。')}>
       <div className="field"><Label htmlFor="customer-place-name">位置名称</Label><Input id="customer-place-name" required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></div>
       <div className="field"><Label htmlFor="customer-place-parent">上级位置</Label><select id="customer-place-parent" className="native-select" value={parentId} onChange={event => setParentId(event.target.value)}><option value="">顶级位置</option>{options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select><p className="muted-note">按完整路径选择，不需要输入位置ID。</p></div>
-    </CustomerWriteGate> : <CustomerWriteGate store={customerPlaceUpdateMutation} title="编辑位置" submitLabel="确认保存" warning="只修改名称和上级关系；本位置下的设备与历史不会被删除或改写。" summary={<><p>当前：{placePath(editor.place, places)}</p><p>名称：{name.trim() || '未填写'} · 上级：{parentId ? options.find(item => item.id === parentId)?.label : '顶级位置'}</p><p>expected_revision：{editor.place.revision}</p></>} buildRequest={() => {
+    </CustomerWriteGate> : <CustomerWriteGate store={customerPlaceUpdateMutation} title="位置名称" submitLabel="保存名称" warning="保存名称不改变上级位置。要更改上级，请使用「移动整枝」。" summary={<p>当前位置：{placePath(editor.place, places)}</p>} buildRequest={() => {
       if (!name.trim()) throw new Error('请填写位置名称')
-      return { path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'PUT', body: { name: name.trim(), parent_place_id: parentId || null, expected_revision: editor.place.revision }, display: `编辑位置 ${editor.place.name}` }
-    }} onSaved={() => saved('位置已保存；服务端 revision 已更新。')}>
+      return { path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'PUT', body: { name: name.trim(), parent_place_id: editor.place.parent_id, expected_revision: editor.place.revision }, display: `修改位置名称 ${editor.place.name}` }
+    }} onSaved={() => saved('位置名称已保存，上级位置未改变。')} disabled={!name.trim() || name.trim() === editor.place.name}>
       <div className="field"><Label htmlFor="customer-place-edit-name">位置名称</Label><Input id="customer-place-edit-name" required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></div>
-      <div className="field"><Label htmlFor="customer-place-edit-parent">上级位置</Label><select id="customer-place-edit-parent" className="native-select" value={parentId} onChange={event => setParentId(event.target.value)}><option value="">顶级位置</option>{options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
     </CustomerWriteGate>}
     <Button type="button" variant="ghost" onClick={close}>取消</Button>
   </div></>

@@ -1,8 +1,9 @@
 # P9a1：管理端SIM可插拔卡手工台账
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
 ## 状态
 
-**Frozen v1（2026-10-28）：Root已收BE/FE只读可实施性复核，日期/nullable/双权限/DTO/unknown与scope gate已统一。允许按独立写scope与任务依赖实现，不是代码/测试/运行通过。**用户要求继续开发；按[路线图](<roadmap.md>)及[一期SIM约束](<../../开发方案/详细设计/16-范围校准与实施门禁.md>)推进。平台迁移已在Ubuntu有限完成，当前旧基线为9704/857/40；[写前观察](<../artifacts/p9a1-before/manifest.json>)597源/方案文件与4原包SHA不回写。
+**Frozen v1（2026-10-28）：Root已收BE/FE只读可实施性复核，日期/nullable/双权限/DTO/unknown与scope gate已统一。允许按独立写scope与任务依赖实现，不是代码/测试/运行通过。**用户要求继续开发；按[路线图](<roadmap.md>)及一期SIM约束推进。平台迁移已在Ubuntu有限完成，当前旧基线为9704/857/40；写前观察597源/方案文件与4原包SHA不回写。
 
 ## 1. 首片边界
 
@@ -55,7 +56,7 @@
 ## 6. 旧测耦合：先RED再最窄派生
 
 - BE只读确认：DeviceGroupMigrationTest的latest helper无target且exact46；当前DeviceGroupIntegrationTest也exact46。Root原device-groups-smoke有all46/other42表数及报告常量，audit-records-smoke亦exact46全public表。新增两表不能同时保latest版本与这些历史数字。
-- 有效V14且旧原byte测试必须先真实RED，保日志/XML；不能用编译/DDL错误冒此反例。**Root已实际收齐此前置**：[原始反例证据](<../artifacts/p9a1-v14-original-red/proof.json>)：新Ubuntu根只加94A7…V14，351旧backend路径前后byte一致、迁移成功；原37测试中3个46/48断言失败、0error/skip、真实Maven退出1，未冒通过。随后仅历史迁移专测helper显式target13，保其46语义；新SIM迁移独立覆盖V13→14/latest/重复与旧事实/权限增量不变。
+- 有效V14且旧原byte测试必须先真实RED，保日志/XML；不能用编译/DDL错误冒此反例。**Root已实际收齐此前置**：原始反例证据：新Ubuntu根只加94A7…V14，351旧backend路径前后byte一致、迁移成功；原37测试中3个46/48断言失败、0error/skip、真实Maven退出1，未冒通过。随后仅历史迁移专测helper显式target13，保其46语义；新SIM迁移独立覆盖V13→14/latest/重复与旧事实/权限增量不变。
 - 当前latest integration/native全schema检查仅允许46→48、other42→44等**精确两新增表派生**的预期/报告适配；不改成>=、过滤新表、弱化全表hash、删断言/跳case。所有其它旧业务/权限/CAS/幂等断言原byte保留，不回写9704/857/40历史。
 
 ## 7. 实施与出口

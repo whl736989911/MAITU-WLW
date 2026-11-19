@@ -5,7 +5,8 @@ import com.fireplatform.shared.ApiError;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,7 +38,7 @@ public class LegacyMirrorIngestController {
         String original = originalUri(request, "/api/ingest/ttl", "/ingest/ttl");
         Matcher matcher = TTL_PATH.matcher(original);
         String platform = matcher.find() ? matcher.group(1) : null;
-        return accepted(intake.accept("HTTP_NOTIFY", original, platform, null, requireBody(body), headers(request)));
+        return accepted(intake.accept("HTTP_NOTIFY", platform, null, requireBody(body), request.getContentType()));
     }
 
     @PostMapping({"/ingest/cat1", "/ingest/cat1/**", "/api/ingest/cat1", "/api/ingest/cat1/**"})
@@ -47,7 +48,7 @@ public class LegacyMirrorIngestController {
         String original = originalUri(request, "/api/ingest/cat1", "/ingest/cat1");
         Matcher matcher = CAT1_PATH.matcher(original);
         String messageType = matcher.find() ? matcher.group(1) : null;
-        return accepted(intake.accept("HTTP_FORM_TTL", original, "formttl", messageType, requireBody(body), headers(request)));
+        return accepted(intake.accept("HTTP_FORM_TTL", "formttl", messageType, requireBody(body), request.getContentType()));
     }
 
     private ResponseEntity<Map<String, Object>> accepted(LegacyMirrorIntakeService.Accepted accepted) {
@@ -86,11 +87,5 @@ public class LegacyMirrorIngestController {
         if (raw.startsWith(apiPrefix)) return raw.substring(apiPrefix.length());
         if (raw.startsWith(plainPrefix)) return raw.substring(plainPrefix.length());
         return raw;
-    }
-
-    private static Map<String, String> headers(HttpServletRequest request) {
-        Map<String, String> headers = new LinkedHashMap<>();
-        for (String name : Collections.list(request.getHeaderNames())) headers.put(name, request.getHeader(name));
-        return headers;
     }
 }

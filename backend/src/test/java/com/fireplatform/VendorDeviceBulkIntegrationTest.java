@@ -15,7 +15,7 @@ import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -237,8 +237,13 @@ class VendorDeviceBulkIntegrationTest {
         importRow.put("address",grid.get(4).asText());
         fixture.call(HttpMethod.POST,BASE,fixture.root,"tenant-b","wrong-unit-guided-xlsx",payload("LEGACY_REALTIME",List.of(importRow)))
             .andExpect(status().isBadRequest());
-        call("guided-xlsx-confirm",payload("LEGACY_REALTIME",List.of(importRow))).andExpect(status().isOk());
+        var confirmed=fixture.body(call("guided-xlsx-confirm",payload("LEGACY_REALTIME",List.of(importRow))).andExpect(status().isOk()));
         assertThat(jdbc.queryForObject("SELECT address FROM devices WHERE device_eui=? AND place_id=? AND product_version_id=?",String.class,serial,fixture.placeId,profile)).isEqualTo("Entrance ceiling");
+        var replay=fixture.body(call("guided-xlsx-confirm",payload("LEGACY_REALTIME",List.of(importRow))).andExpect(status().isOk()));
+        String confirmedId=confirmed.at("/items/0/id").asText();
+        assertThat(replay.at("/items/0/id").asText()).isEqualTo(confirmedId);
+        assertThat(jdbc.queryForList("SELECT id FROM devices WHERE device_eui=?",String.class,serial)).containsExactly(confirmedId);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_place_history WHERE device_id=?",Long.class,confirmedId)).isEqualTo(1);
 
         jdbc.update("UPDATE places SET name='Renamed after template download' WHERE id=?",fixture.placeId);
         jdbc.update("INSERT INTO places(id,tenant_id,name) VALUES ('replacement-place','tenant-a',?)",selectedPlace);
@@ -269,8 +274,14 @@ class VendorDeviceBulkIntegrationTest {
         assertThat(row.path("place_id").asText()).isEqualTo(fixture.placeId);
         assertThat(row.path("legacy_profile_id").asText()).isEqualTo(profile);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE device_eui=?",Long.class,serial)).isZero();
-        call("original-xls",Map.of("source","LEGACY_REALTIME","rows",List.of(row))).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT place_id FROM devices WHERE device_eui=?",String.class,serial)).isEqualTo(fixture.placeId);
+        var input=Map.of("source","LEGACY_REALTIME","rows",List.of(row));
+        var confirmed=fixture.body(call("original-xls",input).andExpect(status().isOk()));
+        var replay=fixture.body(call("original-xls",input).andExpect(status().isOk()));
+        String deviceId=confirmed.at("/items/0/id").asText();
+        assertThat(replay.at("/items/0/id").asText()).isEqualTo(deviceId);
+        assertThat(jdbc.queryForList("SELECT id FROM devices WHERE device_eui=? AND place_id=?",String.class,serial,fixture.placeId))
+            .containsExactly(deviceId);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_place_history WHERE device_id=?",Long.class,deviceId)).isEqualTo(1);
     }
 
     @Test void originalXlsRejectsNumericIdsAndAmbiguousOrOutsidePositions() throws Exception {

@@ -26,7 +26,7 @@ import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -74,6 +74,11 @@ class AliyunAmbiguousRefundRetryRegressionTest {
         notifications.realResources = resources;
         notifications.reset();
         notifications.initialNotificationFixtures();
+        jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id) VALUES "
+            + "('notify-root','tenant-a','Root',NULL),('notify-leaf','tenant-a','Leaf','notify-root')");
+        jdbc.update("UPDATE devices SET place_id='notify-leaf' WHERE id='device-a' AND tenant_id='tenant-a'");
+        jdbc.update("INSERT INTO notification_resource_accounts(id,tenant_id,owner_type,owner_id,owner_name,sms_total) "
+            + "VALUES ('notify-root-account','tenant-a','PLACE','notify-root','Root',1)");
         String alarm = notifications.initialNotificationEvent("FIRE", time.now().minusMinutes(1));
 
         AtomicInteger smsSubmissions = new AtomicInteger();
@@ -101,11 +106,12 @@ class AliyunAmbiguousRefundRetryRegressionTest {
             NotificationIntegrationTest.notificationRuntime());
 
         worker.dispatchInitialAlarm("tenant-a", alarm);
+        worker.poll();
 
-        long smsUsed = jdbc.queryForObject(
-            "SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'", Long.class);
-        long voiceUsed = jdbc.queryForObject(
-            "SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'", Long.class);
+        var smsAccount = jdbc.queryForMap(
+            "SELECT sms_used,voice_used FROM notification_resource_accounts WHERE id='notify-root-account'");
+        var unitAccount = jdbc.queryForMap(
+            "SELECT sms_used,voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a' AND owner_type='ORGANIZATION'");
         long consumes = jdbc.queryForObject(
             "SELECT COUNT(*) FROM notification_resource_ledger WHERE tenant_id='tenant-a' AND kind='CONSUME'", Long.class);
         long refunds = jdbc.queryForObject(
@@ -114,8 +120,13 @@ class AliyunAmbiguousRefundRetryRegressionTest {
         SoftAssertions soft = new SoftAssertions();
         soft.assertThat(smsSubmissions.get()).as("SMS submissions for one ambiguous event").isEqualTo(1);
         soft.assertThat(voiceSubmissions.get()).as("VOICE submissions for one ambiguous event").isEqualTo(1);
-        soft.assertThat(smsUsed).as("reservation retained for an ambiguous SMS").isEqualTo(1L);
-        soft.assertThat(voiceUsed).as("reservation retained for an ambiguous VOICE").isEqualTo(1L);
+        soft.assertThat(smsAccount).as("only SMS was debited from the funded ancestor")
+            .containsEntry("sms_used", 1L).containsEntry("voice_used", 0L);
+        soft.assertThat(unitAccount).as("only voice fell back to the unit")
+            .containsEntry("sms_used", 0L).containsEntry("voice_used", 1L);
+        soft.assertThat(jdbc.queryForList(
+            "SELECT status FROM notification_provider_attempts WHERE tenant_id='tenant-a' AND source_id=?", String.class, alarm))
+            .containsExactly("UNKNOWN", "UNKNOWN");
         soft.assertThat(consumes).as("one retained CONSUME per channel").isEqualTo(2L);
         soft.assertThat(refunds).as("ambiguous submissions must never be refunded").isZero();
         soft.assertAll();

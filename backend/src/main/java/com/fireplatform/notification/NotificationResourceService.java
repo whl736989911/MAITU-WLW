@@ -185,16 +185,27 @@ public class NotificationResourceService {
         return order(tenant,id);
     }
 
-    /** Commit the per-submission debit before external I/O, independent of a reminder batch. */
+    /** Commit the per-submission debit before external I/O, independent of a reminder batch.
+     *  Debited from the nearest funded account: the device's place, then each ancestor, then the unit. */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Reservation reserve(String tenant,String deviceId,String channel) {
-        String placeId=null;
-        var place=jdbc.queryForList("SELECT place_id FROM devices WHERE id=? AND tenant_id=?",String.class,deviceId,tenant);
-        if(!place.isEmpty()) placeId=place.getFirst();
+        List<String> chain=placeChain(tenant,deviceId);
         var args=new ArrayList<Object>(); args.add(tenant);
-        String where="tenant_id=? AND enabled=TRUE AND ((owner_type='PLACE' AND owner_id=?) OR owner_type='ORGANIZATION')";
-        args.add(placeId==null?"":placeId);
-        var rows=jdbc.query("SELECT * FROM notification_resource_accounts WHERE "+where+" ORDER BY CASE WHEN owner_type='PLACE' THEN 0 ELSE 1 END,id FOR UPDATE",(rs,n)->account(rs),args.toArray());
+        StringBuilder where=new StringBuilder("tenant_id=? AND enabled=TRUE AND (owner_type='ORGANIZATION'");
+        if(!chain.isEmpty()) {
+            where.append(" OR (owner_type='PLACE' AND owner_id IN (");
+            for(int i=0;i<chain.size();i++){ if(i>0)where.append(','); where.append('?'); args.add(chain.get(i)); }
+            where.append("))");
+        }
+        where.append(')');
+        StringBuilder order=new StringBuilder("ORDER BY ");
+        if(chain.isEmpty()) { order.append("id"); }
+        else {
+            order.append("CASE ");
+            for(int i=0;i<chain.size();i++){ order.append("WHEN owner_type='PLACE' AND owner_id=? THEN ").append(i).append(' '); args.add(chain.get(i)); }
+            order.append("ELSE ").append(chain.size()).append(" END,id");
+        }
+        var rows=jdbc.query("SELECT * FROM notification_resource_accounts WHERE "+where+" "+order+" FOR UPDATE",(rs,n)->account(rs),args.toArray());
         Account account=null; long remaining=0;
         for(var candidate:rows) { long available=channel.equals("SMS")?candidate.smsRemaining():candidate.voiceRemaining(); if(available>0) { account=candidate; remaining=available; break; } }
         if(account==null) throw ApiError.conflict("NOTIFICATION_RESOURCE_UNAVAILABLE",rows.isEmpty()?"没有可用的通知资源账户":"通知资源不足");
@@ -202,6 +213,13 @@ public class NotificationResourceService {
         long balance=remaining-1;
         jdbc.update("INSERT INTO notification_resource_ledger(id,account_id,tenant_id,channel,kind,quantity,balance_after,source,reference,operator,created_at) VALUES (?,?,?,?,'CONSUME',1,?,'SYSTEM',?,?,CURRENT_TIMESTAMP)",UUID.randomUUID().toString(),account.id(),tenant,channel,balance,deviceId,"provider");
         return new Reservation(account.id(),channel,tenant);
+    }
+
+    private List<String> placeChain(String tenant,String deviceId) {
+        var place=jdbc.queryForList("SELECT place_id FROM devices WHERE id=? AND tenant_id=? AND archived_at IS NULL",
+            String.class,deviceId,tenant);
+        if(place.isEmpty())throw ApiError.conflict("NOTIFICATION_RESOURCE_UNAVAILABLE","通知设备不属于当前有效单位范围");
+        return NotificationRecipients.places(jdbc,tenant,place.getFirst());
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

@@ -13,6 +13,7 @@ import org.flywaydb.core.api.MigrationVersion;
 import org.flywaydb.core.api.output.MigrateResult;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -22,6 +23,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Blob;
@@ -116,28 +118,41 @@ public final class H2PostgresCutover {
 
         quietLogging();
         Secrets secrets = null;
+        Path sourceFile = null;
+        boolean safeToWriteManifest = false;
+        int exitCode = 0;
         Report report = new Report(options);
         try {
             secrets = Secrets.load();
-            validateSourceUrl(secrets.sourceUrl());
+            sourceFile = validateSourceUrl(secrets.sourceUrl());
+            verifyManifestDestination(sourceFile, options.manifestOut());
+            safeToWriteManifest = true;
             validateTargetUrl(secrets.targetUrl());
-            new CutoverRun(options, secrets, report).run();
-            return 0;
-        } catch (Throwable failure) {
-            String masked = mask(failure, secrets);
+            new CutoverRun(options, secrets, report, sourceFile).run();
+        } catch (Exception failure) {
+            String masked = mask(failure, secrets, sourceFile);
             report.fail(failure, masked);
-            try {
-                report.write(options.manifestOut());
-                System.err.println("H2PostgresCutover: FAILED: " + masked);
-                System.err.println("H2PostgresCutover: private failure manifest written to "
-                        + options.manifestOut());
-            } catch (Throwable manifestFailure) {
-                System.err.println("H2PostgresCutover: FAILED: " + masked);
-                System.err.println("H2PostgresCutover: failure manifest could not be written: "
-                        + mask(manifestFailure, secrets));
-            }
-            return failure instanceof UsageException ? 2 : 1;
+            System.err.println("H2PostgresCutover: FAILED (target commit="
+                    + report.commitOutcome + "): " + masked);
+            exitCode = failure instanceof UsageException ? 2 : 1;
         }
+        if (safeToWriteManifest) {
+            try {
+                // Recheck so a destination alias created during cutover is not replaced.
+                verifyManifestDestination(sourceFile, options.manifestOut());
+                report.write(options.manifestOut());
+            } catch (Exception failure) {
+                System.err.println("H2PostgresCutover: manifest could not be written (target commit="
+                        + report.commitOutcome + "): " + mask(failure, secrets, sourceFile));
+                return 1;
+            }
+            if (exitCode == 0) {
+                System.out.println(options.execute() ? "H2PostgresCutover: migration committed"
+                        : "H2PostgresCutover: dry-run plan OK");
+            }
+            System.out.println("H2PostgresCutover: private manifest " + options.manifestOut());
+        }
+        return exitCode;
     }
 
     /* --------------------------------------------------------------------- */
@@ -269,7 +284,7 @@ public final class H2PostgresCutover {
         }
     }
 
-    private static void validateSourceUrl(String url) {
+    private static Path validateSourceUrl(String url) throws IOException {
         if (url == null || !url.startsWith(SOURCE_FILE_PREFIX)) {
             throw new UsageException(ENV_SOURCE_URL + " must be an existing local "
                     + SOURCE_FILE_PREFIX + " URL");
@@ -288,9 +303,7 @@ public final class H2PostgresCutover {
         requireH2Setting(settings, "ACCESS_MODE_DATA", "r");
         requireH2Setting(settings, "LAZY_QUERY_EXECUTION", "TRUE");
 
-        String rest = url.substring(SOURCE_FILE_PREFIX.length());
-        int separator = rest.indexOf(';');
-        String file = separator < 0 ? rest : rest.substring(0, separator);
+        String file = sourceLocator(url);
         if (file.isBlank()) {
             throw new UsageException(ENV_SOURCE_URL + " does not name an H2 database file");
         }
@@ -310,12 +323,25 @@ public final class H2PostgresCutover {
             base = path;
         }
         if (!Files.isRegularFile(dataFile) || !Files.isReadable(dataFile)) {
-            throw new UsageException("source H2 database file is missing or unreadable: " + dataFile);
+            throw new UsageException("source H2 database file is missing or unreadable");
         }
         Path lock = Paths.get(base.toString() + ".lock.db");
         if (Files.exists(lock)) {
-            throw new UsageException("source H2 database appears to be open (lock file exists): "
-                    + lock + "; stop H2 cleanly and retry");
+            throw new UsageException("source H2 database appears to be open (lock file exists); "
+                    + "stop H2 cleanly and retry");
+        }
+        return dataFile.toAbsolutePath();
+    }
+
+    private static String sourceLocator(String url) {
+        int separator = url.indexOf(';', SOURCE_FILE_PREFIX.length());
+        return url.substring(SOURCE_FILE_PREFIX.length(), separator < 0 ? url.length() : separator);
+    }
+
+    private static void verifyManifestDestination(Path sourceFile, Path manifest) throws IOException {
+        if (sourceFile.equals(manifest)
+                || (!Files.notExists(manifest) && Files.isSameFile(sourceFile, manifest))) {
+            throw new UsageException("manifest must not refer to the H2 source");
         }
     }
 
@@ -392,7 +418,7 @@ public final class H2PostgresCutover {
         }
     }
 
-    private static String mask(Throwable failure, Secrets secrets) {
+    private static String mask(Throwable failure, Secrets secrets, Path sourceFile) {
         if (failure == null) {
             return "unknown failure";
         }
@@ -404,6 +430,20 @@ public final class H2PostgresCutover {
             String detail = failure.getMessage();
             if (detail != null && !detail.isBlank()) {
                 message += ": " + detail;
+            }
+        }
+        if (secrets != null && secrets.sourceUrl().startsWith(SOURCE_FILE_PREFIX)) {
+            String locator = sourceLocator(secrets.sourceUrl());
+            if (!locator.isBlank()) {
+                message = message.replace(secrets.sourceUrl(), "[H2 source]");
+                if (sourceFile != null) {
+                    String path = sourceFile.toString();
+                    message = message.replace(path, "[H2 source]");
+                    if (path.endsWith(".mv.db")) {
+                        message = message.replace(path.substring(0, path.length() - ".mv.db".length()), "[H2 source]");
+                    }
+                }
+                message = message.replace(locator, "[H2 source]");
             }
         }
         return scrub(message, secrets);
@@ -427,6 +467,8 @@ public final class H2PostgresCutover {
         return value == null || value.isBlank() ? "?" : value;
     }
 
+    private enum CommitOutcome { NOT_ATTEMPTED, UNKNOWN, COMMITTED }
+
     private static final class Report {
         private final ObjectNode root = MANIFEST_JSON.createObjectNode();
         private final ObjectNode source;
@@ -436,7 +478,7 @@ public final class H2PostgresCutover {
         private final ArrayNode foreignKeyDefinitions;
         private final ObjectNode flywayHistory;
         private final ObjectNode rollback;
-        private boolean committed;
+        private CommitOutcome commitOutcome = CommitOutcome.NOT_ATTEMPTED;
 
         Report(Options options) {
             root.put("tool", "H2PostgresCutover");
@@ -444,7 +486,7 @@ public final class H2PostgresCutover {
             root.put("generatedAt", Instant.now().toString());
             root.put("mode", options.execute() ? "execute" : "dry-run");
             root.put("status", "FAILED");
-            root.put("committed", false);
+            commitOutcome(CommitOutcome.NOT_ATTEMPTED);
             root.put("expectedVersion", options.expectedVersion());
             source = root.putObject("source");
             target = root.putObject("target");
@@ -465,8 +507,17 @@ public final class H2PostgresCutover {
             source.put("flywayChecksumsValidated", true);
         }
 
-        void sourceUrl(String url) {
-            source.put("jdbcUrl", sanitizeUrl(url));
+        void sourceRows(long rows) {
+            source.put("rowCount", rows);
+        }
+
+        void sourceFingerprintBefore(byte[] digest) {
+            source.put("sha256Before", hex(digest));
+        }
+
+        void sourceFingerprintAfter(byte[] digest, boolean matches) {
+            source.put("sha256After", hex(digest));
+            source.put("fingerprintMatches", matches);
         }
 
         void targetUrl(String url) {
@@ -563,13 +614,10 @@ public final class H2PostgresCutover {
             rollback.put("succeeded", succeeded);
         }
 
-        void committed(boolean value) {
-            committed = value;
-            root.put("committed", value);
-        }
-
-        boolean committed() {
-            return committed;
+        void commitOutcome(CommitOutcome outcome) {
+            commitOutcome = outcome;
+            root.put("commitOutcome", outcome.name());
+            root.put("committed", outcome == CommitOutcome.COMMITTED);
         }
 
         void status(String status) {
@@ -578,7 +626,6 @@ public final class H2PostgresCutover {
 
         void fail(Throwable failure, String masked) {
             root.put("status", "FAILED");
-            root.put("committed", committed);
             ObjectNode error = root.putObject("error");
             error.put("type", failure.getClass().getName());
             error.put("message", masked);
@@ -589,7 +636,6 @@ public final class H2PostgresCutover {
         }
 
         void write(Path path) throws IOException {
-            root.put("committed", committed);
             Path absolute = path.toAbsolutePath().normalize();
             Path directory = absolute.getParent();
             if (directory == null) {
@@ -753,15 +799,18 @@ public final class H2PostgresCutover {
         private final Options options;
         private final Secrets secrets;
         private final Report report;
+        private final Path sourceFile;
+        private byte[] sourceDigest;
+        private boolean fingerprintRecorded;
 
-        CutoverRun(Options options, Secrets secrets, Report report) {
+        CutoverRun(Options options, Secrets secrets, Report report, Path sourceFile) {
             this.options = options;
             this.secrets = secrets;
             this.report = report;
+            this.sourceFile = sourceFile;
         }
 
         void run() throws Exception {
-            report.sourceUrl(secrets.sourceUrl());
             report.targetUrl(secrets.targetUrl());
 
             try (Connection target = openTarget(secrets)) {
@@ -771,6 +820,8 @@ public final class H2PostgresCutover {
                         initialTarget.encoding(), initialTarget.initiallyEmpty(),
                         initialTarget.relations(), initialTarget.routines(),
                         initialTarget.customTypes());
+                sourceDigest = fileSha256(sourceFile);
+                report.sourceFingerprintBefore(sourceDigest);
 
                 try (Connection source = openSource(secrets)) {
                     SourceInfo sourceInfo = verifySource(source, secrets,
@@ -782,10 +833,33 @@ public final class H2PostgresCutover {
 
                     if (!options.execute()) {
                         dryRun(source, sourceTables);
-                        return;
+                    } else {
+                        execute(target, source, sourceInfo, sourceTables, initialTarget);
                     }
-                    execute(target, source, sourceInfo, sourceTables, initialTarget);
                 }
+                if (!options.execute()) {
+                    verifySourceFingerprint();
+                    report.status("DRY_RUN");
+                }
+            } catch (Exception failure) {
+                if (sourceDigest != null && !fingerprintRecorded) {
+                    try {
+                        verifySourceFingerprint();
+                    } catch (Exception fingerprintFailure) {
+                        failure.addSuppressed(fingerprintFailure);
+                    }
+                }
+                throw failure;
+            }
+        }
+
+        private void verifySourceFingerprint() throws IOException {
+            byte[] after = fileSha256(sourceFile);
+            boolean matches = MessageDigest.isEqual(sourceDigest, after);
+            report.sourceFingerprintAfter(after, matches);
+            fingerprintRecorded = true;
+            if (!matches) {
+                throw new CutoverException("the H2 source SHA-256 changed during cutover");
             }
         }
 
@@ -797,13 +871,7 @@ public final class H2PostgresCutover {
                 totalRows += rows;
                 report.addTable(table.name(), columnNames(table), table.primaryKey(), rows, null);
             }
-            report.status("DRY_RUN");
-            report.committed(false);
-            report.write(options.manifestOut());
-            System.out.println("H2PostgresCutover: dry-run plan OK");
-            System.out.println("  source tables=" + sourceTables.size() + " rows=" + totalRows);
-            System.out.println("  target PostgreSQL 17 UTF8 with empty public schema");
-            System.out.println("  manifest " + options.manifestOut());
+            report.sourceRows(totalRows);
         }
 
         private void execute(Connection target, Connection source, SourceInfo sourceInfo,
@@ -849,16 +917,6 @@ public final class H2PostgresCutover {
             postCommit(target, targetFlyway, data.foreignKeys(), options.expectedVersion());
 
             report.status("COMPLETED");
-            report.committed(true);
-            report.write(options.manifestOut());
-            System.out.println("H2PostgresCutover: migration committed");
-            System.out.println("  source H2 " + sourceInfo.h2Version() + " schema="
-                    + sourceInfo.schema() + " flyway=" + sourceInfo.currentVersion());
-            System.out.println("  target PostgreSQL " + beforeMigration.version() + " encoding="
-                    + beforeMigration.encoding());
-            System.out.println("  tables=" + plans.size() + " rows=" + data.rowsCopied()
-                    + " foreignKeys=" + data.foreignKeys().size());
-            System.out.println("  manifest " + options.manifestOut());
         }
 
         private DataResult runDataTransaction(Connection source, Connection target,
@@ -911,9 +969,13 @@ public final class H2PostgresCutover {
                 restoreForeignKeys(target, foreignKeys);
                 report.foreignKeysRestored(true);
 
+                // The final source digest includes any effects of closing the H2 connection.
+                source.close();
+                verifySourceFingerprint();
+                report.commitOutcome(CommitOutcome.UNKNOWN);
                 target.commit();
                 committed = true;
-                report.committed(true);
+                report.commitOutcome(CommitOutcome.COMMITTED);
             } catch (Exception failure) {
                 boolean rolledBack = false;
                 try {
@@ -1611,6 +1673,14 @@ public final class H2PostgresCutover {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
+    }
+
+    private static byte[] fileSha256(Path file) throws IOException {
+        MessageDigest digest = sha256();
+        try (var input = new DigestInputStream(Files.newInputStream(file), digest)) {
+            input.transferTo(OutputStream.nullOutputStream());
+        }
+        return digest.digest();
     }
 
     private static Object readCanonical(ResultSet result, int index, ColumnMeta column)

@@ -11,6 +11,7 @@ import java.net.SocketTimeoutException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,12 +27,17 @@ class AliyunSubmissionOutcomeTest {
         HttpClient http = mock(HttpClient.class);
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
             .thenThrow(new SocketTimeoutException("response lost after submission"));
+        var timeout = Duration.ofMillis(1234);
+        var client = new AliyunNotificationClient("dummy-ak", "dummy-secret", "dummy-sign", "SMS_DUMMY", "TTS_DUMMY", "",
+            "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", http, timeout);
 
-        var result = send(client(http), channel);
+        var result = send(client, channel);
 
         assertThat(result.outcome()).isEqualTo(AliyunNotificationClient.Result.Outcome.UNKNOWN);
         assertThat(result.success()).isFalse();
-        verify(http, times(1)).send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        var request = org.mockito.ArgumentCaptor.forClass(HttpRequest.class);
+        verify(http, times(1)).send(request.capture(), any(HttpResponse.BodyHandler.class));
+        assertThat(request.getValue().timeout()).contains(timeout);
     }
 
     @ParameterizedTest

@@ -9,7 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -19,6 +19,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties={"app.roles=all","app.storage=h2-dev","spring.datasource.url=jdbc:h2:mem:placesubtreemovetests;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
@@ -50,6 +51,8 @@ class PlaceSubtreeMoveTest {
     Map<String,Object> move(String parent,long revision,String snapshot,String reason){var b=new LinkedHashMap<String,Object>();b.put("target_parent_id",parent);b.put("expected_revision",revision);b.put("snapshot",snapshot);b.put("reason",reason);return b;}
 
     @Test void previewCountsWholeSubtreeMovePreservesDeviceAndAlarmAndReplays()throws Exception {
+        jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated) "
+            + "VALUES ('unplaced-device','move-unit','Unplaced device','unplaced-eui','model','address','UNKNOWN',FALSE)");
         JsonNode plan=preview(target);assertThat(plan.get("places_count").asLong()).isEqualTo(2);assertThat(plan.get("devices_count").asLong()).isEqualTo(1);
         String key="place-move-once";var input=move(target,plan.at("/place/revision").asLong(),plan.get("snapshot").asText(),"Reorganize floors");
         JsonNode moved=body(call(HttpMethod.POST,"/api/management/places/"+source+"/move",root,"move-unit",key,input).andExpect(status().isOk()));
@@ -76,6 +79,119 @@ class PlaceSubtreeMoveTest {
         JsonNode stale=preview(target);jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,place_id) VALUES ('new-device','move-unit','New','new-eui','model','address','UNKNOWN',FALSE,?)",child);
         call(HttpMethod.POST,"/api/management/places/"+source+"/move",root,"move-unit","stale",move(target,stale.at("/place/revision").asLong(),stale.get("snapshot").asText(),"Stale")).andExpect(status().isConflict());
         call(HttpMethod.GET,"/api/management/places/"+source+"/move-preview",root,"other-unit",null,null).andExpect(status().isForbidden());
+    }
+
+    @Test void creationCannotPutAPlaceBelowTheDepthLimit() throws Exception {
+        String deepest = deepBranch(64);
+        call(HttpMethod.POST, "/api/management/places", root, "move-unit", null,
+            Map.of("name", "Level 65", "parent_place_id", deepest)).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM places WHERE parent_place_id=?", Long.class, deepest)).isZero();
+    }
+
+    @Test void moveChecksTheNewDepthOfEveryDescendant() throws Exception {
+        String parent = deepBranch(63);
+        String movePath = "/api/management/places/" + source + "/move";
+        call(HttpMethod.GET, movePath + "-preview?target_parent_id=" + parent, root, "move-unit", null, null)
+            .andExpect(status().isBadRequest());
+        JsonNode otherPlan = preview(target);
+        call(HttpMethod.POST, movePath, root, "move-unit", "move-too-deep",
+            move(parent, otherPlan.at("/place/revision").asLong(), otherPlan.path("snapshot").asText(), "Too deep"))
+            .andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("SELECT parent_place_id FROM places WHERE id=?", String.class, source)).isNull();
+
+        JsonNode leafPlan = body(call(HttpMethod.GET, "/api/management/places/" + child + "/move-preview?target_parent_id=" + parent,
+            root, "move-unit", null, null).andExpect(status().isOk()));
+        call(HttpMethod.POST, "/api/management/places/" + child + "/move", root, "move-unit", "move-at-limit",
+            move(parent, 0, leafPlan.path("snapshot").asText(), "Move leaf to level 64"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.place.level").value(64));
+    }
+
+    private String deepBranch(int depth) {
+        String parent = null;
+        for (int level = 1; level <= depth; level++) {
+            String id = "depth-" + level;
+            jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id,revision) VALUES (?,'move-unit',?,?,0)",
+                id, "Level " + level, parent);
+            parent = id;
+        }
+        return parent;
+    }
+
+    @Test void movingAnAttachedBranchChangesDynamicButNotExplicitDeviceAccess() throws Exception {
+        String leaf = place("Grandchild", child);
+        jdbc.update("UPDATE devices SET place_id=? WHERE id=?", leaf, device);
+        String dynamic = scopedReader("moving-dynamic", "PLACE_SUBTREE", List.of(), List.of(target));
+        String explicit = scopedReader("moving-explicit", "DEVICE_SET", List.of(device), List.of());
+        String details = "/api/management/devices/" + device;
+        String selected = "/api/management/devices?scope_place_ids=" + leaf;
+
+        call(HttpMethod.GET, selected, dynamic, null, null, null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items").isEmpty());
+        call(HttpMethod.GET, details, dynamic, "move-unit", null, null).andExpect(status().isNotFound());
+        call(HttpMethod.GET, details, explicit, "move-unit", null, null).andExpect(status().isOk());
+
+        String movePath = "/api/management/places/" + source + "/move";
+        JsonNode into = preview(target);
+        var moveIn = move(target, 0, into.path("snapshot").asText(), "Move branch under the dynamic root");
+        call(HttpMethod.POST, movePath + "?scope_place_ids=foreign-place", root, null, "no-write-unit", moveIn)
+            .andExpect(status().isBadRequest());
+        call(HttpMethod.POST, movePath + "?scope_place_ids=foreign-place", root, "move-unit", "move-into-scope", moveIn)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.place.tenant_id").value("move-unit"))
+            .andExpect(jsonPath("$.places_count").value(3)).andExpect(jsonPath("$.devices_count").value(1));
+        call(HttpMethod.GET, selected, dynamic, null, null, null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].id").value(device));
+        call(HttpMethod.GET, details, dynamic, "move-unit", null, null).andExpect(status().isOk());
+        call(HttpMethod.GET, details, explicit, "move-unit", null, null).andExpect(status().isOk());
+
+        JsonNode out = preview(null);
+        call(HttpMethod.POST, movePath, root, "move-unit", "move-out-of-scope",
+            move(null, 1, out.path("snapshot").asText(), "Move branch back to the unit root")).andExpect(status().isOk());
+        call(HttpMethod.GET, selected, dynamic, null, null, null).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items").isEmpty());
+        call(HttpMethod.GET, details, dynamic, "move-unit", null, null).andExpect(status().isNotFound());
+        call(HttpMethod.GET, details, explicit, "move-unit", null, null).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT place_id FROM devices WHERE id=?", String.class, device)).isEqualTo(leaf);
+    }
+
+    private String scopedReader(String username, String mode, List<String> devices, List<String> places) throws Exception {
+        JsonNode user = body(call(HttpMethod.POST, "/api/management/platform-users", root, null, "create-" + username,
+            Map.of("username", username, "name", username, "initial_password", INITIAL,
+                "permissions", List.of("device:read"), "tenant_ids", List.of("move-unit"))).andExpect(status().isOk()));
+        call(HttpMethod.PUT, "/api/management/platform-users/" + user.path("id").asText() + "/scope", root, "move-unit",
+            "scope-" + username, Map.of("mode", mode, "device_ids", devices, "place_ids", places,
+                "expected_revision", 0, "reason", "Set independent reader access")).andExpect(status().isOk());
+        String token = login(username, INITIAL, "management");
+        call(HttpMethod.POST, "/api/auth/change-password", token, null, null,
+            Map.of("current_password", INITIAL, "new_password", PASSWORD)).andExpect(status().isNoContent());
+        return login(username, PASSWORD, "management");
+    }
+
+    @Test void metadataRenameDoesNotChangeParentsAndRejectsDirectReparenting() throws Exception {
+        String path = "/api/management/places/" + child;
+        call(HttpMethod.PUT, path, root, "move-unit", null,
+            Map.of("name", "Renamed without a parent field", "expected_revision", 0))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.parent_id").value(source));
+        call(HttpMethod.PUT, path, root, "move-unit", null,
+            Map.of("name", "Renamed with the existing parent", "parent_place_id", source, "expected_revision", 1))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.parent_id").value(source));
+
+        var rename = new LinkedHashMap<String, Object>();
+        rename.put("name", "Rejected reparent");
+        rename.put("expected_revision", 2);
+        rename.put("parent_place_id", target);
+        call(HttpMethod.PUT, path, root, "move-unit", null, rename).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PLACE_MOVE_REQUIRED"));
+        rename.put("parent_place_id", null);
+        call(HttpMethod.PUT, path, root, "move-unit", null, rename).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PLACE_MOVE_REQUIRED"));
+        rename.put("parent_place_id", "foreign-place");
+        call(HttpMethod.PUT, path, root, "move-unit", null, rename).andExpect(status().isBadRequest());
+        call(HttpMethod.PUT, path, root, "other-unit", null, rename).andExpect(status().isForbidden());
+
+        assertThat(jdbc.queryForObject("SELECT parent_place_id FROM places WHERE id=?", String.class, child)).isEqualTo(source);
+        assertThat(jdbc.queryForObject("SELECT name FROM places WHERE id=?", String.class, child))
+            .isEqualTo("Renamed with the existing parent");
+        assertThat(jdbc.queryForObject("SELECT revision FROM places WHERE id=?", Long.class, child)).isEqualTo(2L);
     }
 
     @Test void restrictedPlaceCountsExcludeHiddenSameUnitDevices() throws Exception {

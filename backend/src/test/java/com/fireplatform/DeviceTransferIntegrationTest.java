@@ -14,7 +14,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -107,6 +107,48 @@ class DeviceTransferIntegrationTest {
         assertThat(replay.get("transfer_id").asText()).isEqualTo(first.get("transfer_id").asText()); assertThat(replay.at("/target/id").asText()).isEqualTo(first.at("/target/id").asText());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_transfers",Long.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_place_history WHERE device_id=?",Long.class,first.at("/target/id").asText())).isEqualTo(1);
+        String targetId=first.at("/target/id").asText();
+        jdbc.update("DELETE FROM user_device_scopes WHERE user_id='bootstrap-admin' AND tenant_id='tenant-b'");
+        fixture.call(HttpMethod.POST,path,fixture.root,"tenant-a",key,body).andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_transfers WHERE target_device_id=?",Long.class,targetId)).isEqualTo(1);
+    }
+
+    @Test void transferPreservesTheEntireAllowedReasonOnSourceAndTransferRecord() throws Exception {
+        JsonNode source=createDevice();
+        JsonNode targetPlace=createPlace("tenant-b");
+        String sourceId=source.get("id").asText();
+        jdbc.update("""
+            INSERT INTO device_source_bindings(id,tenant_id,device_id,driver_key,source_external_id,generation,state,bound_at,bound_by)
+            VALUES ('transfer-full-reason-binding','tenant-a',?,'FIXTURE','fixture-external',1,'ACTIVE',CURRENT_TIMESTAMP,'bootstrap-admin')
+            """,sourceId);
+        String reason="移".repeat(1000);
+        var input=transferInput(source,targetPlace);
+        input.put("reason",reason);
+        var result=fixture.body(fixture.call(HttpMethod.POST,"/api/management/devices/"+sourceId+"/transfer",
+            fixture.root,"tenant-a","transfer-full-reason",input).andExpect(status().isOk()));
+        String targetId=result.at("/target/id").asText();
+        assertThat(jdbc.queryForObject("SELECT archived_reason FROM devices WHERE id=?",String.class,sourceId))
+            .isEqualTo(reason);
+        assertThat(jdbc.queryForMap("SELECT reason,source_device_id,target_device_id FROM device_transfers WHERE id=?",
+            result.get("transfer_id").asText()))
+            .containsEntry("reason",reason).containsEntry("source_device_id",sourceId).containsEntry("target_device_id",targetId);
+        assertThat(jdbc.queryForMap("SELECT release_reason,state FROM device_source_bindings WHERE id='transfer-full-reason-binding'"))
+            .containsEntry("release_reason",reason).containsEntry("state","RELEASED");
+    }
+
+    @Test void archiveReplayPreservesHistoryButRequiresCurrentDeviceScope() throws Exception {
+        JsonNode source=createDevice();
+        String id=source.get("id").asText();
+        String path="/api/management/devices/"+id+"/archive";
+        String key="archive-replay";
+        var input=Map.of("expected_revision",source.get("revision").asLong(),"reason","Retired asset");
+        var archived=fixture.body(fixture.call(HttpMethod.POST,path,fixture.root,"tenant-a",key,input).andExpect(status().isOk()));
+        fixture.call(HttpMethod.POST,path,fixture.root,"tenant-a",key,input).andExpect(status().isOk())
+            .andExpect(jsonPath("$.revision").value(archived.get("revision").asInt()));
+        fixture.call(HttpMethod.GET,"/api/management/devices/"+id+"/place-history",fixture.root,"tenant-a",null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.items.length()").value(1));
+        jdbc.update("DELETE FROM user_device_scopes WHERE user_id='bootstrap-admin' AND tenant_id='tenant-a'");
+        fixture.call(HttpMethod.POST,path,fixture.root,"tenant-a",key,input).andExpect(status().isNotFound());
     }
     @Test void transferRequiresExplicitTargetUnitGrant() throws Exception {
         JsonNode source=createDevice(); JsonNode targetPlace=createPlace("tenant-b"); jdbc.update("DELETE FROM user_tenant_grants WHERE user_id='bootstrap-admin' AND tenant_id='tenant-b'");

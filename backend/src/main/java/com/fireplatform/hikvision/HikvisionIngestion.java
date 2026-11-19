@@ -110,8 +110,8 @@ public class HikvisionIngestion {
             OffsetDateTime updated=timestamp(record,"updateTime");
             jdbc.update("UPDATE hikvision_discovered_devices SET source_status=?,source_updated_at=? WHERE external_id=? AND (source_updated_at IS NULL OR source_updated_at<=?)",text(record,"deviceStatus"),updated,resource,updated);
         }
-        var existing=jdbc.query("SELECT id,applied_device_id,apply_error FROM hikvision_raw_records WHERE stream_kind=? AND external_key=? AND payload_sha256=?",
-            (r,n)->new Raw(r.getString(1),r.getString(2),r.getString(3)),stream.name(),key,sha);
+        var existing=jdbc.query("SELECT id,applied_device_id,apply_error FROM hikvision_raw_records WHERE stream_kind=? AND external_key=? AND payload_sha256=? AND ingress=?",
+            (r,n)->new Raw(r.getString(1),r.getString(2),r.getString(3)),stream.name(),key,sha,ingress);
         String rawId;
         if(existing.isEmpty()) {
             rawId=UUID.randomUUID().toString();
@@ -155,8 +155,8 @@ public class HikvisionIngestion {
         if(stream==HikvisionClient.Stream.UNIT||stream==HikvisionClient.Stream.DEVICE||stream==HikvisionClient.Stream.SENSOR||stream==HikvisionClient.Stream.STATUS)return;
         if(resource==null){error(rawId,"RESOURCE_ID_MISSING");return;}
         if(stream==HikvisionClient.Stream.DEVICE_EVENT){event(rawId,record,resource,observed,received,externalEffectsAllowed);return;}
-        if(stream==HikvisionClient.Stream.ALARM){alarm(rawId,record,resource,observed,received,externalEffectsAllowed);return;}
-        if(stream==HikvisionClient.Stream.FAULT){fault(rawId,record,resource,observed,received,externalEffectsAllowed);return;}
+        if(stream==HikvisionClient.Stream.ALARM){alarm(rawId,record,resource,observed,received,ingress,externalEffectsAllowed);return;}
+        if(stream==HikvisionClient.Stream.FAULT){fault(rawId,record,resource,observed,received,ingress,externalEffectsAllowed);return;}
         monitor(rawId,record,resource,observed,received,stream==HikvisionClient.Stream.MONITOR,ingress,externalEffectsAllowed);
     }
     private Device currentOwner(String resource,boolean lock) {
@@ -187,7 +187,17 @@ public class HikvisionIngestion {
         if(observed.isBefore(rows.getFirst())){error(rawId,"PRE_OWNERSHIP_HISTORY");return false;}
         return true;
     }
-    private void fault(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,boolean externalEffectsAllowed) {
+    private void observeRealtimeReport(String ingress,String resource,Device owner,OffsetDateTime observed) {
+        if(!"HIKVISION_PUSH".equals(ingress)||observed==null)return;
+        // An occurrence can still accept history after transfer; only the exact current binding can claim liveness.
+        jdbc.update("""
+            UPDATE devices SET last_message_at=?
+            WHERE id=? AND tenant_id=? AND is_simulated=FALSE AND (last_message_at IS NULL OR last_message_at<?)
+              AND EXISTS (SELECT 1 FROM hikvision_discovered_devices h WHERE h.external_id=?
+                AND h.local_device_id=devices.id AND (h.event_history_from IS NULL OR h.event_history_from<=?))
+            """,observed,owner.id(),owner.tenant(),observed,resource,observed);
+    }
+    private void fault(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress,boolean externalEffectsAllowed) {
         String id=text(record,"faultID"),code=text(record,"faultType");if(id==null||code==null){error(rawId,"FAULT_ID_OR_TYPE_MISSING");return;}
         if(observed==null){error(rawId,"FAULT_SOURCE_TIME_MISSING");return;}
         String state=text(record,"faultState");
@@ -208,6 +218,11 @@ public class HikvisionIngestion {
             if(device==null){error(rawId,"PENDING_ASSIGNMENT");return;}
             if(!ownershipAllows(rawId,resource,observed))return;
         }
+        // Battery, tamper, smoke chamber and smoke sensor are detector reports, not cloud/link faults.
+        if(!Boolean.TRUE.equals(evidence) && switch(code) {
+            case "300003","300004","300005","300116" -> true;
+            default -> false;
+        }) observeRealtimeReport(ingress,resource,device,observed);
         String event=null;
         if(prior==null) {
             ObjectNode params=json.createObjectNode();params.put("source","HIKVISION_FIRECLOUD").put("source_event_id",id).put("code",code).put("fault_label",catalog.faultLabel(code));
@@ -230,7 +245,7 @@ public class HikvisionIngestion {
         jdbc.update("UPDATE hikvision_fault_state SET "+String.join(",",sets)+" WHERE source_fault_id=?",args.toArray());
         appliedTo(rawId,device,received);
     }
-    private void alarm(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,boolean externalEffectsAllowed) {
+    private void alarm(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress,boolean externalEffectsAllowed) {
         String id=text(record,"alarmID"),code=text(record,"alarmType");
         if(id==null||code==null){error(rawId,"ALARM_ID_OR_TYPE_MISSING");return;}
         if(catalog.simulatedAlarm(code)){error(rawId,"SOURCE_SIMULATED_ALARM");return;}
@@ -251,6 +266,7 @@ public class HikvisionIngestion {
             if(device==null){error(rawId,"PENDING_ASSIGNMENT");return;}
             if(!ownershipAllows(rawId,resource,observed))return;
         }
+        if("0".equals(state))observeRealtimeReport(ingress,resource,device,observed);
         String alarm=prior==null?null:prior.localId();
         if(alarm==null) {
             alarm=alarms.fire(device.tenant(),device.id(),device.name(),device.address(),observed);
@@ -291,6 +307,12 @@ public class HikvisionIngestion {
         // Polling snapshots stay current-only and historical measurements stay history-only.
         boolean history=!currentSnapshot||flat;
         if(history&&!retainUnrecordedMonitor(device.tenant(),device.id(),observed,params,metadata)){applied(rawId,device,received);return;}
+        if(!history && jdbc.queryForObject("""
+            SELECT EXISTS (SELECT 1 FROM hikvision_raw_records raw JOIN hikvision_raw_records applied
+              ON applied.stream_kind=raw.stream_kind AND applied.external_key=raw.external_key
+              AND applied.payload_sha256=raw.payload_sha256 AND applied.ingress<>raw.ingress
+              WHERE raw.id=? AND applied.applied_device_id=?)
+            """,Boolean.class,rawId,device.id())){applied(rawId,device,received);return;}
         writeEvent(rawId,device,resource,history?"PARAM":"OTHER",history?"HIKVISION_MONITOR":"HIKVISION_CURRENT_MONITOR",params,observed,received,null,externalEffectsAllowed);
         // Snapshots and historical measurements are separate projections, never double-counted.
         if(params.has("battery")&&"%".equals(params.path("source_metrics").path("battery").path("unit").asText())) {

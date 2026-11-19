@@ -21,7 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.fireplatform.hikvision.HikvisionCallbackWorker;
 import com.fireplatform.hikvision.HikvisionIngestion;
 import com.fireplatform.hikvision.HikvisionConfigSecrets;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -31,7 +31,7 @@ class HikvisionCallbackServiceTest {
     @Autowired HikvisionCallbackService callbacks;
     @Autowired HikvisionConfigService configuration;
     @Autowired JdbcTemplate jdbc;
-    @MockBean ManagementGuard guard;
+    @MockitoBean ManagementGuard guard;
     @Autowired com.fasterxml.jackson.databind.ObjectMapper json;
     @Autowired HikvisionIngestion ingestion;
     @Autowired HikvisionConfigSecrets secrets;

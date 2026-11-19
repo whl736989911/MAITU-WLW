@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/fire-platform}
 BACKUP_KEEP=${BACKUP_KEEP:-14}
@@ -25,13 +26,14 @@ fi
 
 stamp=$(date -u '+%Y%m%dT%H%M%SZ')
 final="$BACKUP_DIR/fire-platform-${stamp}.dump"
-tmp="$final.partial.$$"
-cleanup() { [[ ! -e $tmp ]] || rm -f -- "$tmp"; }
-trap cleanup EXIT
+tmp=$(mktemp -- "$final.partial.XXXXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
 
 pg_dump --format=custom --file="$tmp" --dbname="$DATABASE"
 test -s "$tmp"
-mv -- "$tmp" "$final"
+# Publish atomically without replacing a complete backup made in the same second.
+ln -T -- "$tmp" "$final"
+rm -- "$tmp"
 trap - EXIT
 
 # Prune only regular files matching this script's exact archive naming convention.

@@ -25,6 +25,30 @@ afterEach(() => { vi.useRealTimers() })
 beforeEach(() => { useSession.getState().clear(); localStorage.clear(); sessionStorage.clear(); vi.useRealTimers() })
 
 describe('frontend notification regressions', () => {
+  it('requires a recharge destination and confirms the full amount before creating an order', async () => {
+    const fetcher = setupRecharge((url) => {
+      if (endpoint(url, '/customer/notification-recharge/options')) return response(options())
+      if (endpoint(url, '/customer/notification-recharge/orders')) return response({ items: [], total: 0, page: 1, size: 20 })
+      return undefined
+    })
+    const user = userEvent.setup()
+    await screen.findByText('新建充值订单')
+    const destination = screen.getByLabelText('充值账户')
+    expect(destination).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: '审核充值订单' }))
+    expect(fetcher.mock.calls.some(call => endpoint(call[0], '/customer/notification-recharge/orders') && call[1]?.method === 'POST')).toBe(false)
+    await user.selectOptions(destination, 'ORGANIZATION:tenant-a')
+    await user.click(screen.getByRole('button', { name: '审核充值订单' }))
+    const confirmation = await screen.findByRole('status', { name: '订单确认' })
+    expect(confirmation).toHaveTextContent('单位A')
+    expect(confirmation).toHaveTextContent('短信 100 条')
+    expect(confirmation).toHaveTextContent('10.00 元')
+    expect(fetcher.mock.calls.some(call => endpoint(call[0], '/customer/notification-recharge/orders') && call[1]?.method === 'POST')).toBe(false)
+    await user.click(screen.getByRole('button', { name: '返回修改' }))
+    expect(screen.queryByRole('status', { name: '订单确认' })).not.toBeInTheDocument()
+    expect(fetcher.mock.calls.some(call => endpoint(call[0], '/customer/notification-recharge/orders') && call[1]?.method === 'POST')).toBe(false)
+  })
+
   it('stale destination cannot silently become the first current destination', async () => {
     let refreshed = false
     const fetcher = setupRecharge((url) => {
@@ -39,7 +63,7 @@ describe('frontend notification regressions', () => {
     refreshed = true
     await user.click(screen.getByRole('button', { name: '刷新' }))
     await waitFor(() => expect(fetcher.mock.calls.filter(call => endpoint(call[0], '/customer/notification-recharge/options'))).toHaveLength(2))
-    await user.click(screen.getByRole('button', { name: '生成充值订单' }))
+    await user.click(screen.getByRole('button', { name: '审核充值订单' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('所选充值账户已不可用')
     expect(fetcher.mock.calls.some(call => endpoint(call[0], '/customer/notification-recharge/orders') && call[1]?.method === 'POST')).toBe(false)
   })
@@ -56,9 +80,12 @@ describe('frontend notification regressions', () => {
       return undefined
     })
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '生成充值订单' }))
+    await user.selectOptions(await screen.findByLabelText('充值账户'), 'ORGANIZATION:tenant-a')
+    await user.click(await screen.findByRole('button', { name: '审核充值订单' }))
+    await user.click(screen.getByRole('button', { name: '确认创建订单' }))
     await screen.findByRole('alert')
-    await user.click(screen.getByRole('button', { name: '生成充值订单' }))
+    await user.click(screen.getByRole('button', { name: '审核充值订单' }))
+    await user.click(screen.getByRole('button', { name: '确认创建订单' }))
     await screen.findByText(/订单号 order-1/)
     const writes = fetcher.mock.calls.filter(call => endpoint(call[0], '/customer/notification-recharge/orders') && call[1]?.method === 'POST')
     expect(writes).toHaveLength(2)
@@ -76,7 +103,9 @@ describe('frontend notification regressions', () => {
     })
     const user = userEvent.setup()
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
-    await user.click(await screen.findByRole('button', { name: '生成充值订单' }))
+    await user.selectOptions(await screen.findByLabelText('充值账户'), 'ORGANIZATION:tenant-a')
+    await user.click(await screen.findByRole('button', { name: '审核充值订单' }))
+    await user.click(screen.getByRole('button', { name: '确认创建订单' }))
     await screen.findByText('待支付订单')
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(screen.getByText('订单状态已更新：CANCELLED')).toBeInTheDocument()
@@ -96,7 +125,9 @@ describe('frontend notification regressions', () => {
     })
     const user = userEvent.setup()
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
-    await user.click(await screen.findByRole('button', { name: '生成充值订单' }))
+    await user.selectOptions(await screen.findByLabelText('充值账户'), 'ORGANIZATION:tenant-a')
+    await user.click(await screen.findByRole('button', { name: '审核充值订单' }))
+    await user.click(screen.getByRole('button', { name: '确认创建订单' }))
     await screen.findByText('待支付订单')
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(screen.getByRole('heading', { name: '充值订单' })).toBeInTheDocument()

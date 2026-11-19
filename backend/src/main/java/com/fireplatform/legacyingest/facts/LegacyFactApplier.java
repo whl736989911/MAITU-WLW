@@ -84,15 +84,8 @@ public class LegacyFactApplier implements LegacyEventSink {
             boolean recovery = kind.equals("RECOVERY");
             String storedKind = recovery ? "ALARM" : kind;
             String businessCode = businessCode(e.method(), params, storedKind);
-            boolean timedHikReport=hikvision && switch(kind) {
-                case "PARAM","ALARM" -> true;
-                // Cloud-generated offline/link faults are not evidence of a detector report.
-                case "FAULT" -> switch(businessCode) {
-                    case "300003","300004","300005","300116" -> true; // Battery, tamper, smoke chamber, smoke sensor.
-                    default -> false;
-                };
-                default -> "HIKVISION_CURRENT_MONITOR".equals(e.method());
-            };
+            // HikvisionIngestion already gates fire/fault liveness on stored push provenance and ownership.
+            boolean timedHikReport=hikvision && ("PARAM".equals(kind) || "HIKVISION_CURRENT_MONITOR".equals(e.method()));
             if (timedHikReport && observed != null && (latestHikObservation == null || observed.isAfter(latestHikObservation))) {
                 if(event.battery()==null) jdbc.update("UPDATE devices SET last_message_at=? WHERE id=?",observed,event.deviceId());
                 else jdbc.update("UPDATE devices SET last_message_at=?,battery_percent=? WHERE id=?",observed,event.battery(),event.deviceId());

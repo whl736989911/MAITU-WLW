@@ -20,10 +20,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
 import org.springframework.test.web.servlet.MockMvc;
@@ -49,7 +49,7 @@ class VendorDeviceAlarmFlowIntegrationTest {
     @Autowired NotificationResourceService resources;
     @Autowired RealNotificationService worker;
     @Autowired NotificationSpool spool;
-    @MockBean com.fireplatform.transport.AliyunNotificationClient client;
+    @MockitoBean com.fireplatform.transport.AliyunNotificationClient client;
     IngestionIntegrationTest f;
     NotificationIntegrationTest notifications;
     String profile;
@@ -97,12 +97,12 @@ class VendorDeviceAlarmFlowIntegrationTest {
             legacy(upstream,"heartbeat","thing.event.heartbeat","1002045",observed);
             legacy(upstream,"alarm","thing.event.alarm","1001001",observed.plusNanos(1000));
         } else {
-            hikvision.accept(HikvisionClient.Stream.FAULT,json.valueToTree(List.of(Map.of("faultID","link-"+external,"resourceID",external,"faultType","300002","faultStartTime",observed.toString(),"faultState","0"))),observed);
+            hikvision.accept(HikvisionClient.Stream.FAULT,json.valueToTree(List.of(Map.of("faultID","link-"+external,"resourceID",external,"faultType","300002","faultStartTime",observed.toString(),"faultState","0"))),observed,"800235","HIKVISION_PUSH");
             assertThat(deviceStatus(device,"management",f.root).path("online_status").asText()).isEqualTo("UNACTIVATED");
             String linkFault=jdbc.queryForObject("SELECT id FROM legacy_ingest_events WHERE device_id=? AND kind='FAULT'",String.class,device);
             f.call(HttpMethod.POST,"/api/management/duty/faults/"+linkFault+"/handling",f.root,"tenant-a",UUID.randomUUID().toString(),
                 Map.of("expected_revision",0,"handled",true,"note","Checked the source link fault")).andExpect(status().isOk());
-            hikvision.accept(HikvisionClient.Stream.ALARM,json.valueToTree(List.of(Map.of("alarmID","fire-"+external,"resourceID",external,"alarmType","200001","alarmStartTime",observed.toString(),"alarmState","0"))),observed);
+            hikvision.accept(HikvisionClient.Stream.ALARM,json.valueToTree(List.of(Map.of("alarmID","fire-"+external,"resourceID",external,"alarmType","200001","alarmStartTime",observed.toString(),"alarmState","0"))),observed,"800235","HIKVISION_PUSH");
             assertThat(deviceStatus(device,"management",f.root).path("online_status").asText()).isEqualTo("ONLINE");
             hikvision.accept(HikvisionClient.Stream.MONITOR,json.valueToTree(List.of(Map.of("resourceID",external,"monitorTime",observed.toString(),"data",List.of(Map.of("monitorType","400006","monitorValue","24.4","monitorUnit","℃","circuitNo","0"))))),observed);
         }
@@ -133,16 +133,19 @@ class VendorDeviceAlarmFlowIntegrationTest {
         OffsetDateTime reported=jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id=?",OffsetDateTime.class,device);
         jdbc.update("UPDATE devices SET last_message_at=? WHERE id=?",observed.minusYears(1),device);
         JsonNode timedOut=deviceStatus(device,"customer",customer);
-        assertThat(timedOut.path("customer_status").asText()).isEqualTo("OFFLINE");
+        String timeoutStatus=source.equals("LEGACY_REALTIME")?"OFFLINE":"UNKNOWN";
+        assertThat(timedOut.path("online_status").asText()).isEqualTo(timeoutStatus);
+        assertThat(timedOut.path("customer_status").asText()).isEqualTo(source.equals("LEGACY_REALTIME")?"OFFLINE":"FIRE");
         assertThat(timedOut.at("/business_statuses/0/code").asText()).isEqualTo("FIRE");
-        jdbc.update("UPDATE devices SET last_message_at=? WHERE id=?",reported,device);
         JsonNode current=f.body(f.call(HttpMethod.GET,"/api/customer/alarms/"+alarm,customer,null,null,null).andExpect(status().isOk()));
         f.call(HttpMethod.POST,"/api/customer/alarms/"+alarm+"/review",customer,null,UUID.randomUUID().toString(),Map.of("expected_revision",current.path("revision").asLong(),"conclusion","TEST","remark","Controlled source alarm was verified")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("SELECT response_state FROM alarms WHERE id=?",String.class,alarm)).isEqualTo("HANDLED");
         assertThat(jdbc.queryForObject("SELECT physical_state FROM alarms WHERE id=?",String.class,alarm)).isEqualTo("FIRE");
+        assertThat(deviceStatus(device,"customer",customer).path("customer_status").asText()).isEqualTo(timeoutStatus);
+        jdbc.update("UPDATE devices SET last_message_at=? WHERE id=?",reported,device);
         assertThat(deviceStatus(device,"customer",customer).path("customer_status").asText()).isEqualTo("ONLINE");
         if(source.equals("LEGACY_REALTIME"))legacy(upstream,"heartbeat","thing.event.heartbeat","1002045",time.now().plusSeconds(1));
-        else hikvision.accept(HikvisionClient.Stream.ALARM,json.valueToTree(List.of(Map.of("alarmID","fire-"+external,"resourceID",external,"alarmType","200001","alarmStartTime",observed.toString(),"alarmStopTime",time.now().toString(),"alarmState","1"))),time.now());
+        else hikvision.accept(HikvisionClient.Stream.ALARM,json.valueToTree(List.of(Map.of("alarmID","fire-"+external,"resourceID",external,"alarmType","200001","alarmStartTime",observed.toString(),"alarmStopTime",time.now().toString(),"alarmState","1"))),time.now(),"800235","HIKVISION_PUSH");
         JsonNode restored=f.body(f.call(HttpMethod.GET,"/api/customer/alarms/"+alarm,customer,null,null,null).andExpect(status().isOk()));
         assertThat(restored.path("physical_state").asText()).isEqualTo(source.equals("LEGACY_REALTIME")?"FIRE":"NORMAL");
         assertThat(restored.path("response_state").asText()).isEqualTo("HANDLED");

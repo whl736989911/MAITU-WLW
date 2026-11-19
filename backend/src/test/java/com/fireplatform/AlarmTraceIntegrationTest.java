@@ -13,7 +13,7 @@ import java.util.concurrent.*;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.*;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.*;
 import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;
@@ -82,6 +82,7 @@ class AlarmTraceIntegrationTest {
         review(id,2,"","re-review").andExpect(status().isOk()).andExpect(jsonPath("$.physical_state").value("NORMAL")).andExpect(jsonPath("$.revision").value(3)); var h=history(id); assertThat(h.at("/coverage/kind").asText()).isEqualTo("FROM_CREATION"); assertThat(h.at("/coverage/first_revision").asLong()).isZero(); assertThat(h.at("/coverage/journal_through_revision").asLong()).isEqualTo(3); assertThat(h.at("/coverage/current_revision").asLong()).isEqualTo(3); assertThat(h.get("total").asLong()).isEqualTo(4);
         assertThat(h.at("/items/0/action").asText()).isEqualTo("REVIEWED"); assertThat(h.at("/items/0/after/physical_state").asText()).isEqualTo("NORMAL"); assertThat(h.at("/items/1/action").asText()).isEqualTo("ALARM_RECOVERED"); assertThat(h.at("/items/1/before/response_state").asText()).isEqualTo("HANDLED"); assertThat(h.at("/items/1/after/response_state").asText()).isEqualTo("HANDLED"); assertThat(h.at("/items/1/actor_kind").asText()).isEqualTo("SYSTEM"); assertThat(h.at("/items/1/actor_id").isNull()).isTrue(); assertThat(h.at("/items/1/occurred_at").isTextual()).isTrue(); assertThat(h.at("/items/2/actor_name").asText()).isEqualTo("Actor at review"); assertThat(h.at("/items/2/remark").asText()).isEqualTo("First review <&>\nplain text"); assertThat(h.at("/items/3/action").asText()).isEqualTo("FIRE_CREATED"); assertThat(h.at("/items/3/revision_before").isNull()).isTrue(); assertThat(h.at("/items/3/before").isNull()).isTrue();
         assertThat(current(id).get("device_name").asText()).isEqualTo(snapshotName); assertThat(current(id).has("remark")).isFalse(); assertThat(current(id).has("actor_id")).isFalse();
+        assertThat(current(id).get("address").asText()).isEqualTo("Test address");
     }
     @Test void legacyDeviceRecoveryLocksInIdOrderRecordsEachActualFireAndNeverRehandlesOrDuplicatesNormal() throws Exception {
         String a=fire(),b=fire(),c=fire(); review(a,0,"handled","review-a").andExpect(status().isOk()); assertThat(recover(c)).isTrue(); observed.statements.clear(); recoverDevice();

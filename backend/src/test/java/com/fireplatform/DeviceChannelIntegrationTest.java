@@ -4,10 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fireplatform.bootstrap.Bootstrap;
 import com.fireplatform.product.JsonPointerParser;
+import java.time.OffsetDateTime;
 import java.util.*;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.*;
-import org.springframework.boot.test.autoconfigure.web.servlet.*;
+import org.springframework.boot.webmvc.test.autoconfigure.*;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
@@ -30,6 +31,29 @@ class DeviceChannelIntegrationTest {
     ResultActions call(org.springframework.http.HttpMethod method,String path,String tenant,String key,Object body)throws Exception{var request=request(method,path).header("Authorization","Bearer "+f.root);if(tenant!=null)request.header("X-Tenant-Id",tenant);if(key!=null)request.header("Idempotency-Key",key);if(body!=null)request.contentType("application/json").content(json.writeValueAsString(body));return mvc.perform(request);}
     JsonNode body(ResultActions result)throws Exception{return f.body(result);}
     @Test void manualChannelCanShareStableKeyAcrossDevicesAndRetainsManualChannelFacts()throws Exception{var first=body(call(POST,BASE,"tenant-a","same-device-key",createBody("device-a","north")).andExpect(status().isCreated()));var second=body(call(POST,BASE,"tenant-a","other-device-key",createBody("device-a-unactivated","north")).andExpect(status().isCreated()));assertThat(first.get("id").asText()).isNotEqualTo(second.get("id").asText());assertThat(first.get("device_id").asText()).isEqualTo("device-a");assertThat(first.get("channel_key").asText()).isEqualTo("north");assertThat(first.get("channel_type").asText()).isEqualTo("smoke");assertThat(first.get("enabled").asBoolean()).isTrue();var page=body(call(GET,BASE+"?device_id=device-a","tenant-a",null,null).andExpect(status().isOk()));assertThat(page.get("total").asInt()).isEqualTo(1);assertThat(page.at("/items/0/channel_key").asText()).isEqualTo("north");}
-    @Test void createReplayReturnsReceiptAndUpdateUsesCas()throws Exception{var first=body(call(POST,BASE,"tenant-a","create-receipt",createBody("device-a","north")).andExpect(status().isCreated()));assertThat(body(call(POST,BASE,"tenant-a","create-receipt",createBody("device-a","north")).andExpect(status().isCreated()))).isEqualTo(first);String id=first.get("id").asText();var updated=body(call(PUT,BASE+"/"+id,"tenant-a","update-receipt",updateBody("北侧烟感新版",0)).andExpect(status().isOk()));assertThat(updated.get("revision").asLong()).isEqualTo(1);assertThat(body(call(PUT,BASE+"/"+id,"tenant-a","update-receipt",updateBody("北侧烟感新版",0)).andExpect(status().isOk()))).isEqualTo(updated);call(PUT,BASE+"/"+id,"tenant-a","stale-update",updateBody("错误覆盖",0)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("REVISION_CONFLICT"));}
+    @Test void createReplayReturnsReceiptAndUpdateUsesCas()throws Exception {
+        var create=createBody("device-a","north");
+        var first=body(call(POST,BASE,"tenant-a","create-receipt",create).andExpect(status().isCreated()));
+        assertThat(body(call(POST,BASE,"tenant-a","create-receipt",create).andExpect(status().isCreated()))).isEqualTo(first);
+        String id=first.get("id").asText();
+        assertChannelInstant(id,first,"created_at");
+        assertChannelInstant(id,first,"updated_at");
+
+        var update=updateBody("北侧烟感新版",0);
+        var updated=body(call(PUT,BASE+"/"+id,"tenant-a","update-receipt",update).andExpect(status().isOk()));
+        assertThat(updated.get("revision").asLong()).isEqualTo(1);
+        assertChannelInstant(id,updated,"updated_at");
+        assertThat(body(call(PUT,BASE+"/"+id,"tenant-a","update-receipt",update).andExpect(status().isOk()))).isEqualTo(updated);
+        assertThat(body(call(POST,BASE,"tenant-a","create-receipt",create).andExpect(status().isCreated()))).isEqualTo(first);
+        call(PUT,BASE+"/"+id,"tenant-a","stale-update",updateBody("错误覆盖",0))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("REVISION_CONFLICT"));
+        assertThat(jdbc.queryForList("SELECT revision FROM device_channels WHERE tenant_id=? AND device_id=? AND channel_key=?",
+            Long.class,"tenant-a","device-a","north")).containsExactly(1L);
+    }
+
+    private void assertChannelInstant(String id,JsonNode receipt,String column) {
+        var stored=jdbc.queryForObject("SELECT "+column+" FROM device_channels WHERE id=?",OffsetDateTime.class,id);
+        assertThat(OffsetDateTime.parse(receipt.required(column).textValue()).toInstant()).isEqualTo(stored.toInstant());
+    }
     @Test void rejectsCrossTenantAndHiddenDevicesWithoutPersistingChannels()throws Exception{call(POST,BASE,"tenant-a","foreign-device",createBody("device-b","north")).andExpect(status().isNotFound());jdbc.update("DELETE FROM user_device_scope_devices WHERE user_id='bootstrap-admin' AND tenant_id='tenant-a'");jdbc.update("UPDATE user_device_scopes SET mode='DEVICE_SET',revision=revision+1 WHERE user_id='bootstrap-admin' AND tenant_id='tenant-a'");jdbc.update("INSERT INTO user_device_scope_devices(user_id,tenant_id,device_id) VALUES ('bootstrap-admin','tenant-a','device-a')");call(POST,BASE,"tenant-a","hidden-device",createBody("device-a-unactivated","north")).andExpect(status().isNotFound());assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_channels",Long.class)).isZero();}
 }

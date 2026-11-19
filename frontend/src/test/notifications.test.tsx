@@ -14,7 +14,7 @@ const thirdContact = { ...contact, id: 'nc-three', name: '合成第三联系人'
 const fourthContact = { ...contact, id: 'nc-four', name: '合成第四联系人', phone_masked: '136****1111' }
 const fifthContact = { ...contact, id: 'nc-five', name: '合成第五联系人', phone_masked: '135****2222' }
 const sixthContact = { ...contact, id: 'nc-six', name: '合成第六联系人', phone_masked: '134****3333' }
-const ruleFixture = { id: 'rule-one', tenant_id: 'tenant-a', tenant_name: '单位A', name: '合成规则', event_scope: 'FIRE' as const, enabled: true, revision: 2, created_at: clock, receivers: [{ channel: 'SMS' as const, contact_id: contact.id, level: 1, contact_name: contact.name, phone_masked: contact.phone_masked }, { channel: 'VOICE' as const, contact_id: otherContact.id, level: 1, contact_name: otherContact.name, phone_masked: otherContact.phone_masked }], sms_escalation_interval_minutes: null, voice_escalation_interval_minutes: null, wechat_escalation_interval_minutes: null }
+const ruleFixture = { id: 'rule-one', tenant_id: 'tenant-a', tenant_name: '单位A', scope_type: 'UNIT' as const, scope_id: 'tenant-a', name: '合成规则', event_scope: 'FIRE' as const, enabled: true, revision: 2, created_at: clock, receivers: [{ channel: 'SMS' as const, contact_id: contact.id, contact_name: contact.name, phone_masked: contact.phone_masked, level: 1 }, { channel: 'VOICE' as const, contact_id: otherContact.id, contact_name: otherContact.name, phone_masked: otherContact.phone_masked, level: 1 }], sms_escalation_interval_minutes: null, voice_escalation_interval_minutes: null, wechat_escalation_interval_minutes: null }
 const page = (items: unknown[], p = 1, total = items.length, size = 5) => ({ items, total, page: p, size })
 function login(permissions = grants, audience: 'management' | 'customer' = 'management') { useSession.getState().login({ ...(audience === 'management' ? management : customer), permissions }, audience); if (audience === 'management') useSession.getState().setScope(['tenant-a'], [], true) }
 function server(url: string, init?: RequestInit): Response {
@@ -24,10 +24,11 @@ function server(url: string, init?: RequestInit): Response {
   if (parsed.pathname.endsWith('/notification-wechat/recipients')) return response([])
   if (parsed.pathname.endsWith('/notification-contacts')) return body ? response({ ...contact, name: body.name, enabled: body.enabled, contact_type: body.contact_type }) : response(page(contacts.slice((pageNumber - 1) * 2, pageNumber * 2), pageNumber, contacts.length, 2))
   if (parsed.pathname.endsWith(`/notification-contacts/${contact.id}`)) return response(body ? { ...contact, name: body.name, enabled: body.enabled, contact_type: body.contact_type } : contact)
+  if (parsed.pathname.endsWith('/notification-rules/targets')) return response({ ...page([], pageNumber, 0, 20), tenant_id: new Headers(init?.headers).get('X-Tenant-Id'), scope_type: parsed.searchParams.get('scopeType'), access: 'ALL' })
   if (parsed.pathname.endsWith('/notification-rules')) {
     if (!body) return response(page([ruleFixture], pageNumber, 1, 20))
     const lookup = new Map(contacts.map(item => [item.id, item]))
-    return response({ id: 'rule-one', tenant_id: 'tenant-a', tenant_name: '单位A', name: body.name, event_scope: body.event_scope, enabled: body.enabled, revision: body.expected_revision ?? 0, created_at: clock, receivers: body.receivers.map((receiver: { channel: 'SMS' | 'VOICE'; contact_id: string; level: number }) => ({ ...receiver, contact_name: lookup.get(receiver.contact_id)?.name ?? '', phone_masked: lookup.get(receiver.contact_id)?.phone_masked ?? '', wechat_binding_id: null })), sms_escalation_interval_minutes: body.sms_escalation_interval_minutes, voice_escalation_interval_minutes: body.voice_escalation_interval_minutes, wechat_escalation_interval_minutes: body.wechat_escalation_interval_minutes })
+    return response({ id: 'rule-one', tenant_id: 'tenant-a', tenant_name: '单位A', scope_type: body.scope_type, scope_id: body.scope_id, name: body.name, event_scope: body.event_scope, enabled: body.enabled, revision: body.expected_revision ?? 0, created_at: clock, receivers: body.receivers.map((receiver: { channel: 'SMS' | 'VOICE'; contact_id: string; level: number }) => ({ ...receiver, contact_name: lookup.get(receiver.contact_id)?.name ?? '', phone_masked: lookup.get(receiver.contact_id)?.phone_masked ?? '', wechat_binding_id: null })), sms_escalation_interval_minutes: body.sms_escalation_interval_minutes, voice_escalation_interval_minutes: body.voice_escalation_interval_minutes, wechat_escalation_interval_minutes: body.wechat_escalation_interval_minutes })
   }
   if (parsed.pathname.endsWith('/notification-rules/rule-one')) return response(ruleFixture)
   throw new Error(`Unexpected notification endpoint ${url}`)
@@ -76,7 +77,7 @@ describe('真实联系人资料与权限', () => {
   it('编辑读取记录所属单位并以详情revision执行CAS', async () => {
     const fetcher = setup(), user = userEvent.setup(); await openRules(); const row = await screen.findByText(/合成规则/)
     await user.click(within(row.closest('tr')!).getByRole('button', { name: '编辑规则' }))
-    await screen.findByText(/rule-one · revision 2/)
+    await waitFor(() => expect(screen.getByLabelText('规则名称')).toBeEnabled())
     change('规则名称', '编辑后的真实规则')
     change('本次操作原因', '明确更新真实收件策略')
     await confirm(user, '核对规则变更', '确认保存规则')
@@ -115,7 +116,7 @@ describe('真实联系人资料与权限', () => {
     await waitFor(() => expect(writes(fetcher)).toHaveLength(1))
     const [call] = writes(fetcher), body = JSON.parse(call[1]!.body as string)
     expect(new URL(call[0], 'http://local').pathname).toBe('/api/management/notification-rules')
-    expect(body).toMatchObject({ name: '真实报警分级收件', enabled: true, sms_escalation_interval_minutes: 0, voice_escalation_interval_minutes: null, reason: '明确配置真实报警收件人'})
+    expect(body).toMatchObject({ name: '真实报警分级收件', scope_type: 'UNIT', scope_id: 'tenant-a', enabled: true, sms_escalation_interval_minutes: 0, voice_escalation_interval_minutes: null, reason: '明确配置真实报警收件人'})
     expect(body.receivers).toEqual([{ channel: 'SMS', level: 1, contact_id: contact.id }, { channel: 'SMS', level: 2, contact_id: otherContact.id }, { channel: 'VOICE', level: 1, contact_id: contact.id }])
     expect(body).not.toHaveProperty('expected_revision')
     const serialized = JSON.stringify(body)
@@ -125,10 +126,12 @@ describe('真实联系人资料与权限', () => {
     expect(fetcher.mock.calls.some(([url]) => /notification-provider.*test|notification.*send/.test(String(url)))).toBe(false)
   })
   it('规则响应校验真实双渠道连续级别并忽略已退役配置字段', () => {
-    const dto = notificationRule({ id: 'rule-read', tenant_id: 'tenant-a', tenant_name: '单位A', name: '真实规则', event_scope: 'FIRE', enabled: true, revision: 3, created_at: clock, receivers: [{ channel: 'SMS', contact_id: contact.id, contact_name: contact.name, phone_masked: contact.phone_masked, level: 1 }, { channel: 'VOICE', contact_id: otherContact.id, contact_name: otherContact.name, phone_masked: otherContact.phone_masked, level: 1 }], sms_escalation_interval_minutes: null, voice_escalation_interval_minutes: null, wechat_escalation_interval_minutes: null, mode: 'SIMULATION', sms_template_id: 'retired' })
+    const dto = notificationRule({ ...ruleFixture, id: 'rule-read', name: '真实规则', revision: 3, mode: 'SIMULATION', sms_template_id: 'retired' })
     expect(dto).not.toHaveProperty('mode')
     expect(() => notificationRule({ ...dto, tenant_id: undefined, tenant_name: undefined })).toThrow()
     expect(() => notificationRule({ ...dto, receivers: [{ ...dto.receivers[0], level: 2 }, dto.receivers[1]] })).toThrow()
+    expect(() => notificationRule({ ...dto, scope_type: undefined })).toThrow()
+    expect(() => notificationRule({ ...dto, scope_id: 'other-unit' })).toThrow()
   })
   it('权限被拒绝时不保留电话草稿，也不显示为已保存', async () => { setup((url, init) => init?.method === 'POST' && url.endsWith('/notification-contacts') ? response({ code: 'FORBIDDEN', message: '没有此操作权限', request_id: 'notif403' }, 403) : undefined); const user = userEvent.setup(); await user.click(await screen.findByRole('button', { name: '创建通知联系人' })); change('联系人名称', '合成联系'); await user.selectOptions(screen.getByLabelText('联系人类型'), 'OTHER'); change('联系电话', phone); change('操作原因', '资料维护'); await user.click(screen.getByRole('button', { name: '创建联系人' })); expect(await screen.findByRole('alert')).toHaveTextContent('没有此操作权限'); expect(screen.getByLabelText('联系电话')).toHaveValue(''); expect(screen.getByRole('dialog')).toBeInTheDocument() })
   it('授权读取范围切换中止旧联系人列表请求', async () => { let resolve!: (value: Response) => void; const fetcher = setup(url => url.includes('/notification-contacts?') ? new Promise<Response>(done => { resolve = done }) : undefined); act(() => useSession.getState().setScope(['tenant-b'], [], true)); expect(fetcher.mock.calls.some(call => call[1]?.signal?.aborted)).toBe(true); await act(async () => resolve(response(page([otherContact])))) })

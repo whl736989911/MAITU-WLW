@@ -78,8 +78,7 @@ public class DeviceQueryService {
     }
     private String select() {
         String batteryStatus=batteryStatus("d");
-        String reportStatus = "CASE WHEN d.last_message_at IS NULL THEN 'UNACTIVATED' WHEN "+policy.online()+" THEN 'ONLINE' ELSE 'OFFLINE' END";
-        return "SELECT CAST(? AS TIMESTAMP WITH TIME ZONE) AS battery_policy_evaluated_at,d.*,p.name AS place_name,t.name AS tenant_name,"+policy.columns()+","+policy.connectivity()+" AS computed_connectivity,"+reportStatus+" AS report_status,dbo.comparator AS battery_override_comparator,dbo.threshold AS battery_override_threshold,COALESCE(dbo.revision,0) AS battery_override_revision,pv.battery_low_comparator AS version_battery_comparator,pv.battery_low_threshold AS version_battery_threshold,COALESCE(pv.revision,0) AS version_battery_revision,"+batteryStatus+" AS computed_battery_status"+statuses.columns()+" "+fromClause();
+        return "SELECT CAST(? AS TIMESTAMP WITH TIME ZONE) AS battery_policy_evaluated_at,d.*,p.name AS place_name,t.name AS tenant_name,"+policy.columns()+","+policy.connectivity()+" AS computed_connectivity,dbo.comparator AS battery_override_comparator,dbo.threshold AS battery_override_threshold,COALESCE(dbo.revision,0) AS battery_override_revision,pv.battery_low_comparator AS version_battery_comparator,pv.battery_low_threshold AS version_battery_threshold,COALESCE(pv.revision,0) AS version_battery_revision,"+batteryStatus+" AS computed_battery_status"+statuses.columns()+" "+fromClause();
     }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ) public Page<DeviceRow> devices(String actor,String tenant,int page,Integer requestedSize,String keyword) {
         return devices(actor,tenant,page,requestedSize,keyword,null,null);
@@ -149,7 +148,7 @@ public class DeviceQueryService {
     }
     private DeviceRow row(java.sql.ResultSet rs) throws java.sql.SQLException {
         var evaluated=rs.getObject("battery_policy_evaluated_at",OffsetDateTime.class);
-        var display=statuses.compose(DeviceStatusComposer.Code.valueOf(rs.getString("report_status")),rs.getBoolean("pending_alarm"),rs.getBoolean("notification_shielded"),rs.getString("pending_faults"));
+        var display=statuses.compose(DeviceStatusComposer.Code.valueOf(rs.getString("computed_connectivity")),rs.getBoolean("pending_alarm"),rs.getBoolean("notification_shielded"),rs.getString("pending_faults"));
         return new DeviceRow(rs.getString("id"),rs.getString("tenant_id"),rs.getString("tenant_name"),rs.getString("name"),rs.getString("device_eui"),rs.getString("model"),rs.getString("address"),rs.getString("computed_connectivity"),rs.getString("physical_state"),rs.getObject("last_message_at",OffsetDateTime.class),rs.getBigDecimal("battery_percent"),rs.getBoolean("is_simulated"),rs.getString("product_id"),rs.getString("product_version_id"),rs.getString("product_name"),rs.getObject("version_number",Long.class),rs.getLong("revision"),rs.getString("integration_state"),rs.getString("place_id"),rs.getString("place_name"),rs.getString("system_type"),rs.getString("device_category"),policy.effective(rs,rs.getString("tenant_id"),rs.getString("id")),BatteryThresholdQueries.observation(rs,evaluated),display);
     }
     public DeviceRow device(String actor,String tenant,String id,boolean lock) {

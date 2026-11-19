@@ -92,12 +92,15 @@ class OfflineEventTaskTest {
         assertThat(task.scan()).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_events WHERE kind='OFFLINE'",Integer.class)).isEqualTo(2);
         String params=jdbc.queryForObject("SELECT params_json FROM legacy_ingest_events WHERE device_id='reported' AND kind='OFFLINE'",String.class);
-        assertThat(params).contains("\"thresholdMinutes\":30","\"evidence\":\"accepted_heartbeat\"");
+        assertThat(params).contains("\"thresholdMinutes\":30","\"evidence\":\"accepted_heartbeat\"",
+            "\"thresholdSourceScope\":\"DEVICE\"","\"thresholdSourceRevision\":1").doesNotContain("reported");
         assertThat(jsonTime(params,"lastMessageAt").toInstant()).isEqualTo(heartbeat.toInstant());
         OffsetDateTime reportedOfflineAt=jdbc.queryForObject("SELECT observed_at FROM legacy_ingest_events WHERE device_id='reported' AND kind='OFFLINE'",OffsetDateTime.class);
         assertThat(reportedOfflineAt.toInstant()).isBetween(before.toInstant(),after.toInstant());
         assertThat(jsonTime(params,"evaluatedAt").toInstant()).isEqualTo(reportedOfflineAt.toInstant());
-        assertThat(jdbc.queryForObject("SELECT params_json FROM legacy_ingest_events WHERE device_id='tenant-only' AND kind='OFFLINE'",String.class)).contains("\"thresholdMinutes\":60");
+        assertThat(jdbc.queryForObject("SELECT params_json FROM legacy_ingest_events WHERE device_id='tenant-only' AND kind='OFFLINE'",String.class))
+            .contains("\"thresholdMinutes\":60","\"thresholdSourceScope\":\"PLACE\"","\"thresholdSourceRevision\":1")
+            .doesNotContain("tenant-only","building");
         OffsetDateTime activity=now.plusMinutes(1);
         jdbc.update("UPDATE devices SET last_message_at=? WHERE id='reported'",activity);
         jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at) VALUES ('param-after-offline','tenant','reported','PARAM','source.param','{}',?,?)",activity,activity);

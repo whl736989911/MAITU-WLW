@@ -22,7 +22,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 class AlarmReminderSchedulerTest {
     private void handledDueAlarmIsCancelledButFutureScheduleIsUnchanged(DriverManagerDataSource source) {
         var jdbc = new JdbcTemplate(source);
-        jdbc.execute("CREATE TABLE alarms(tenant_id VARCHAR(64) NOT NULL,id VARCHAR(64) NOT NULL,response_state VARCHAR(16) NOT NULL,occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,PRIMARY KEY(tenant_id,id))");
+        jdbc.execute("CREATE TABLE alarms(tenant_id VARCHAR(64) NOT NULL,id VARCHAR(64) NOT NULL,device_id VARCHAR(64),response_state VARCHAR(16) NOT NULL,occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,PRIMARY KEY(tenant_id,id))");
+        jdbc.execute("CREATE TABLE devices(tenant_id VARCHAR(64),id VARCHAR(64),model VARCHAR(64))");
         jdbc.execute("CREATE TABLE alarm_reminder_schedule(tenant_id VARCHAR(64) NOT NULL,alarm_id VARCHAR(64) NOT NULL,cycle_number BIGINT NOT NULL,cycle_started_at TIMESTAMP WITH TIME ZONE NOT NULL,period_hours INTEGER NOT NULL,next_due_at TIMESTAMP WITH TIME ZONE NOT NULL,status VARCHAR(16) NOT NULL,revision BIGINT NOT NULL,updated_at TIMESTAMP WITH TIME ZONE NOT NULL,PRIMARY KEY(tenant_id,alarm_id),FOREIGN KEY(tenant_id,alarm_id) REFERENCES alarms(tenant_id,id))");
         var now = OffsetDateTime.now(ZoneOffset.UTC);
         for (String id : new String[]{"handled-due", "handled-future"}) {

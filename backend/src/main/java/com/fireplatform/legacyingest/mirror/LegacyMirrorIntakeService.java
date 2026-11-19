@@ -1,6 +1,7 @@
 package com.fireplatform.legacyingest.mirror;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fireplatform.legacyingest.ingest.FormTtlNormalizer;
 import com.fireplatform.legacyingest.ingest.LegacyIngestService;
 import com.fireplatform.shared.ApiError;
 import java.nio.charset.StandardCharsets;
@@ -58,20 +59,27 @@ public class LegacyMirrorIntakeService {
         } catch (Exception e) { throw new IllegalStateException("无法创建镜像 spool 目录: " + base, e); }
     }
 
-    public Accepted accept(String ingress, String originalUri, String platform, String messageType,
-                           String body, Map<String, String> headers) {
+    public Accepted accept(String ingress, String platform, String messageType, String body, String contentType) {
         try {
             ensureDirs();
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             String sha = sha256(bytes);
             if (exists(sha)) return new Accepted(sha, true);
-            Stored stored = new Stored(sha, ingress, truncate(originalUri, 500), platform, messageType, body,
-                    safeHeaders(headers), sha, OffsetDateTime.now(ZoneOffset.UTC), 0);
+            boolean cat1 = "HTTP_FORM_TTL".equals(ingress);
+            boolean knownPlatform = platform != null && ingest.supportsPlatform(platform);
+            // Null still means the default normalizer; a matched but unknown platform must still fail.
+            String storedPlatform = platform == null || knownPlatform ? platform : "unknown";
+            String category = cat1 ? FormTtlNormalizer.canonicalRouteType(messageType) : null;
+            String route = cat1
+                    ? (category == null ? "/api/ingest/cat1" : "/v1/formttl/" + category + "/telemetry")
+                    : (knownPlatform ? "/api/notify/v1/{redacted}/" + platform + "/telemetry" : "/api/ingest/ttl");
+            Stored stored = new Stored(sha, ingress, route, storedPlatform, category, body,
+                    diagnosticHeaders(contentType), sha, OffsetDateTime.now(ZoneOffset.UTC), 0);
             Path temp = queue.resolve("." + UUID.randomUUID() + ".tmp");
             Files.writeString(temp, mapper.writeValueAsString(stored), StandardCharsets.UTF_8);
             Files.move(temp, queue.resolve(sha + ".json"), StandardCopyOption.ATOMIC_MOVE);
             bump(receivedBuckets);
-            if (platform != null) lastSeen.put(platform, System.currentTimeMillis());
+            if (knownPlatform) lastSeen.put(platform, System.currentTimeMillis());
             immediate.offer(sha); scheduleImmediate();
             return new Accepted(sha, false);
         } catch (Exception e) {
@@ -246,12 +254,15 @@ public class LegacyMirrorIntakeService {
     }
 
     private long modified(Path path) { try { return Files.getLastModifiedTime(path).toMillis(); } catch (Exception e) { return 0; } }
-    private Map<String, String> safeHeaders(Map<String, String> headers) {
-        Map<String, String> safe = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        headers.forEach((key, value) -> {
-            if (!key.equalsIgnoreCase("X-Ingest-Token") && !key.equalsIgnoreCase("Authorization")) safe.put(key, value);
-        });
-        return safe;
+    private static Map<String, String> diagnosticHeaders(String contentType) {
+        if (contentType == null) return Map.of();
+        int parameters = contentType.indexOf(';');
+        String mediaType = (parameters < 0 ? contentType : contentType.substring(0, parameters)).trim().toLowerCase(Locale.ROOT);
+        return switch (mediaType) {
+            case "application/json", "application/x-www-form-urlencoded", "application/octet-stream", "text/plain" ->
+                Map.of("Content-Type", mediaType);
+            default -> Map.of();
+        };
     }
     private static String truncate(String value, int max) { return value == null ? null : value.length() <= max ? value : value.substring(0, max); }
     private static String sha256(byte[] bytes) {

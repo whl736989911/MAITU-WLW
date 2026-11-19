@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
@@ -11,15 +11,16 @@ import { Badge } from '@/components/ui/badge'
 import { Empty, ErrorNotice, Loading, PageHeading, Pager } from '@/components/common'
 import { PageHelp } from '@/components/page-tools'
 import { DashboardBars, DashboardLineChart, DashboardPanel } from '@/components/dashboard-charts'
+import { browserSpeechAvailable, browserVoiceMutedUntil, canReadBrowserVoice, readEventVoice, useBrowserSpeech } from '@/components/alarm-config-voice'
 
-type Prefs = { sound: boolean; refreshSeconds: number }
+type Prefs = { refreshSeconds: number }
 const PREF_KEY = 'fire-platform.wall.preferences.v1'
 function readPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(PREF_KEY)
-    if (raw) { const parsed = JSON.parse(raw) as Partial<Prefs>; return { sound: parsed.sound === true, refreshSeconds: typeof parsed.refreshSeconds === 'number' && parsed.refreshSeconds >= 5 ? Math.min(parsed.refreshSeconds, 120) : 15 } }
+    if (raw) { const parsed = JSON.parse(raw) as Partial<Prefs>; return { refreshSeconds: typeof parsed.refreshSeconds === 'number' && parsed.refreshSeconds >= 5 ? Math.min(parsed.refreshSeconds, 120) : 15 } }
   } catch { /* Corrupt preferences must not enable sound. */ }
-  return { sound: false, refreshSeconds: 15 }
+  return { refreshSeconds: 15 }
 }
 
 export function WallPage() {
@@ -33,6 +34,9 @@ function WallContent() {
   const scopeEmpty = session.scopeInitialized && scopeTenantIds.length === 0 && scopePlaceIds.length === 0
   const scopeKey = `${scopeTenantIds.join(',')}:${scopePlaceIds.join(',')}:${session.scopeInitialized}`
   const canReadAlarms = session.permissions.includes('alarm:read')
+  const canSpeak = canReadBrowserVoice('FIRE', session)
+  const [sound, setSound] = useState(false)
+  const { play, stop } = useBrowserSpeech()
   const [prefs, setPrefs] = useState<Prefs>(readPrefs), [days, setDays] = useState<7 | 30>(7), [page, setPage] = useState(1)
   const [physical, setPhysical] = useState<'' | 'FIRE' | 'NORMAL'>('FIRE'), [response, setResponse] = useState<'' | 'UNHANDLED' | 'HANDLED'>('')
   const [refreshedAt, setRefreshedAt] = useState<string | null>(null), [online, setOnline] = useState(navigator.onLine), [speechNote, setSpeechNote] = useState(''), [fullScreen, setFullScreen] = useState(document.fullscreenElement === document.documentElement)
@@ -58,17 +62,32 @@ function WallContent() {
     confirmedLoads.current = { summary: summary.loadedAt, analytics: analytics.loadedAt, alarms: canReadAlarms ? alarms.loadedAt : undefined }
     setRefreshedAt(new Date().toISOString())
   }, [summary.data, analytics.data, alarms.data, summary.loadedAt, analytics.loadedAt, alarms.loadedAt, summary.loading, analytics.loading, alarms.loading, summary.error, analytics.error, alarms.error, session.scopeInitialized, scopeEmpty, canReadAlarms])
-  useEffect(() => {
-    if (!prefs.sound || alarms.loading || alarms.error != null) return
-    const items = alarms.data?.items ?? []
-    if (typeof window.speechSynthesis === 'undefined') { setSpeechNote('浏览器不支持语音播报'); return }
-    for (const alarm of items) {
-      if (alarm.response_state !== 'UNHANDLED' || alarm.physical_state !== 'FIRE' || spoken.current.has(alarm.id)) continue
-      spoken.current.add(alarm.id)
-      try { const utterance = new SpeechSynthesisUtterance(`火警 ${alarm.device_name ?? alarm.device_id}`); utterance.lang = 'zh-CN'; window.speechSynthesis.speak(utterance); setSpeechNote('已发起语音播报（不代表已送达或已处置）') }
-      catch { setSpeechNote('语音播报失败；请检查浏览器支持和权限') }
-    }
-  }, [alarms.data, alarms.loading, alarms.error, prefs.sound])
+  useLayoutEffect(() => stop, [alarms.error, online, page, physical, response, sound, stop])
+  useLayoutEffect(() => {
+    if (!sound || !canSpeak || !online || alarms.loading || alarms.error != null || !alarms.data) return
+    const controller = new AbortController()
+    const candidates = alarms.data.items.filter(alarm => alarm.event_type === 'FIRE' && alarm.physical_state === 'FIRE' && alarm.response_state === 'UNHANDLED')
+      .map(alarm => ({ tenantId: alarm.tenant_id, deviceId: alarm.device_id, sourceId: alarm.id, eventType: 'FIRE' as const }))
+      .filter(target => !spoken.current.has(JSON.stringify([target.tenantId, target.sourceId])) && browserVoiceMutedUntil(target) <= Date.now())
+    void Promise.allSettled(candidates.map(target => readEventVoice(target, controller.signal))).then(results => {
+      if (controller.signal.aborted || !canReadBrowserVoice('FIRE')) return
+      let unavailable = false
+      for (const [index, result] of results.entries()) {
+        if (result.status === 'rejected') { unavailable = true; continue }
+        if (!result.value.message) continue
+        const target = candidates[index], identity = JSON.stringify([target.tenantId, target.sourceId])
+        const eligible = () => !controller.signal.aborted && canReadBrowserVoice('FIRE') && browserVoiceMutedUntil(target) <= Date.now()
+        if (play(result.value.message, false, eligible, () => setSpeechNote('浏览器未能播放语音'))) spoken.current.add(identity)
+      }
+      if (unavailable) setSpeechNote('部分报警的设备策略或事件内容未确认，未播报这些记录')
+    })
+    return () => controller.abort()
+  }, [alarms.data, alarms.loading, alarms.error, canSpeak, online, play, sound])
+  function toggleSound() {
+    if (sound) { stop(); setSound(false); setSpeechNote(''); return }
+    if (!canSpeak || !browserSpeechAvailable()) { setSpeechNote('浏览器不支持本地语音播报'); return }
+    setSpeechNote(''); setSound(true)
+  }
   const stale = refreshedAt !== null && Date.now() - Date.parse(refreshedAt) > prefs.refreshSeconds * 2000
   const refreshing = summary.loading || analytics.loading || canReadAlarms && alarms.loading
   const refreshFailed = summary.error != null || analytics.error != null || canReadAlarms && alarms.error != null
@@ -79,18 +98,18 @@ function WallContent() {
     catch { setSpeechNote('全屏模式不可用；可继续使用普通大屏布局') }
   }
   return <div className="wall-dashboard">
-    <PageHeading eyebrow="WALL · 大屏" title="值守大屏" description="授权范围内的实时设备与待处理报警。"><PageHelp title="大屏展示口径"><div className="form-stack"><p>仅查询当前已确认的授权单位与位置范围；范围为空时不扩大为全量数据。</p><p>当前设备状态为策略快照。报警趋势排除明确缺失来源发生时间的新记录；旧历史时间保留但来源未核验。来源故障按观察时间统计，未知时间单独计数，不以接收时间替代。</p><p>页面自动刷新与语音偏好仅在本浏览器生效；不构成无漏报或通知送达保证。语音仅针对用户可见的未处理记录，不发出物理设备命令。</p></div></PageHelp></PageHeading>
+    <PageHeading eyebrow="WALL · 大屏" title="值守大屏" description="授权范围内的实时设备与待处理报警。"><PageHelp title="大屏展示口径"><div className="form-stack"><p>仅查询当前已确认的授权单位与位置范围；范围为空时不扩大为全量数据。</p><p>当前设备状态为策略快照。报警趋势排除明确缺失来源发生时间的新记录；旧历史时间保留但来源未核验。来源故障按观察时间统计，未知时间单独计数，不以接收时间替代。</p><p>每次打开大屏须主动启用本地语音。可见的待处理火警须有设备有效策略和已记录内容，每条在本次大屏会话只发起一次；不拨打电话、不操作设备，也不代表通知送达或报警已处置。</p></div></PageHelp></PageHeading>
     <div className="wall-toolbar">
       <span role="status" className="muted-note">最近完整刷新：{refreshedAt ? dateTime(refreshedAt) : '尚未加载'} · 每 {prefs.refreshSeconds} 秒刷新</span>
       {refreshing && <Badge variant="outline">正在刷新</Badge>}{refreshFailed && <Badge variant="outline">部分数据读取失败</Badge>}
       {!online && <Badge variant="outline">浏览器离线</Badge>}{stale && <Badge variant="outline">数据已陈旧（超过两个刷新周期）</Badge>}
       <Button type="button" variant="outline" size="sm" onClick={refreshWall}>立即刷新</Button>
-      <Button type="button" variant="outline" size="sm" onClick={() => savePrefs({ ...prefs, sound: !prefs.sound })}>{prefs.sound ? '关闭语音播报' : '启用语音播报'}</Button>
+      {canSpeak && <Button type="button" variant="outline" size="sm" disabled={!session.scopeInitialized || scopeEmpty} onClick={toggleSound}>{sound ? '关闭语音播报' : '启用语音播报'}</Button>}
       <Button type="button" variant="outline" size="sm" disabled={prefs.refreshSeconds <= 5} onClick={() => savePrefs({ ...prefs, refreshSeconds: Math.max(5, prefs.refreshSeconds - 5) })}>加快刷新</Button>
       <Button type="button" variant="outline" size="sm" onClick={() => savePrefs({ ...prefs, refreshSeconds: Math.min(120, prefs.refreshSeconds + 5) })}>放慢刷新</Button>
       <Button type="button" variant="outline" size="sm" onClick={toggleFullScreen}>{fullScreen ? '退出全屏' : '全屏显示'}</Button>
     </div>
-    <p role="status" className="muted-note">语音播报：{prefs.sound ? '已启用' : '已关闭（默认关闭）'}{speechNote ? ` · ${speechNote}` : ''}</p>
+    <p role="status" className="muted-note">语音播报：{!canSpeak ? '当前账户无本地报警语音读取权限' : sound ? '本页已开启' : '已关闭（默认关闭）'}{speechNote ? ` · ${speechNote}` : ''}</p>
     <div className="wall-filter-bar"><div role="group" aria-label="大屏趋势时间范围">{([7, 30] as const).map(n => <Button key={n} type="button" variant={days === n ? 'default' : 'outline'} onClick={() => { setDays(n); setPage(1) }}>近{n}天</Button>)}</div>
       <label>物理状态<select className="native-select" value={physical} onChange={event => { setPhysical(event.target.value as typeof physical); setPage(1) }}><option value="">全部</option><option value="FIRE">火警</option><option value="NORMAL">已恢复</option></select></label>
       <label>处置状态<select className="native-select" value={response} onChange={event => { setResponse(event.target.value as typeof response); setPage(1) }}><option value="">全部</option><option value="UNHANDLED">待处理</option><option value="HANDLED">已处理</option></select></label>

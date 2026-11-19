@@ -39,16 +39,31 @@ describe('本单位位置树与同名节点隔离', () => {
     expect(screen.queryByRole('button', { name: '位置操作 · 东楼 / 205室' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '位置操作 · 西楼 / 205室' })).toBeInTheDocument()
   })
-  it('关闭西楼草稿再编辑东楼同名节点，名称与上级来自新目标而非旧草稿', async () => {
+  it('关闭西楼草稿后改名东楼同名节点，仍保留东楼实际父位置', async () => {
+    const previousFetch = globalThis.fetch
+    const writes: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === '/api/customer/places/east-205' && options?.method === 'PUT') {
+        writes.push(JSON.parse(String(options.body)))
+        return response({ ...places[3], name: '东楼会议室', revision: 5 })
+      }
+      return previousFetch(url, options)
+    }))
     render(<CustomerPlaceManager/>)
     const west = await openEditor('西楼 / 205室')
-    expect(west.getByLabelText('上级位置')).toHaveValue('west')
+    expect(west.queryByRole('combobox', { name: '上级位置' })).not.toBeInTheDocument()
     await userEvent.clear(west.getByLabelText('位置名称'))
     await userEvent.type(west.getByLabelText('位置名称'), '尚未保存的西楼草稿')
     await userEvent.click(west.getByRole('button', { name: /取\s*消/ }))
     const east = await openEditor('东楼 / 205室')
     expect(east.getByLabelText('位置名称')).toHaveValue('205室')
-    expect(east.getByLabelText('上级位置')).toHaveValue('east')
-    expect(east.queryByText('尚未保存的西楼草稿')).not.toBeInTheDocument()
+    expect(east.queryByRole('combobox', { name: '上级位置' })).not.toBeInTheDocument()
+    await userEvent.clear(east.getByLabelText('位置名称'))
+    await userEvent.type(east.getByLabelText('位置名称'), '东楼会议室')
+    await userEvent.click(east.getByRole('button', { name: '保存名称' }))
+    expect(writes).toEqual([{ name: '东楼会议室', parent_place_id: 'east', expected_revision: 4 }])
+    await userEvent.click(await screen.findByRole('button', { name: '位置操作 · 东楼 / 205室' }))
+    await userEvent.click(within(screen.getByRole('group', { name: '位置操作 · 东楼 / 205室' })).getByRole('button', { name: '移动整枝' }))
+    expect(await screen.findByRole('combobox', { name: '目标上级位置' })).toBeInTheDocument()
   })
 })

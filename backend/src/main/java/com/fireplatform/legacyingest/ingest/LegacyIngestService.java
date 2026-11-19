@@ -17,6 +17,11 @@ public class LegacyIngestService {
     private record Device(String tenant,String id,String legacyProductId,String eui,OffsetDateTime verifiedFrom) { }
     private final JdbcTemplate jdbc;private final ObjectMapper mapper;private final LegacyEventSink sink;private final com.fireplatform.legacyingest.codec.LegacyDecodeService decoder;private final Map<String,LegacyIngressNormalizer> normalizers;private final com.fireplatform.identity.CoordinationFence coordination;
     public LegacyIngestService(JdbcTemplate jdbc,ObjectMapper mapper,LegacyEventSink sink,com.fireplatform.legacyingest.codec.LegacyDecodeService decoder,List<LegacyIngressNormalizer> normalizers,com.fireplatform.identity.CoordinationFence coordination){this.jdbc=jdbc;this.mapper=mapper;this.sink=sink;this.decoder=decoder;this.normalizers=new HashMap<>();for(var normalizer:normalizers){String key=normalizer instanceof LorawanTurboNormalizer?"lorawan_turbo":normalizer instanceof AepTurboNormalizer?"aep_turbo":normalizer instanceof TyyTurboNormalizer?"tyy_turbo":normalizer instanceof TurmassNormalizer?"turmass":normalizer instanceof MaituMqttNormalizer?"maitu_mqtt":"formttl";this.normalizers.put(key,normalizer);if(normalizer instanceof TyyTurboNormalizer)this.normalizers.put("oceanconnect_turbo",normalizer);}this.coordination=coordination;}
+
+    public boolean supportsPlatform(String platform) {
+        return normalizers.containsKey(platform);
+    }
+
     @Transactional public Result ingest(String ingress,String platform,String messageType,String rawBody){
         String effective=platform==null||platform.isBlank()?"formttl":platform;
         final JsonNode body;

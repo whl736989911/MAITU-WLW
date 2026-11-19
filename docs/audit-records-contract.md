@@ -1,11 +1,12 @@
 # P8d1：当前单位操作审计的最小只读查询
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
 ## 状态与基线
 
 - **Frozen v1，Root task53完成只读审查后释放独立实现。** backend task54与frontend task55已交完整审查，无未决业务政策门；61动作/13结果、唯一UNCLASSIFIED及V10专测两token setup例外已明确冻结。合同本身不是代码/测试通过结论。
-- 原P8c1 [8EEB完整包](<../artifacts/p8c1-8EEBADB517A68EF3.jar>)、[662/36闭合](<../backend/p8c1-final-verification-proof.json>)保留。Root实施前[377文件观察](<../artifacts/p8d1-baseline-source-observation.json>)actual0：原43 Java测试源（42测试类+helper）、18前端测试文件、44静态/332 Java21类/11迁移同原包；不把旧结果算作新源运行结果，也不是Git历史真实性证明。
+- 原P8c1 8EEB完整包、662/36闭合保留。Root实施前377文件观察actual0：原43 Java测试源（42测试类+helper）、18前端测试文件、44静态/332 Java21类/11迁移同原包；不把旧结果算作新源运行结果，也不是Git历史真实性证明。
 - 自托管、无真实厂家/通知/云资产；不改DSH。用户不做领取、直接CAS提交、业务数值须有真实消费者与集中配置的既定约束不变。
-- Root实施状态（非改变Frozen v1）：[AD55完整737包/byte](<../backend/p8d1-root-package-proof.json>)已actual0，owner FE434无独立原full.log的权威边界已记录；新[H2](<../backend/p8d1-final-audit-h2-01-receipt.json>)/[nativePG](<../backend/p8d1-final-audit-pg-01-receipt.json>)同包真实Chrome首轮均已collect0，[八原图](<screenshots/p8d1-final-original-proof.json>)逐张read并原byte归档。原36已同AD55按原flags全actual收0，[最终737/38/八原图闭合](<../backend/p8d1-final-verification-proof.json>)、[运行后更严格包byte复核](<../backend/p8d1-post-runtime-package-proof.json>)及[17:44:24+08只自有清理](<../backend/p8d1-final-cleanup-proof.json>)均actual0，保PG18/DSH/诊断目录；以[验证记录](<verification.md>)为准，只是本地有限验证而非生产/完整取证或全面安全认证。
+- Root实施状态（非改变Frozen v1）：AD55完整737包/byte已actual0，owner FE434无独立原full.log的权威边界已记录；新H2/nativePG同包真实Chrome首轮均已collect0，八原图逐张read并原byte归档。原36已同AD55按原flags全actual收0，最终737/38/八原图闭合、运行后更严格包byte复核及17:44:24+08只自有清理均actual0，保PG18/DSH/诊断目录；以验证记录为准，只是本地有限验证而非生产/完整取证或全面安全认证。
 
 ## 1. 最小功能与非目标
 
@@ -184,8 +185,8 @@ draft/applied分离；显式应用/清空/翻页/刷新/取消，翻页/刷新�
 
 ## 10. 明确的唯一历史测试setup例外（授权revision2）
 
-原[AutomationMigrationTest](<../backend/src/test/java/com/fireplatform/AutomationMigrationTest.java>)名为V10两根权限专测，却在target9之后两次迁移到latest；正确V12增加第三个audit:read必然破其原exact两权断言。这不是改V12 selector、删断言、跳测或假装旧268已绿的理由。
+原AutomationMigrationTest名为V10两根权限专测，却在target9之后两次迁移到latest；正确V12增加第三个audit:read必然破其原exact两权断言。这不是改V12 selector、删断言、跳测或假装旧268已绿的理由。
 
-Root已[原byte归档](<../artifacts/p8d1-AutomationMigrationTest-original.java.txt>)并[绑定唯一派生](<../artifacts/p8d1-migration-test-setup-exception.json>)actual0，原SHA6BCE41CE...74499，派生SHA9BD9A150...DE5E3。流程必须：先正确V12且原测试不改跑focused实际RED并保日志/收job；之后仅两处literal `.dataSource(url,"sa","").load().migrate()` 加 `.target("10")`，首次target9和所有原assert/其它byte原样；新增独立AuditRecordMigrationTest验证V11→V12/root-only/其它权限及业务事实不变/latest重复幂等。除这个setup例外，原43 Java测试源及18 FE测试文件均不得更改；全部原662断言继续跑，不以预飞/旧包结果代替。
+Root已原byte归档并绑定唯一派生actual0，原SHA6BCE41CE...74499，派生SHA9BD9A150...DE5E3。流程必须：先正确V12且原测试不改跑focused实际RED并保日志/收job；之后仅两处literal `.dataSource(url,"sa","").load().migrate()` 加 `.target("10")`，首次target9和所有原assert/其它byte原样；新增独立AuditRecordMigrationTest验证V11→V12/root-only/其它权限及业务事实不变/latest重复幂等。除这个setup例外，原43 Java测试源及18 FE测试文件均不得更改；全部原662断言继续跑，不以预飞/旧包结果代替。
 
-377初始观察不重写；[checker](<../artifacts/ubuntu-only-before/scripts/p8d1-source-invariants.py>)授权revision2只接受该旧测试原byte或精确两token派生，其余不变。既有4产品文件亦已[逐byte归档](<../artifacts/p8d1-authorized-original-source-proof.json>)供Root最终diff审查。本合同仍非新代码/运行通过结论。
+377初始观察不重写；checker授权revision2只接受该旧测试原byte或精确两token派生，其余不变。既有4产品文件亦已逐byte归档供Root最终diff审查。本合同仍非新代码/运行通过结论。

@@ -61,7 +61,7 @@ public class ConfigurationDataTransferDomain implements DataTransferDomain {
             switch (kind) {
                 case "PRODUCT_DRAFTS" -> validateProduct(c);
                 case "RULE_DRAFTS" -> { if(!"false".equalsIgnoreCase(required(c,"enabled")))throw ApiError.bad("草稿规则必须保持disabled"); validateRule(c,actor,tenant,false); }
-                case "UNIT_NOTIFICATION_RULES" -> { if(!"false".equalsIgnoreCase(required(c,"enabled")))throw ApiError.bad("草稿规则必须保持disabled"); validateRule(c,actor,tenant,true); customerNotifications.rules(actor,1,1,""); }
+                case "UNIT_NOTIFICATION_RULES" -> { if(!"false".equalsIgnoreCase(required(c,"enabled")))throw ApiError.bad("草稿规则必须保持disabled"); validateRule(c,actor,tenant,true); customerNotifications.rules(actor,1,1,"","UNIT",actor.user().tenantId()); }
                 case "UNIT_CONTACTS" -> { customerTenant(actor,tenant); contactInput(c); customerNotifications.contacts(actor,1,1,""); }
                 default -> throw ApiError.bad("该类型不支持导入");
             }
@@ -225,11 +225,11 @@ public class ConfigurationDataTransferDomain implements DataTransferDomain {
             if(selection.empty())return new ExportData(UNIT_RULE_COLUMNS,List.of());
             requireCustomerSelection(actor,tenant,selection);
             var rows=new ArrayList<List<String>>();
-            for(int page=1;;page++){var result=customerNotifications.rules(actor,page,100,"");for(var r:result.items())if(Boolean.FALSE.equals(r.get("enabled")))rows.add(ruleRow(r));if(page*100>=result.total())break;}
+            for(int page=1;;page++){var result=customerNotifications.rules(actor,page,100,"","UNIT",own);for(var r:result.items())if(Boolean.FALSE.equals(r.get("enabled")))rows.add(ruleRow(r));if(page*100>=result.total())break;}
             return new ExportData(UNIT_RULE_COLUMNS,rows);
         }
         var filter=scope.units(actor.user().id(),"r","tenant_id",tenant,selection);var args=new ArrayList<>(filter.bindings());
-        List<Map<String,Object>> rules=jdbc.queryForList("SELECT r.id,r.tenant_id FROM notification_rules r WHERE r.legacy_mode IS NULL AND r.enabled=FALSE"+filter.and()+" ORDER BY r.id",args.toArray());
+        List<Map<String,Object>> rules=jdbc.queryForList("SELECT r.id,r.tenant_id FROM notification_rules r WHERE r.legacy_mode IS NULL AND r.scope_type='UNIT' AND r.enabled=FALSE"+filter.and()+" ORDER BY r.id",args.toArray());
         var rows=new ArrayList<List<String>>(); for(var r:rules) { var detail=notificationReads.rule(Objects.toString(r.get("tenant_id")),Objects.toString(r.get("id"))); rows.add(ruleRow(detail)); }
         return new ExportData(RULE_COLUMNS,rows);
     }

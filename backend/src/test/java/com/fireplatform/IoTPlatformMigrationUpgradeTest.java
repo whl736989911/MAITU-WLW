@@ -143,4 +143,46 @@ class IoTPlatformMigrationUpgradeTest {
             dropDatabase(db);
         }
     }
+
+    @Test
+    void h2V94ToV95PreservesRawProvenanceAndSeparatesTransportUniqueness() {
+        verifyHikvisionTransportUpgrade(h2Database());
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "IOT_MIGRATION_PG_URL", matches = ".+")
+    void postgres17V94ToV95PreservesRawProvenanceAndSeparatesTransportUniqueness() throws SQLException {
+        Database db = postgresDatabase();
+        try {
+            verifyHikvisionTransportUpgrade(db);
+        } finally {
+            dropDatabase(db);
+        }
+    }
+
+    private void verifyHikvisionTransportUpgrade(Database db) {
+        Flyway.configure().dataSource(db.dataSource()).target("94").load().migrate();
+        var jdbc = new JdbcTemplate(db.dataSource());
+        insertHikvisionTransport(jdbc, "raw-v94", "HIKVISION_POLL");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> insertHikvisionTransport(jdbc, "push-too-early", "HIKVISION_PUSH"))
+            .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+
+        migrateToLatest(db);
+        assertThat(jdbc.queryForObject("SELECT ingress FROM hikvision_raw_records WHERE id='raw-v94'", String.class))
+            .isEqualTo("HIKVISION_POLL");
+        insertHikvisionTransport(jdbc, "raw-v95", "HIKVISION_PUSH");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> insertHikvisionTransport(jdbc, "repeat-push", "HIKVISION_PUSH"))
+            .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> insertHikvisionTransport(jdbc, "repeat-poll", "HIKVISION_POLL"))
+            .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        assertThat(jdbc.queryForList("SELECT id FROM hikvision_raw_records WHERE external_key='source-v94' ORDER BY id", String.class))
+            .containsExactly("raw-v94", "raw-v95");
+    }
+
+    private void insertHikvisionTransport(JdbcTemplate jdbc, String id, String ingress) {
+        jdbc.update("""
+            INSERT INTO hikvision_raw_records(id, stream_kind, external_key, payload_sha256, payload_json, received_at, ingress)
+            VALUES (?, 'ALARM', 'source-v94', ?, '{}', CURRENT_TIMESTAMP, ?)
+            """, id, "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", ingress);
+    }
 }

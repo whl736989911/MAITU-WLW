@@ -14,14 +14,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.ActiveProfiles;
 
 @ActiveProfiles("test")
 @SpringBootTest(properties={"app.roles=api","app.hikvision-config-key=","fire.hikvision.enabled=false","spring.datasource.url=jdbc:h2:mem:hikvisionnokey;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
 class HikvisionConfigNoKeyTest {
     @Autowired HikvisionConfigService configuration;
-    @MockBean ManagementGuard guard;
+    @MockitoBean ManagementGuard guard;
 
     @BeforeEach void allowTestActor() { doNothing().when(guard).begin(any(),any(),any(),any()); }
 

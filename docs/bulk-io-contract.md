@@ -1,13 +1,17 @@
 # 批量导入、导出与报表合同
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
 ## 当前通用数据交换
 
 当前页面使用 `/api/management/data-transfer`、`/api/customer/data-transfer`，能力与列定义从 `/kinds`、`/template` 获取。使用 CSV（UTF-8）或 XLSX 文件控件，先预览，再按源文件摘要、用途、当前密码和幂等键明确确认；每行独立执行正式领域命令，成功行不因其他行失败而回滚。任务及逐行结果、错误报告、导出快照和下载摘要分别持久化。
 
 - 文件上限 2,000,000 字节、10,000 行；标识符、号码使用文本单元格，不允许公式或宏。导入、导出除数据交换权限外，还要求对应业务类型权限；客户端固定当前登录单位，不因文件内容扩大设备或单位权限。
+- 通用 `DEVICES` 预览只接受本次写入单位内、未归档且在操作者当前设备范围内的 `place_id`。跨单位、不存在、已归档或越权的位置均为无效行，不区分原因。首次确认会重新校验预览有效行；位置或范围变化导致失效时返回 `PLAN_INVALID`，不创建任务。正式写入仍按现有命令重验。
+- 新建的 XLSX 导入计划跳过空白数据行，但 `row_no` 保留工作表上从 1 开始的实际行号（表头为第 1 行）；预览、确认后的任务行、错误报告和逐行幂等使用同一行号。`row_count` 只统计非空数据行，既有计划和任务不重编号。
 - 联系人预览与手工维护复用同一名称、联系人类型及电话号码校验。支持明确格式的中国手机号和带区号分隔的座机；非法号码、类型、非整数或负数更新版本在预览阶段拒绝。客户更新联系人时空号码表示保留原号码；创建必须填写号码，写入仍重验当前对象、版本和权限。
 - 管理端 `CONTACTS` 与客户 `UNIT_CONTACTS` 分别使用各自模板和权限，不能交换端身份绕过授权。客户联系人导出保留 ID、版本及资料，号码列为空，不导出明文号码；按原 ID、版本导回时可保留原号码及绑定。
 - `RULE_DRAFTS`、`UNIT_NOTIFICATION_RULES` 使用下列八列模板。短信、语音、公众号的升级间隔分别读取、校验、写入和导出，不再丢失公众号多级间隔。请重新下载当前模板，不手工沿用旧七列表头。
+  两类草稿模板只导入和导出 `UNIT` 级通知规则。位置和设备级规则需在通知规则页面维护；不把它们导出成无法保留作用域的单位草稿。
 
 ```csv
 id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalation_interval_minutes,wechat_escalation_interval_minutes,enabled
@@ -15,7 +19,7 @@ id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalat
 
 规则导入只新建停用草稿，不能通过文件启用或覆盖原规则；启用需在规则维护页另行明确操作。导出 ID 是选择依据，不把再次导入变成更新原记录。收件人必须属于本单位且已启用；公众号仍要求有效的当前公众号绑定，多级间隔为 0—60 分钟。导入或导出不构成真实发送、实际送达、OAuth、支付或设备控制验收。
 
-当前验收记录见 [逐项交付记录](platform-delivery-plan.md)：真实私有文件控件完成联系人与故障规则各 1 行成功、1 行预览拒绝，下载 CSV/XLSX 模板、错误报告及导出；9 项数据交换集成场景包含两个公众号级别和独立间隔导出再导入。生产不导入验收夹具。
+当前验收记录见 逐项交付记录：真实私有文件控件完成联系人与故障规则各 1 行成功、1 行预览拒绝，下载 CSV/XLSX 模板、错误报告及导出；9 项数据交换集成场景包含两个公众号级别和独立间隔导出再导入。生产不导入验收夹具。
 
 ## 故障处置状态筛选导出（2026-11-14）
 
@@ -23,7 +27,7 @@ id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalat
 - 全部匹配导出复用列表的状态 SQL 过滤，在计数和分页前执行；勾选导出精确读取并重新核对每条状态，选中不匹配记录时拒绝，不静默扩大筛选。导出 `handled` 列继续保留空白、`false`、`true` 三态。
 - 设备详情只传已提交筛选；修改下拉草稿不会改变翻页或导出。实际 `UNRECORDED` CSV 12 条均无处置记录且 `handled` 为空；明确提交 `HANDLED` 后 XLSX 0 条。事件、设备、状态、表头和 SHA-256 与 API/快照一致。
 - 仅创建 2 个正常导出快照及既有元数据，没有为验收写入真实处置记录。明确 `false/true` 的正向数据、勾选状态不匹配拒绝及状态/时间交集由隔离回归覆盖，真实客户账号与实际 UI 下一页未冒称验收。
-- 证据：[定向验证](../artifacts/platform-completion-74cefca497/fault-handling-filter-focused-verification.json)、[真实页面](../artifacts/platform-completion-74cefca497/fault-handling-filter-production-browser.json)、[文件核验](../artifacts/platform-completion-74cefca497/fault-handling-filter-file-verification.json)。
+- 证据：定向验证、真实页面、文件核验。
 
 ## 故障导出处置三态（2026-11-14）
 
@@ -39,14 +43,14 @@ id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalat
 
 12 项相关后端回归通过，包括三种持久化状态分别经完整与勾选路径导出。真实故障页面完成完整 CSV 12 条与勾选 XLSX 2 条下载，全部缺少处置记录的 `handled` 单元格均为空；文件标识、实际勾选范围及 SHA-256 与 API/快照一致。未为验收写入真实处置记录；真实明确 `false/true` 状态由隔离回归验证，未冒称生产处置操作验收。
 
-证据：[相关回归](../artifacts/platform-completion-74cefca497/fault-handling-export-focused-verification.json)、[真实完整与勾选操作](../artifacts/platform-completion-74cefca497/fault-handling-export-production-browser.json)、[文件内容](../artifacts/platform-completion-74cefca497/fault-handling-export-file-verification.json)。
+证据：相关回归、真实完整与勾选操作、文件内容。
 
 ## 本设备故障来源时间筛选导出（2026-11-14）
 
 - 设备详情 `FAULTS` 导出固定 `unit_ids,device_id`，`from,to` 使用已提交的明确 `+08:00` 时间，未提交或仅清空输入框不改导出条件；明确“清空故障时间条件”才移除查询/导出时间范围。
 - 导出复用设备故障查询，设备及权限、来源观察时间条件在 SQL 计数和分页前应用，包含全部匹配记录，继续按既有 10,000 行上限拒绝超限结果。无设备过滤的全局导出及勾选记录行为保持不变。
 - 未知观察时间在无时间范围时保留，在有任一来源时间边界时排除；不以接收时间或记录时间代替。实际 CSV 0 行与有界空结果一致，清空后 XLSX 12 行与本设备真实故障一致，文件摘要匹配快照回执。只创建 2 个正常导出快照及既有元数据。
-- 证据：[相关回归](../artifacts/platform-completion-74cefca497/device-fault-filter-focused-verification.json)、[真实页面与已应用条件](../artifacts/platform-completion-74cefca497/device-fault-filter-production-browser.json)、[实际文件核验](../artifacts/platform-completion-74cefca497/device-fault-filter-file-verification.json)。
+- 证据：相关回归、真实页面与已应用条件、实际文件核验。
 
 ## 本设备关联报警导出（2026-11-14）
 
@@ -55,14 +59,14 @@ id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalat
 - 生成继续要求 `exports:write`、`alarm:read`、用途、当前密码和幂等键；下载重新校验 `exports:read` 和授权范围。CSV/XLSX、10,000 行限制、加密快照及摘要核验均复用现有流程，不新建导出接口。
 - 真实管理页面下载 CSV/XLSX 各 1 条，报警 ID、设备、物理/人工状态、空结论、未知发生时间及 SHA-256 与 API/快照一致；未提交的误报草稿不影响未复核导出。只创建 2 个正常导出快照及既有审计/幂等元数据，没有模拟报警、设备写入、硬件或收费操作。
 - 19 项独立后端相关场景、25 项前端设备详情回归及生产构建最终通过；跨页 101 条、其它设备及授权排除、字面关键字、微秒边界和未知来源时间由隔离回归验证。实际所选设备仅 1 条报警，未冒称真实点击下一页或真实客户浏览器验收。
-- 证据：[定向验证](../artifacts/platform-completion-74cefca497/device-alarm-export-focused-verification.json)、[真实页面](../artifacts/platform-completion-74cefca497/device-alarm-export-production-browser.json)、[实际文件核验](../artifacts/platform-completion-74cefca497/device-alarm-export-file-verification.json)。
+- 证据：定向验证、真实页面、实际文件核验。
 
 ## 本设备事件筛选导出（2026-11-14）
 
 - 设备详情“事件记录”复用 `EVENTS` 导出，固定记录所属 `unit_ids`、`device_id`；已应用的页面 `kind,from,to` 分别映射为导出 `kind,occurred_from,occurred_to`，时间显式 `+08:00`。未提交草稿不改变导出，生成/下载权限及密码确认流程不变。
 - 查询与导出共用统一事件投影，类型与来源观察时间条件均在 SQL 计数/限量前执行；未知来源时间不使用接收时间补齐。导出所有匹配事件，不限当前页，继续沿用 10,000 行上限，不把一条多指标上报拆成多个事件行。
 - 真实海康设备按类型和来源时间匹配 2 条事件，实际下载 CSV 2 行；事件标识、设备、类型、方法、状态、原生事件字段及上报/接收时间与 API 一致，文件摘要同时匹配下载与快照回执。未提交的 `OTHER` 类型草稿没有替换已应用的 `PARAM` 导出。
-- 本轮只新增 1 个正常导出快照及其既有审计/幂等元数据，不导入或创建模拟事件。证据：[真实查询与下载](../artifacts/platform-completion-74cefca497/device-event-filter-production-browser.json)、[实际文件内容](../artifacts/platform-completion-74cefca497/device-event-filter-file-verification.json)。
+- 本轮只新增 1 个正常导出快照及其既有审计/幂等元数据，不导入或创建模拟事件。证据：真实查询与下载、实际文件内容。
 
 ## 本设备监测历史导出（2026-11-14）
 
@@ -72,7 +76,7 @@ id,name,event_scope,receivers_json,sms_escalation_interval_minutes,voice_escalat
 - 一条上报可含多个指标，文件按指标逐行导出；文件行数不是上报条数。未知来源时间、接收时间和单位保持空值，不用当前快照、入库时间或猜测单位补齐。CSV 公式前缀防护和 XLSX 文本单元格沿用既有规则。
 - 真实页面已生成并实际下载：时间筛选内 2 条上报对应 CSV 5 行，全部 8 条历史对应 XLSX 11 行。逐项核对设备、指标、精确值、单位和来源时间，并核对实际下载字节与快照/文件 SHA-256；日期草稿改变后导出仍使用已提交条件。
 - 本轮只创建 2 个正常导出快照及其既有审计/幂等元数据，不修改设备、报警或归属。21 项后端、27 项前端相关测试通过，实际管理端桌面及 390px 导出抽屉已检查；不声称已用真实客户账号完成浏览器验收。
-- 证据：[相关回归](../artifacts/platform-completion-74cefca497/device-history-export-focused-verification.json)、[真实页面与下载](../artifacts/platform-completion-74cefca497/device-history-export-production-browser.json)、[实际文件内容核验](../artifacts/platform-completion-74cefca497/device-history-export-file-verification.json)。
+- 证据：相关回归、真实页面与下载、实际文件内容核验。
 
 当前设备和事件导出统一走 `data-transfer/exports` 及其下载入口；历史 `/api/management/exports` 入口已退役，旧快照不改写。按位置导出事件时，以本次授权范围内设备的当前归属位置筛选，不从历史事件猜测位置。下文 N12 原批量确认接口保留拒绝记录；只有已确认成功的源哈希返回原任务，修复校验问题后可重新确认相同文件。
 

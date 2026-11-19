@@ -184,14 +184,18 @@ public class RuleFlowQueries {
                     revision != binding.consumerRevision(), enabled ? "已启用" : "已发布但未启用", detail);
             }
             case "NOTIFICATION_RULE" -> {
-                var rows = jdbc.query("SELECT revision,enabled,event_scope,sms_escalation_interval_seconds,voice_escalation_interval_seconds FROM notification_rules WHERE tenant_id=? AND id=? AND legacy_mode IS NULL",
+                var rows = jdbc.query("SELECT revision,enabled,event_scope,sms_escalation_interval_seconds,voice_escalation_interval_seconds FROM notification_rules WHERE tenant_id=? AND id=? AND legacy_mode IS NULL AND scope_type='UNIT'",
                     (rs, n) -> new Object[]{rs.getLong(1), rs.getBoolean(2), rs.getString(3), rs.getObject(4, Integer.class), rs.getObject(5, Integer.class)},
                     tenant, binding.consumerId());
                 if (rows.isEmpty()) return new RuleFlowModels.ConsumerReadback(binding.consumerKind(), binding.scopeKey(),
                     binding.consumerId(), 0, true, "绑定的通知规则已不存在", Map.of());
                 long revision = ((Number) rows.getFirst()[0]).longValue();
-                List<Map<String, Object>> receivers = jdbc.queryForList("SELECT channel,level,contact_id FROM notification_rule_receivers WHERE tenant_id=? AND rule_id=? ORDER BY channel,level,contact_id",
-                    tenant, binding.consumerId());
+                List<Map<String, Object>> receivers = jdbc.queryForList("""
+                    SELECT rr.channel,rr.level,rr.contact_id FROM notification_rule_receivers rr
+                    JOIN notification_rules r ON r.tenant_id=rr.tenant_id AND r.id=rr.rule_id
+                    WHERE rr.tenant_id=? AND rr.rule_id=? AND r.legacy_mode IS NULL AND r.scope_type='UNIT'
+                    ORDER BY rr.channel,rr.level,rr.contact_id
+                    """, tenant, binding.consumerId());
                 Map<String, Object> detail = new LinkedHashMap<>();
                 detail.put("event_scope", rows.getFirst()[2]);
                 detail.put("enabled", rows.getFirst()[1]);

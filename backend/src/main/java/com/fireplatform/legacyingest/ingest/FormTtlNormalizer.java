@@ -45,7 +45,7 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
             // CAT1：params 可为双重 JSON 字符串；ts 和 platformMsg.timestamp 是源信封时间。
             Object value = paramsValue(body.path("params"));
             String bodyType = NormalizerSupport.text(body, "messageType");
-            String method = methodFor(bodyType != null && !bodyType.isBlank() ? bodyType : messageType);
+            String method = categoryFor(bodyType != null && !bodyType.isBlank() ? bodyType : messageType).method;
             JsonNode first = NormalizerSupport.object(value instanceof JsonNode node ? node : null);
             String stateCode = firstText(first, "deviceStateCode");
             if (stateCode == null) stateCode = NormalizerSupport.text(body, "deviceStateCode");
@@ -91,15 +91,33 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
         return null;
     }
 
-    private static String methodFor(String messageType) {
+    /** Preserve the route fallback semantics without persisting the original path segment. */
+    public static String canonicalRouteType(String label) {
+        return label == null ? null : categoryFor(label).label;
+    }
+
+    private static Category categoryFor(String messageType) {
         String value = messageType == null ? "" : messageType.toLowerCase(Locale.ROOT);
-        if (value.contains("fault") || value.contains("故障")) return "thing.event.fault";
-        if ((value.contains("recover") || value.contains("恢复")) && (value.contains("alarm") || value.contains("fire") || value.contains("火警") || value.contains("报警"))) return "thing.event.alarmRecovery";
-        if (value.contains("alarm") || value.contains("火警") || value.contains("警报")) return "thing.event.alarm";
-        if (value.contains("heartbeat") || value.contains("心跳")) return "thing.event.heartbeat";
-        if (value.contains("param") || value.contains("参数")) return "thing.event.param";
-        if (value.contains("offline") || value.contains("离线")) return "thing.event.offline";
-        return "thing.event.other";
+        if (value.contains("fault") || value.contains("故障")) return Category.FAULT;
+        if ((value.contains("recover") || value.contains("恢复")) && (value.contains("alarm") || value.contains("fire") || value.contains("火警") || value.contains("报警"))) return Category.RECOVERY;
+        if (value.contains("alarm") || value.contains("火警") || value.contains("警报")) return Category.ALARM;
+        if (value.contains("heartbeat") || value.contains("心跳")) return Category.HEARTBEAT;
+        if (value.contains("param") || value.contains("参数")) return Category.PARAM;
+        if (value.contains("offline") || value.contains("离线")) return Category.OFFLINE;
+        return Category.OTHER;
+    }
+
+    private enum Category {
+        FAULT("fault"), RECOVERY("alarmRecovery"), ALARM("alarm"), HEARTBEAT("heartbeat"),
+        PARAM("param"), OFFLINE("offline"), OTHER("other");
+
+        private final String label;
+        private final String method;
+
+        Category(String label) {
+            this.label = label;
+            this.method = "thing.event." + label;
+        }
     }
 
     private static String firstText(JsonNode body, String... keys) {

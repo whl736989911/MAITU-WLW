@@ -74,7 +74,7 @@ public class MasterDataTransferDomain implements DataTransferDomain {
     @Override public List<String> validate(String kind,Map<String,String> row,AuthService.Identity actor,String tenant) {
         var errors=new ArrayList<String>();for(String column:importColumns(kind))if(!row.containsKey(column))errors.add("缺少字段："+column);
         switch(kind){
-            case "DEVICES"->errors.addAll(inputErrors(deviceInput(row)));
+            case "DEVICES"->validateDevice(row,actor,tenant,errors);
             case "UNITS"->{required(row,"name",32,errors);if(present(row,"id"))required(row,"expected_revision",32,errors);for(String field:List.of("latitude","longitude")){String v=row.get(field);if(v!=null&&!v.isBlank())try{Double.parseDouble(v);}catch(NumberFormatException invalid){errors.add(field+"必须是数字");}}for(String field:List.of("service_start","service_end","engineering_service_start","engineering_service_end")){String v=row.get(field);if(v!=null&&!v.isBlank())try{LocalDate.parse(v);}catch(RuntimeException invalid){errors.add(field+"日期无效");}}}
             case "PLACES"->errors.addAll(inputErrors(new PlaceInputs.Create(row.get("name"),blankNull(row.get("parent_place_id")))));
             case "CONTACTS"->{try{NotificationPolicy.text(row.get("name"),Limits.NOTIFICATION_NAME_MAX);NotificationPolicy.choice(row.get("contact_type"),NotificationPolicy.TYPES);contactPhones.normalize(row.get("phone"));}catch(ApiError invalid){errors.add(invalid.getMessage());}if(!Set.of("true","false").contains(row.getOrDefault("enabled","")))errors.add("enabled必须为true或false");}
@@ -100,6 +100,22 @@ public class MasterDataTransferDomain implements DataTransferDomain {
 
     private static DeviceInputs.Register deviceInput(Map<String,String> row) {
         return new DeviceInputs.Register(row.get("name"),row.get("device_eui"),row.get("address"),row.get("place_id"),row.get("product_version_id"),row.get("system_type"),row.get("device_category"));
+    }
+
+    private void validateDevice(Map<String,String> row,AuthService.Identity actor,String tenant,List<String> errors) {
+        var input=deviceInput(row);
+        errors.addAll(inputErrors(input));
+        String placeId=input.placeId();
+        if(placeId==null||placeId.isBlank()||placeId.length()>64)return;
+
+        var access=deviceScopes.placePredicate(actor.user().id(),"p.tenant_id","p.id");
+        var args=new ArrayList<Object>(2+access.bindings().size());
+        args.add(placeId);
+        args.add(tenant);
+        args.addAll(access.bindings());
+        long count=jdbc.queryForObject("SELECT COUNT(*) FROM places p WHERE p.id=? AND p.tenant_id=? AND p.archived_at IS NULL"
+            +access.and(),Long.class,args.toArray());
+        if(count==0)errors.add("place_id: 安装位置不可用或不在授权范围内");
     }
     private List<String> inputErrors(Object input) {
         return validator.validate(input).stream().map(error->error.getPropertyPath()+": "+error.getMessage()).sorted().toList();

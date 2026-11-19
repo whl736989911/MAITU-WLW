@@ -27,7 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpMethod;
@@ -113,6 +113,37 @@ class GenericMessageApplyTest {
         assertThat(jdbc.queryForObject("SELECT application_state FROM raw_messages WHERE id=?",String.class,raw.get("raw_message_id").asText())).isEqualTo("APPLIED");
         // 旧字段语义冻结：business_status 恒为 NOT_APPLIED。
         assertThat(jdbc.queryForObject("SELECT business_status FROM raw_messages WHERE id=?",String.class,raw.get("raw_message_id").asText())).isEqualTo("NOT_APPLIED");
+    }
+    @Test void blankAlarmAddressSnapshotsCurrentPlaceAndKeepsUnknownWithoutOne() throws Exception {
+        var version=published();
+        String secondFloor=body(call(HttpMethod.POST,"/api/management/places",root,"tenant-a",UUID.randomUUID().toString(),Map.of("name","二层位置")).andExpect(status().isOk())).get("id").asText();
+        String thirdFloor=body(call(HttpMethod.POST,"/api/management/places",root,"tenant-a",UUID.randomUUID().toString(),Map.of("name","三层位置")).andExpect(status().isOk())).get("id").asText();
+        var device=body(call(HttpMethod.POST,"/api/management/devices",root,"tenant-a",UUID.randomUUID().toString(),Map.of("name","旧烟感","device_eui","legacy-"+UUID.randomUUID(),"address","Synthetic fixture address","product_version_id",version.get("id").asText(),"place_id",secondFloor)).andExpect(status().isOk()));
+        String deviceId=device.get("id").asText();
+        // Legacy devices may have no address even though new registration requires one.
+        jdbc.update("UPDATE devices SET address='' WHERE id=? AND tenant_id='tenant-a'",deviceId);
+        var source=source(); String vendor="vendor-"+UUID.randomUUID();
+        call(HttpMethod.POST,"/api/management/sources/"+sid(source)+"/bindings",root,"tenant-a",UUID.randomUUID().toString(),Map.of("device_id",deviceId,"vendor_device_id",vendor,"expected_revision",device.get("revision").asLong(),"reason","Explicit test binding")).andExpect(status().isOk());
+        var feed=new Fixture(source,vendor,device);
+        var first=capture(feed,"blank-address-with-place",1L,"2026-10-31T10:00:00Z");
+        assertThat(jdbc.queryForObject("SELECT device_address FROM raw_messages WHERE id=?",String.class,first.get("raw_message_id").asText())).isBlank();
+        String alarmId=body(apply(first.get("raw_message_id").asText(),0,UUID.randomUUID().toString()).andExpect(status().isOk())).get("alarm_id").asText();
+        JsonNode workbench=body(call(HttpMethod.GET,"/api/management/alarm-workbench",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(workbench.get("items").get(0).get("id").asText()).isEqualTo(alarmId);
+        assertThat(workbench.get("items").get(0).get("address").asText()).isEqualTo("二层位置");
+
+        long revision=jdbc.queryForObject("SELECT revision FROM devices WHERE id=? AND tenant_id='tenant-a'",Long.class,deviceId);
+        call(HttpMethod.POST,"/api/management/devices/batch-move",root,"tenant-a",UUID.randomUUID().toString(),Map.of("devices",List.of(Map.of("device_id",deviceId,"expected_revision",revision)),"place_id",thirdFloor)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT place_id FROM devices WHERE id=? AND tenant_id='tenant-a'",String.class,deviceId)).isEqualTo(thirdFloor);
+        JsonNode afterMove=body(call(HttpMethod.GET,"/api/management/alarm-workbench",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(afterMove.get("items").get(0).get("address").asText()).isEqualTo("二层位置");
+
+        jdbc.update("UPDATE devices SET place_id=NULL,address='  ' WHERE id=? AND tenant_id='tenant-a'",deviceId);
+        var second=capture(feed,"blank-address-without-place",2L,"2026-10-31T10:01:00Z");
+        assertThat(jdbc.queryForObject("SELECT device_address FROM raw_messages WHERE id=?",String.class,second.get("raw_message_id").asText())).isBlank();
+        String unknownAlarm=body(apply(second.get("raw_message_id").asText(),0,UUID.randomUUID().toString()).andExpect(status().isOk())).get("alarm_id").asText();
+        JsonNode withoutPlace=body(call(HttpMethod.GET,"/api/management/alarm-workbench",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(withoutPlace.get("items")).anySatisfy(item->{ assertThat(item.get("id").asText()).isEqualTo(unknownAlarm); assertThat(item.get("address").asText()).isBlank(); });
     }
 
     @Test void authenticatedCaptureIsAutomaticallyAppliedByDurableWorker() throws Exception {

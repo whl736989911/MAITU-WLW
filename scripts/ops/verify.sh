@@ -11,7 +11,7 @@ emit() {
   [[ $status == pass || $status == skip ]] || failed=1
 }
 
-for script in backup.sh restore.sh healthcheck.sh; do
+for script in backup.sh restore.sh healthcheck.sh install-postgresql17.sh cutover.sh; do
   if bash -n "$OPS_DIR/$script" 2>/dev/null; then
     emit "bash_n:$script" pass "syntax valid"
   else
@@ -20,7 +20,9 @@ for script in backup.sh restore.sh healthcheck.sh; do
 done
 
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck --severity=error "$OPS_DIR/backup.sh" "$OPS_DIR/restore.sh" "$OPS_DIR/healthcheck.sh" >/dev/null 2>&1; then
+  if shellcheck --severity=error "$OPS_DIR/backup.sh" "$OPS_DIR/restore.sh" \
+      "$OPS_DIR/healthcheck.sh" "$OPS_DIR/install-postgresql17.sh" \
+      "$OPS_DIR/cutover.sh" >/dev/null 2>&1; then
     emit shellcheck pass "no error-severity findings"
   else
     emit shellcheck fail "error-severity findings"

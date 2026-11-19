@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AlarmSessionNotificationGate {
     public record Session(String id,String tenantId,String deviceId,long policyRevision,int windowSeconds) { }
     public record ClaimDecision(boolean proceed,String claimId,int attemptNo,String reason) { }
-    private record Existing(String id,String status,int attemptNo) { }
+    private record Existing(String id,String status,int attemptNo,String ruleId,int level) { }
 
     private final JdbcTemplate jdbc;
     private final DatabaseTime time;
@@ -42,8 +42,12 @@ public class AlarmSessionNotificationGate {
     @Transactional(propagation=Propagation.REQUIRES_NEW)
     public ClaimDecision claim(String tenantId,Session session,String occurrenceKey,String ruleId,String contactId,String channel,int level,String alarmId,int maxAttempts) {
         if(jdbc.queryForList("SELECT id FROM alarm_sessions WHERE id=? AND tenant_id=? FOR UPDATE",session.id(),tenantId).isEmpty()) return new ClaimDecision(false,null,0,"SESSION_MISSING");
-        var rows=jdbc.query("SELECT id,status,attempt_no FROM alarm_notification_claims WHERE session_id=? AND occurrence_key=? AND rule_id=? AND contact_id=? AND channel=? AND level=?",
-            (rs,n)->new Existing(rs.getString(1),rs.getString(2),rs.getInt(3)),session.id(),occurrenceKey,ruleId,contactId,channel,level);
+        // The winning rule is provenance, not a new permission to send again within this occurrence.
+        var rows=jdbc.query("SELECT id,status,attempt_no,rule_id,level FROM alarm_notification_claims "
+            +"WHERE tenant_id=? AND session_id=? AND occurrence_key=? AND contact_id=? AND channel=? "
+            +"ORDER BY CASE status WHEN 'SENT' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'CLAIMED' THEN 2 ELSE 3 END,attempt_no DESC,id LIMIT 1",
+            (rs,n)->new Existing(rs.getString(1),rs.getString(2),rs.getInt(3),rs.getString(4),rs.getInt(5)),
+            tenantId,session.id(),occurrenceKey,contactId,channel);
         OffsetDateTime now=time.now();
         if(rows.isEmpty()) {
             String id=UUID.randomUUID().toString();
@@ -57,6 +61,8 @@ public class AlarmSessionNotificationGate {
             case "UNKNOWN": return new ClaimDecision(false,existing.id(),existing.attemptNo(),"ALREADY_UNKNOWN");
             case "CLAIMED": return new ClaimDecision(false,existing.id(),existing.attemptNo(),"IN_PROGRESS");
             case "FAILED":
+                if(!ruleId.equals(existing.ruleId())||level!=existing.level())
+                    return new ClaimDecision(false,existing.id(),existing.attemptNo(),"PRIOR_RULE_FAILED");
                 if(existing.attemptNo()>=maxAttempts) return new ClaimDecision(false,existing.id(),existing.attemptNo(),"RETRY_EXHAUSTED");
                 if(jdbc.update("UPDATE alarm_notification_claims SET status='CLAIMED',alarm_id=?,updated_at=? WHERE id=? AND status='FAILED' AND attempt_no=?",alarmId,now,existing.id(),existing.attemptNo())!=1)
                     return new ClaimDecision(false,existing.id(),existing.attemptNo(),"IN_PROGRESS");

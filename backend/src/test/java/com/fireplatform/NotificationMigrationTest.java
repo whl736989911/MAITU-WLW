@@ -53,4 +53,21 @@ class NotificationMigrationTest {
         assertThat(jdbc.queryForMap("SELECT legacy_mode,legacy_sms_template_id,legacy_voice_template_id,legacy_max_attempts,legacy_retry_delay_seconds FROM notification_rules WHERE id='real-rule'")).containsEntry("legacy_mode",null).containsEntry("legacy_sms_template_id",null).containsEntry("legacy_voice_template_id",null).containsEntry("legacy_max_attempts",null).containsEntry("legacy_retry_delay_seconds",null);assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_templates",Long.class)).isEqualTo(2L);
     }
 
+    @Test void v93KeepsExistingRuleRecipientsAtUnitScope() {
+        String url = "jdbc:h2:mem:notification-v93-upgrade;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        Flyway.configure().dataSource(url,"sa","").target("92").load().migrate();
+        var jdbc = new JdbcTemplate(new DriverManagerDataSource(url,"sa",""));
+        jdbc.update("INSERT INTO tenants(id,name) VALUES ('unit','Unit')");
+        jdbc.update("INSERT INTO notification_rules(id,tenant_id,name,enabled,event_scope,created_at) VALUES ('rule','unit','Rule',TRUE,'FIRE',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO notification_contacts(id,tenant_id,name,contact_type,phone_cipher,phone_nonce,phone_masked,phone_mac,enabled,created_at) VALUES ('contact','unit','Contact','OTHER','cipher','nonce','138****1234','mac',TRUE,CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO notification_rule_receivers(tenant_id,rule_id,contact_id,level,channel) VALUES ('unit','rule','contact',1,'SMS')");
+        var receivers = jdbc.queryForList("SELECT * FROM notification_rule_receivers WHERE rule_id='rule'");
+
+        Flyway.configure().dataSource(url,"sa","").target("93").load().migrate();
+
+        assertThat(jdbc.queryForMap("SELECT scope_type,scope_place_id,scope_device_id FROM notification_rules WHERE id='rule'"))
+            .containsEntry("scope_type","UNIT").containsEntry("scope_place_id",null).containsEntry("scope_device_id",null);
+        assertThat(jdbc.queryForList("SELECT * FROM notification_rule_receivers WHERE rule_id='rule'")).isEqualTo(receivers);
+    }
+
 }

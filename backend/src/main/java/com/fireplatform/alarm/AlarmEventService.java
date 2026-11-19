@@ -17,11 +17,16 @@ public class AlarmEventService implements AlarmLifecycle {
     private final com.fireplatform.alarmgroup.AlarmSessionGrouping grouping;
     private final Clock clock;
     public AlarmEventService(JdbcTemplate jdbc,AlarmTraceWriter traces,com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration,com.fireplatform.alarmgroup.AlarmSessionGrouping grouping,Clock clock) { this.jdbc=jdbc;this.traces=traces;this.configuration=configuration;this.grouping=grouping;this.clock=clock; }
+    private String snapshotAddress(String tenant,String deviceId,String address) {
+        if(address!=null && !address.isBlank()) return address;
+        return jdbc.query("SELECT p.name FROM devices d JOIN places p ON p.id=d.place_id AND p.tenant_id=d.tenant_id WHERE d.tenant_id=? AND d.id=?",
+            rs->rs.next()?rs.getString(1):"",tenant,deviceId);
+    }
     @Override public String fire(String tenant,String deviceId,String deviceName,String address,OffsetDateTime occurredAt) {
         String id=UUID.randomUUID().toString();
         OffsetDateTime platformRecordedAt=OffsetDateTime.now(clock);
         OffsetDateTime effectiveOccurredAt=occurredAt==null?platformRecordedAt:occurredAt;
-        jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,device_name,address,event_type,occurred_at,last_event_at,physical_state,response_state,revision,is_simulated,source_time_known,platform_recorded_at) VALUES (?,?,?,?,?,'FIRE',?,?,'FIRE','UNHANDLED',0,FALSE,?,?)",id,tenant,deviceId,deviceName,address,effectiveOccurredAt,effectiveOccurredAt,occurredAt!=null,platformRecordedAt);
+        jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,device_name,address,event_type,occurred_at,last_event_at,physical_state,response_state,revision,is_simulated,source_time_known,platform_recorded_at) VALUES (?,?,?,?,?,'FIRE',?,?,'FIRE','UNHANDLED',0,FALSE,?,?)",id,tenant,deviceId,deviceName,snapshotAddress(tenant,deviceId,address),effectiveOccurredAt,effectiveOccurredAt,occurredAt!=null,platformRecordedAt);
         traces.append(tenant,id,"FIRE_CREATED",null,0,null,new AlarmTraceModels.State("FIRE","UNHANDLED",null),occurredAt,null,null);
         configuration.onAlarmCreated(tenant,id,deviceId,"FIRE",effectiveOccurredAt);
         grouping.onAlarmCreated(tenant,id,deviceId,"FIRE",occurredAt);

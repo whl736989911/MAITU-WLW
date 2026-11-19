@@ -1,5 +1,6 @@
 package com.fireplatform.notification;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fireplatform.configuration.DatabaseTime;
 import com.fireplatform.identity.AuthService;
 import com.fireplatform.identity.ExecutionAuthorization;
@@ -15,7 +16,14 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SuppressionCommands {
     public static final int MAX_DAYS = 90;
-    public record Suppression(String id,String tenantId,String kind,String scope,boolean fireConfirmed,String reason,OffsetDateTime startsAt,OffsetDateTime endsAt,String status,OffsetDateTime createdAt,OffsetDateTime cancelledAt,String cancelReason,long revision,boolean enabled,boolean deleted,String effectiveState) { }
+    /** Preserve the original timestamp offsets when re-reading saved mutation receipts. */
+    public record Suppression(String id,String tenantId,String kind,String scope,boolean fireConfirmed,String reason,
+                              @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE) OffsetDateTime startsAt,
+                              @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE) OffsetDateTime endsAt,
+                              String status,
+                              @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE) OffsetDateTime createdAt,
+                              @JsonFormat(without = JsonFormat.Feature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE) OffsetDateTime cancelledAt,
+                              String cancelReason,long revision,boolean enabled,boolean deleted,String effectiveState) { }
     public record ChannelTarget(String channelId,String deviceId,String channelKey,String channelName,String channelType,String deviceName) { }
     public record HistoryEvent(String id,String action,String actorId,String outcome,String requestId,OffsetDateTime occurredAt,String reason,String snapshotJson) { }
     public record Create(String scope,List<String> deviceIds,List<String> channelIds,boolean fireConfirmed,String reason,OffsetDateTime startsAt,OffsetDateTime endsAt) { }

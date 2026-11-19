@@ -19,7 +19,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -69,6 +69,8 @@ class SensorSuppressionIntegrationTest {
         Map<String,Object> createBody=sensor(true,List.of(channelId),FUTURE);
         JsonNode created=createSensor(createBody,"create-lifecycle"); String id=created.get("id").asText();
         assertThat(createSensor(createBody,"create-lifecycle")).isEqualTo(created);
+        assertStoredInstant(created,"created_at",jdbc.queryForObject(
+            "SELECT created_at FROM device_suppressions WHERE id=?",OffsetDateTime.class,id));
         JsonNode target=body(call(GET,SUPPRESSIONS+"/"+id+"/targets","tenant-a",null,null).andExpect(status().isOk())).get(0);
         assertThat(target.get("channel_name").asText()).isEqualTo("Original sensor name");
         jdbc.update("UPDATE device_channels SET name='Renamed sensor' WHERE id=?",channelId);
@@ -78,6 +80,10 @@ class SensorSuppressionIntegrationTest {
         JsonNode edited=body(call(PUT,SUPPRESSIONS+"/"+id,"tenant-a","edit-once",edit(created.get("revision").asLong(),editedStarts,FUTURE,"调整起始时间")).andExpect(status().isOk()));
         assertThat(edited.get("revision").asLong()).isEqualTo(1);
         assertThat(body(call(PUT,SUPPRESSIONS+"/"+id,"tenant-a","edit-once",edit(0,editedStarts,FUTURE,"调整起始时间")).andExpect(status().isOk()))).isEqualTo(edited);
+        assertStoredInstant(edited,"starts_at",jdbc.queryForObject(
+            "SELECT starts_at FROM device_suppressions WHERE id=?",OffsetDateTime.class,id));
+        assertStoredInstant(edited,"ends_at",jdbc.queryForObject(
+            "SELECT ends_at FROM device_suppressions WHERE id=?",OffsetDateTime.class,id));
         call(PUT,SUPPRESSIONS+"/"+id,"tenant-a","stale-edit",edit(0,OffsetDateTime.now().minusDays(2),FUTURE,"过期修改")).andExpect(status().isConflict());
         var disableInput=Map.<String,Object>of("expected_revision",1,"enabled",false,"reason","暂时停用");
         JsonNode disabled=body(call(POST,SUPPRESSIONS+"/"+id+"/enabled","tenant-a","disable-once",disableInput).andExpect(status().isOk()));
@@ -90,10 +96,14 @@ class SensorSuppressionIntegrationTest {
         var cancelInput=mutation(3,"维护完成");
         JsonNode cancelled=body(call(POST,SUPPRESSIONS+"/"+id+"/cancel","tenant-a","cancel-once",cancelInput).andExpect(status().isOk()));
         assertThat(body(call(POST,SUPPRESSIONS+"/"+id+"/cancel","tenant-a","cancel-once",cancelInput).andExpect(status().isOk()))).isEqualTo(cancelled);
+        assertStoredInstant(cancelled,"cancelled_at",jdbc.queryForObject(
+            "SELECT cancelled_at FROM device_suppressions WHERE id=?",OffsetDateTime.class,id));
+        assertThat(createSensor(createBody,"create-lifecycle")).isEqualTo(created);
         assertThat(cancelled.get("status").asText()).isEqualTo("CANCELLED"); assertThat(cancelled.get("effective_state").asText()).isEqualTo("CANCELLED");
         call(POST,SUPPRESSIONS+"/"+id+"/cancel","tenant-a","cancel-stale",mutation(3,"再次取消")).andExpect(status().isConflict());
         List<JsonNode> events=body(call(GET,SUPPRESSIONS+"/"+id+"/history","tenant-a",null,null).andExpect(status().isOk())).findParents("action");
-        assertThat(events).extracting(e->e.get("action").asText()).contains("SUPPRESSION_CREATED","SUPPRESSION_UPDATED","SUPPRESSION_DISABLED","SUPPRESSION_ENABLED","SUPPRESSION_CANCELLED");
+        assertThat(events).extracting(e->e.get("action").asText())
+            .containsExactlyInAnyOrder("SUPPRESSION_CREATED","SUPPRESSION_UPDATED","SUPPRESSION_DISABLED","SUPPRESSION_ENABLED","SUPPRESSION_CANCELLED");
         assertThat(jdbc.queryForObject("SELECT channel_name FROM suppression_channels WHERE suppression_id=? AND channel_id=?",String.class,id,channelId)).isEqualTo("Original sensor name");
 
         JsonNode expired=createSensor(true,List.of(channelId),"expired-suppression"); String expiredId=expired.get("id").asText();
@@ -103,6 +113,10 @@ class SensorSuppressionIntegrationTest {
         assertThat(body(call(DELETE,SUPPRESSIONS+"/"+expiredId,"tenant-a","delete-expired",deleteInput).andExpect(status().isOk()))).isEqualTo(deleted);
         assertThat(deleted.get("deleted").asBoolean()).isTrue(); assertThat(deleted.get("effective_state").asText()).isEqualTo("DELETED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM suppression_changes WHERE suppression_id=? AND action='SUPPRESSION_DELETED'",Long.class,expiredId)).isEqualTo(1L);
+    }
+
+    private static void assertStoredInstant(JsonNode receipt,String field,OffsetDateTime stored) {
+        assertThat(OffsetDateTime.parse(receipt.required(field).textValue()).toInstant()).isEqualTo(stored.toInstant());
     }
 
 

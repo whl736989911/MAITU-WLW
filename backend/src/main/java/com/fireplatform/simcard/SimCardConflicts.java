@@ -8,7 +8,10 @@ import java.util.regex.Pattern;
 public final class SimCardConflicts {
     private SimCardConflicts(){ }
     private static final String NAME="uq_sim_cards_tenant_iccid";
-    private static final Pattern H2_NAME=Pattern.compile("\"(?:PUBLIC\\.)?UQ_SIM_CARDS_TENANT_ICCID_INDEX_[0-9A-F]+ ON (?:PUBLIC\\.)?SIM_CARDS\\(TENANT_ID NULLS (FIRST|LAST), ICCID NULLS \\1\\)",Pattern.CASE_INSENSITIVE);
+    private static final Pattern H2_NAME = Pattern.compile(
+            "\\AUnique index or primary key violation: \"(?:PUBLIC\\.)?(UQ_SIM_CARDS_TENANT_ICCID) INDEX "
+                    + "(?:PUBLIC\\.)?\\1_INDEX_[0-9A-F]+ ON (?:PUBLIC\\.)?SIM_CARDS\\(TENANT_ID NULLS (FIRST|LAST), ICCID NULLS \\2\\)",
+            Pattern.CASE_INSENSITIVE);
     public static boolean iccid(Throwable failure){
         Set<Throwable> seen=Collections.newSetFromMap(new IdentityHashMap<>());for(Throwable cause=failure;cause!=null&&seen.size()<32&&seen.add(cause);cause=cause.getCause()){
             if(!(cause instanceof SQLException sql)||!"23505".equals(sql.getSQLState()))continue;

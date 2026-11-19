@@ -16,6 +16,10 @@ import { Input } from '@/components/ui/input'
 import { RenderFailureBoundary } from '@/components/render-failure-boundary'
 const CustomerAlarmMonitor = lazy(() => import('@/components/customer-alarm-monitor').then(m => ({ default: m.CustomerAlarmMonitor })))
 const Dashboard = lazy(() => import('@/pages/dashboard').then(m => ({ default: m.Dashboard })))
+const ManagementHome = lazy(() => import('@/pages/management-home').then(m => ({ default: m.ManagementHome })))
+const CustomerHome = lazy(() => import('@/customer/home').then(m => ({ default: m.CustomerHome })))
+const CustomerDevicesWorkspace = lazy(() => import('@/customer/workspace').then(m => ({ default: m.CustomerDevicesWorkspace })))
+const CustomerAlarmsWorkspace = lazy(() => import('@/customer/workspace').then(m => ({ default: m.CustomerAlarmsWorkspace })))
 const DevicesPage = lazy(() => import('@/pages/devices').then(m => ({ default: m.DevicesPage })))
 const DutyWorkbenchPage = lazy(() => import('@/pages/duty-workbench').then(m => ({ default: m.DutyWorkbenchPage })))
 const SettingsPage = lazy(() => import('@/pages/settings').then(m => ({ default: m.SettingsPage })))
@@ -131,6 +135,8 @@ const navGroups: { id: string; label: string; icon: typeof LayoutDashboard; item
   { id: 'notifications', label: '通知与费用', icon: BellRing, core: ['notification-resources', 'notification-contacts'], items: ['notification-resources', 'notification-contacts', 'notification-provider', 'notification-recharge-settings', 'payment-settings', 'suppressions', 'resource-linkage'] },
   { id: 'system', label: '系统设置', icon: Settings2, core: ['settings'], items: ['settings', 'parameters', 'bulk-io', 'audit-records', 'data-governance', 'releases-migrations', 'alarm-base-config', 'rule-flows', 'notification-recharge', 'account', 'messages', 'tasks', 'my-profile'] },
 ]
+const managementPrimary: PageName[] = ['summary', 'alarms', 'devices', 'device-faults']
+const managementTitles: Partial<Record<PageName, string>> = { summary: '处置工作台', alarms: '报警信息' }
 const customerGroups: typeof navGroups = [
   { id: 'home', label: '首页', icon: LayoutDashboard, core: ['summary'], items: ['summary', 'duty-overview', 'operations-overview'] },
   { id: 'devices', label: '设备', icon: Radio, core: ['devices'], items: ['devices', 'device-services', 'device-monitoring', 'parameter-monitoring', 'device-groups', 'topology', 'video-controllers', 'legacy-ingest'] },
@@ -162,10 +168,14 @@ function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Hea
     narrowScreen.addEventListener('change', change)
     return () => narrowScreen.removeEventListener('change', change)
   }, [])
+  const management = audience === 'management'
   const groups = audience === 'customer' ? customerGroups : navGroups
   const groupFor = (target: PageName) => groups.find(group => group.items.includes(target))?.id ?? groups[0].id
   const [pageSearch, setPageSearch] = useState('')
-  const [openGroup, setOpenGroup] = useState<string | null>(() => groups.find(group => group.items.includes(page) && !group.core.includes(page))?.id ?? null)
+  function secondaryGroup(target: PageName) {
+    return groups.find(group => group.items.includes(target) && !(management ? managementPrimary : group.core).includes(target))?.id ?? null
+  }
+  const [openGroup, setOpenGroup] = useState(() => secondaryGroup(page))
   const [sessionCheck, setSessionCheck] = useState('')
   const revalidate = useCallback(async (manual = false) => {
     const before = useSession.getState(), token = before.token, authGeneration = before.authGeneration
@@ -188,31 +198,47 @@ function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Hea
     const fallback = groups.flatMap(group => [...group.core, ...group.items]).find(pageAllowed)
     if (fallback) navigate(fallback)
   }, [pageAllowed, page, groups, navigate])
+  useEffect(() => { if (management && window.scrollY > 0) window.scrollTo(0, 0) }, [management, page])
   const canPage = pageAllowed(page)
+  const primaryItems = management ? managementPrimary.filter(pageAllowed) : []
   const homeTarget = pageAllowed('summary') ? 'summary' : groups.flatMap(group => [...group.core, ...group.items]).find(pageAllowed)
-  const searchResults = pageSearch.trim()
-    ? navigation.filter(item => pageAllowed(item.page) && groups.some(group => group.items.includes(item.page)) && item.title.toLocaleLowerCase().includes(pageSearch.trim().toLocaleLowerCase()))
+  const titleFor = (entry: (typeof navigation)[number]) => (management && managementTitles[entry.page]) || entry.title
+  const searchTerm = pageSearch.trim().toLocaleLowerCase()
+  const searchResults = searchTerm
+    ? navigation.filter(item => pageAllowed(item.page) && groups.some(group => group.items.includes(item.page)) && [titleFor(item), item.title].some(title => title.toLocaleLowerCase().includes(searchTerm)))
     : []
-  const pageTitle = navigation.find(item => item.page === page)?.title
+  const activeEntry = navigation.find(item => item.page === page)
+  const pageTitle = activeEntry && titleFor(activeEntry)
   function choosePage(target: PageName) {
     navigate(target)
-    setOpenGroup(groups.find(group => group.items.includes(target) && !group.core.includes(target))?.id ?? null)
+    setOpenGroup(secondaryGroup(target))
     setPageSearch('')
     setMobileOpen(false)
   }
   const homeLink = (className: string, compact = false) => <a className={className} href="/" aria-label={`${brand.fullName}首页`} onClick={event => { event.preventDefault(); if (homeTarget) choosePage(homeTarget) }}><span className="brand-icon"><Flame size={compact ? 20 : 24}/></span>{compact ? <span><strong>{brand.name}</strong><small>{audience === 'management' ? '管理平台' : '用户平台'}</small></span> : <span>{brand.name}<small>{brand.description}</small></span>}</a>
-  const nav = <>{homeLink('brand')}<div className="sidebar-audience"><ShieldCheck size={13}/>{audience === 'management' ? '管理工作空间' : '客户工作空间'}</div><div className="nav-page-search"><label>搜索页面<Input type="search" aria-label="搜索页面名称" value={pageSearch} onChange={event => setPageSearch(event.target.value)} placeholder="输入页面名称" autoComplete="off"/></label>{pageSearch && <button type="button" className="nav-search-clear" onClick={() => setPageSearch('')}>清除</button>}{pageSearch && (searchResults.length ? <div className="nav-search-results" aria-label="搜索结果">{searchResults.map(item => <button type="button" key={item.page} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => choosePage(item.page)}>{item.title}<small>{groups.find(group => group.items.includes(item.page))?.label}</small></button>)}</div> : <p className="nav-search-empty" role="status">没有匹配的可访问页面</p>)}</div><nav aria-label="主导航">{groups.map(group => {
-    const items = group.items.filter(pageAllowed)
+  function pageButton(item: PageName, withIcon = false) {
+    const definition = navigation.find(entry => entry.page === item)
+    if (!definition) return null
+    const Icon = definition.icon
+    return <button key={item} type="button" className={`nav-item ${page === item ? 'active' : ''}`} onClick={() => choosePage(item)} aria-current={page === item ? 'page' : undefined}>
+      {withIcon && <Icon size={18} aria-hidden="true"/>}<span>{titleFor(definition)}</span>{page === item && <span className="nav-active-dot"/>}
+    </button>
+  }
+  const nav = <>{homeLink('brand')}<div className="sidebar-audience"><ShieldCheck size={13}/>{management ? '管理工作空间' : '客户工作空间'}</div>
+    {primaryItems.length > 0 && <nav aria-label="一线操作"><div className="nav-section">一线操作</div>{primaryItems.map(item => pageButton(item, true))}</nav>}
+    <div className="nav-page-search"><label>搜索页面<Input type="search" aria-label="搜索页面名称" value={pageSearch} onChange={event => setPageSearch(event.target.value)} placeholder="输入页面名称" autoComplete="off"/></label>{pageSearch && <button type="button" className="nav-search-clear" onClick={() => setPageSearch('')}>清除</button>}{pageSearch && (searchResults.length ? <div className="nav-search-results" aria-label="搜索结果">{searchResults.map(item => <button type="button" key={item.page} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => choosePage(item.page)}>{titleFor(item)}<small>{groups.find(group => group.items.includes(item.page))?.label}</small></button>)}</div> : <p className="nav-search-empty" role="status">没有匹配的可访问页面</p>)}</div>
+    <nav aria-label="主导航">{groups.map(group => {
+    const items = group.items.filter(item => pageAllowed(item) && (!management || !managementPrimary.includes(item)))
     if (!items.length) return null
-    const coreItems = group.core.filter(pageAllowed)
-    const secondaryItems = items.filter(item => !group.core.includes(item))
+    const coreItems = management ? [] : group.core.filter(pageAllowed)
+    const secondaryItems = items.filter(item => !coreItems.includes(item))
     const GroupIcon = group.icon
     const isOpen = openGroup === group.id
-    const isActive = group.items.includes(page)
+    const isActive = items.includes(page)
     return <div className="nav-group-wrap" key={group.id}>
       {secondaryItems.length ? <button type="button" className={`nav-group ${isActive ? 'active' : ''} ${isOpen ? 'open' : ''}`} onClick={() => setOpenGroup(previous => previous === group.id ? null : group.id)} aria-expanded={isOpen}><GroupIcon size={18}/><span>{group.label}</span><ChevronDown size={14} className="nav-chevron"/></button> : <div className="nav-group"><GroupIcon size={18}/><span>{group.label}</span></div>}
-      <div className="nav-core">{coreItems.map(item => { const definition = navigation.find(entry => entry.page === item); if (!definition) return null; return <button key={item} className={`nav-item ${page === item ? 'active' : ''}`} onClick={() => choosePage(item)} aria-current={page === item ? 'page' : undefined}><span>{definition.title}</span>{page === item && <span className="nav-active-dot"/>}</button> })}</div>
-      {secondaryItems.length > 0 && isOpen && <div className="nav-sub">{secondaryItems.map(item => { const definition = navigation.find(entry => entry.page === item); if (!definition) return null; return <button key={item} className={`nav-item ${page === item ? 'active' : ''}`} onClick={() => choosePage(item)} aria-current={page === item ? 'page' : undefined}><span>{definition.title}</span>{page === item && <span className="nav-active-dot"/>}</button> })}</div>}
+      {coreItems.length > 0 && <div className="nav-core">{coreItems.map(item => pageButton(item))}</div>}
+      {secondaryItems.length > 0 && isOpen && <div className="nav-sub">{secondaryItems.map(item => pageButton(item))}</div>}
     </div>
   })}</nav><div className="sidebar-bottom"><div className="sidebar-version"><span className="status-dot"/>自托管部署</div></div></>
   async function logout() {
@@ -257,17 +283,17 @@ function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Hea
           case 'rule-flows': return <RuleFlowsPage/>
           case 'data-governance': return <RetentionPage/>
           case 'duty-overview': return <DutyOverviewPage/>
-          case 'parameter-monitoring': return <ParameterMonitoringPage/>
-          case 'device-monitoring': return <DeviceMonitoringPage/>
-          case 'alarm-history': return <AlarmHistoryPage/>
-          case 'fault-history': return <FaultHistoryPage/>
+          case 'parameter-monitoring': return management ? <ParameterMonitoringPage/> : <CustomerDevicesWorkspace><ParameterMonitoringPage/></CustomerDevicesWorkspace>
+          case 'device-monitoring': return management ? <DeviceMonitoringPage/> : <CustomerDevicesWorkspace><DeviceMonitoringPage/></CustomerDevicesWorkspace>
+          case 'alarm-history': return management ? <AlarmHistoryPage/> : <CustomerAlarmsWorkspace><AlarmHistoryPage/></CustomerAlarmsWorkspace>
+          case 'fault-history': return management ? <FaultHistoryPage/> : <CustomerAlarmsWorkspace><FaultHistoryPage/></CustomerAlarmsWorkspace>
           case 'operations-overview': return <OperationsOverviewPage/>
           case 'device-faults': return <DeviceFaultsPage/>
           case 'alarm-base-config': return <AlarmBaseConfigurationPage/>
           case 'resource-linkage': return <ResourceLinkagePage/>
-          case 'summary': return <Dashboard/>
-          case 'devices': return <DevicesPage/>
-          case 'alarms': return <DutyWorkbenchPage/>
+          case 'summary': return management ? <ManagementHome onNavigate={choosePage} overview={<Dashboard/>}/> : <CustomerHome/>
+          case 'devices': return management ? <DevicesPage/> : <CustomerDevicesWorkspace><DevicesPage/></CustomerDevicesWorkspace>
+          case 'alarms': return management ? <DutyWorkbenchPage/> : <CustomerAlarmsWorkspace><DutyWorkbenchPage/></CustomerAlarmsWorkspace>
           case 'settings': return <SettingsPage/>
           case 'units': return <UnitsPage/>
           case 'places': return <PlacesPage/>

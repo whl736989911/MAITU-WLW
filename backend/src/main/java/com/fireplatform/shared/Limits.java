@@ -50,7 +50,7 @@ public final class Limits {
     public record SettingDefinition(String key, long initial, String unit, long min, long max, String description) { }
     public static final Map<String, SettingDefinition> SETTINGS = Map.of(
         "offline_threshold_minutes", new SettingDefinition("offline_threshold_minutes", 2880, "分钟", 1, 525600,
-            "仅供设备列表/summary按最近消息时间读时推导连接状态；默认适配24小时心跳。不包含离线扫描、通知或厂商接入。"),
+            "设备列表/summary连接状态及离线事件扫描的离线截止时间使用此阈值；无已接收心跳证据时不推断离线。默认适配24小时心跳；此值不配置扫描周期、通知间隔或厂商上报周期。"),
         "default_page_size", new SettingDefinition("default_page_size", 20, "条", 5, MAX_PAGE_SIZE,
             "设备及报警列表未指定size时的默认条数。单次请求硬上限由服务端策略控制。")
     );

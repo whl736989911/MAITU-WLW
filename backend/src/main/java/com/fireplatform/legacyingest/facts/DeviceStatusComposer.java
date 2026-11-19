@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class DeviceStatusComposer {
-    public enum Code { OFFLINE, FIRE, DISABLED, SHIELDED, FAULT, ONLINE, UNACTIVATED }
+    public enum Code { OFFLINE, FIRE, DISABLED, SHIELDED, FAULT, ONLINE, UNACTIVATED, UNKNOWN }
     public record BusinessStatus(Code code,String label) { }
     public record Status(Code onlineStatus,Code customerStatus,List<BusinessStatus> businessStatuses) { }
     private final ObjectMapper json;

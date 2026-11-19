@@ -15,7 +15,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.*;
 import org.springframework.boot.test.context.*;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.*;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -116,16 +116,23 @@ class ParameterIntegrationTest {
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-floor");
         assertThat(item("device-a").get("connectivity").asText()).isEqualTo("UNKNOWN");
         assertThat(item("device-a").get("physical_state").asText()).isEqualTo("FIRE");
+        set("PLACE","test-room",15,0,"room-policy").andExpect(status().isOk());
+        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-room");
+        assertThat(item("device-a").at("/offline_policy/value").asLong()).isEqualTo(15);
         set("DEVICE","device-a",45,0,"device-policy").andExpect(status().isOk());
         assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("DEVICE");
         assertThat(item("device-a").get("connectivity").asText()).isEqualTo("ONLINE");
         clear("DEVICE","device-a",1,"clear-device-place").andExpect(status().isOk());
+        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-room");
+        clear("PLACE","test-room",1,"clear-room").andExpect(status().isOk());
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-floor");
         clear("PLACE","test-floor",1,"clear-floor").andExpect(status().isOk());
         assertThat(view("PLACE","test-floor").get("revision").asInt()).isEqualTo(2);
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo(f.placeId);
         jdbc.update("UPDATE devices SET place_id=NULL WHERE id='device-a'");
         assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("TENANT");
+        clear("TENANT","tenant-a",1,"clear-unit").andExpect(status().isOk());
+        assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("GLOBAL");
         set("PLACE","other-place",1,0,"foreign-policy").andExpect(status().isNotFound());
     }
     @Test void integerTokensUnknownFieldsReasonsScopesAndCrossTenantTargetsFailClosed() throws Exception {

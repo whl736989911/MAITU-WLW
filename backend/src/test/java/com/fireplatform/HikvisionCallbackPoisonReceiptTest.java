@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -53,7 +53,7 @@ class HikvisionCallbackPoisonReceiptTest {
     @Autowired TransactionTemplate transactions;
     @Autowired CoordinationFence coordination;
     @Autowired @Qualifier("hikvisionCallbackScheduler") ThreadPoolTaskScheduler callbackScheduler;
-    @MockBean ManagementGuard guard;
+    @MockitoBean ManagementGuard guard;
     private AuthService.Identity actor;
     private String credential;
 

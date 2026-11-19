@@ -6,17 +6,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Type;
+import org.springframework.boot.http.converter.autoconfigure.ServerHttpMessageConvertersCustomizer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpOutputMessage;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 /** Final JSON output and authorization revocation share the same short coordination fence. */
-@Component
 public class AuthorizedJsonConverter extends MappingJackson2HttpMessageConverter {
     private final JdbcTemplate jdbc;
     private final AuthService auth;
@@ -67,5 +68,15 @@ public class AuthorizedJsonConverter extends MappingJackson2HttpMessageConverter
         } catch (UncheckedIOException failure) {
             throw failure.getCause();
         }
+    }
+}
+
+@Configuration(proxyBeanMethods = false)
+class AuthorizedJsonMvcConfiguration {
+    @Bean ServerHttpMessageConvertersCustomizer authorizedJson(
+            ObjectMapper mapper, JdbcTemplate jdbc, AuthService auth,
+            RequestSecurity security, PlatformTransactionManager transactions) {
+        var converter = new AuthorizedJsonConverter(mapper, jdbc, auth, security, transactions);
+        return builder -> builder.withJsonConverter(converter);
     }
 }

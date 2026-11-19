@@ -1,6 +1,10 @@
 # 后端（仅Ubuntu/Linux）
 
-Java 21、Spring Boot、JDBC/Flyway；生产使用 PostgreSQL 17，H2 仅用于开发和隔离测试。构建及运行在 Ubuntu/Linux；部署和备份要求见 [Ubuntu 部署手册](../docs/ubuntu-deployment.md)。
+Java 21、Spring Boot 4.0（Spring Framework 7、嵌入式 Tomcat 11）、JDBC/Flyway；生产使用 PostgreSQL 17，H2 仅用于开发和隔离测试。构建及运行在 Ubuntu/Linux；部署和备份要求见 [Ubuntu 部署手册](../docs/ubuntu-deployment.md)。
+
+后端使用 [Spring Boot 4 官方 Jackson 2 兼容模块](https://docs.spring.io/spring-boot/4.0/reference/features/json.html#features.json.jackson2)。应用已有约 143 处 Jackson 2 调用，涵盖 API、来源原文、JSON 数字精度和日期偏移；本次只升级框架，不同时迁移序列化库。MVC 显式选用 Jackson 2，沿用严格解析、snake_case 与 JSON 授权输出锁。该模块已废弃；单独迁移 Jackson 3 时须重新验证这些行为。
+
+开发与测试使用 H2 2.5.252；Boot 4.0 默认的 2.4.240 有[跨连接 CHECK 约束回归](https://github.com/h2database/h2database/issues/4291)。PostgreSQL 生产路径和迁移文件不变。
 
 ## 构建与启动
 
@@ -24,7 +28,9 @@ bash scripts/run.sh
 
 prod必须显式`APP_STORAGE=postgresql`，独立库和最小权限账号；设置`APP_DB_URL/APP_DB_USERNAME/APP_DB_PASSWORD`。通用认证来源应用worker、报警变更读取/发布/信号及真实通知均受各自配置与角色边界约束；默认发送/变更读取发布与信号关闭。启用真实外部渠道须按各自合同并经授权，不运行模拟业务。API与worker使用同库/稳定密钥，H2不作多进程共享生产库。Linux systemd以非root运行，私密环境文件由管理员保管，不自动安装/重启数据库服务。
 
-Flyway 迁移以 `src/main/resources/db/migration` 为准。旧列和历史记录仅供追溯，不表示旧模板或模拟通知可用于当前写入。源码的迁移版本不证明远程数据库已升级；上线前须备份并实际演练升级和恢复。
+Flyway 迁移见 `src/main/resources/db/migration`（SQL）和 `src/main/java/db/migration`（Java）。旧列和历史记录仅供追溯，不表示旧模板或模拟通知可用于当前写入。源码的迁移版本不证明远程数据库已升级；上线前须备份并实际演练升级和恢复。
+
+框架切换不新增迁移，也不修改 V95。回退代码须使用已验证、同样包含 V95 的运行包；先核对 Flyway 历史与部署证据。仅按发布前备份和验证过的恢复流程处理数据库，不在产生新业务写入后直接恢复旧库。
 
 ## API与业务边界
 
@@ -34,7 +40,14 @@ Flyway 迁移以 `src/main/resources/db/migration` 为准。旧列和历史记�
 - [真实短信/语音通知](<../docs/aliyun-notification.md>)：真实规则与provider配置取代模拟通知/旧模板操作；不要把旧模板或退役模拟合同作为当前API指南。
 - [报警变更HTTP游标](<../docs/alarm-changes-contract.md>)、[显式信号通道](<../docs/alarm-change-channel-contract.md>)：游标和head按授权actor可见真实发布记录密集排名，完整性检查仍覆盖全部历史published记录；仅单一有效单位范围。
 - [最小单位审计](../docs/audit-records-contract.md)。设备分组不得绕过设备读取或写入授权。
-- Hikvision FireCloud 仅提供既有只读轮询，以及显式触发、同样只读的`POST /api/management/hikvision/callback/subscriptions`订阅清单查询；本实现不新增/修改/删除云订阅，不生成厂商签名。受管理的`/api/management/hikvision/callback`仅配置HTTPS公网origin和本地加密的64位随机URL凭证；接收器`POST /api/hooks/hikvision/{credential}`在配置启用且凭证/账号绑定有效时先持久化原始UTF-8信封，再返回空HTTP 200。此ACK是实现约定，厂商ACK/重试语义尚未验证。V67回执由`all`/`ingest`角色有界处理，已启用类型`980002/980002101`（报警）、`980004/980004101`（故障）、`980008/980008101`（监测）与`980016/980016101`（设备事件）交给既有Hikvision原生ingestion；默认仍只启用设备事件，启用其他流须显式勾选，且报警/故障流可能按现有通知策略生成真实下游业务。未启用类型、未知类型/数据类型及未发现资源保留在收件箱并标注待关注，`PARTIAL STREAM_NOT_ENABLED`不伪装成功。`PROCESSED`只表示交给解码器，不代表设备已归属或业务应用完成。故障恢复证据与恢复时间独立保存：仅有`faultState=1`时为“来源已修复、恢复时间未提供”，不回填接收时间，也不由故障复位推导火警恢复。跨单位转移后，已发生的报警/故障迟到的状态更新沿用首次归属单位并校验来源资源一致；早于转移边界或时序未知的记录保持隔离，不重复建事件、不落入新单位、不误关无关火警。监测推送保留为原始扁平记录，仅在有效push来源下按真实`happenTime`归一，并与既有轮询/历史同一观测按指标、值、单位、回路和时间去重；当前监测按指标合并最新值，不因单指标推送抹去其他已存指标。回执重解析接口`POST /api/management/hikvision/callback/receipts/{id}/reparse`使用`integrations:write`、当前密码、协作围栏、CAS与幂等键，只允许同账号/同模型且接收端已启用的`PARTIAL`/`REJECTED`回执重新排队，原报文/哈希/接收时间/重复元数据保持不变；重放同一幂等键返回已排队回执而非实时结果，UI需刷新确认。不新增业务映射、硬件控制、付费通知或云订阅变更。
+
+### 海康消防云
+
+- **App / 表单登记：** [HF-FY500-G 用户手册](https://partners.hikvision.com/material-product/detail/985408157754245120?type=URL)公开产品 S/N；[消防设备添加 V2](https://open.hikfirecloud.com/artemis-portal/document/69#244)公开 `deviceSerial`、`verificationCode` 等字段，未发现该型号标签的原始二维码编码合同。App 只把扫码器已识别或安装人员核对的 S/N 原样作为 `external_serial`；校验码有明确来源才传 `verification_code`，不能从序列号推导。由有 `device:write`、`integrations:write` 和相应单位范围的管理端会话在用户确认后调用 `POST /api/management/vendor-devices/hikvision-create`。传 `Idempotency-Key`、`X-Tenant-Id` 及同一 `tenant_id`，请求选定 `place_id`、海康侧 `vendor_unit_id`、`device_name`、`device_model`、`device_type`、`communication_type`，并使用 `mode=NEW_VENDOR`、`driver_key=HIKVISION_FIRECLOUD`。厂商接收并返回云 ID 与本地建档是两个结果，均不代表设备已入网。
+- **关联与核对：** 已发现设备使用 `POST /api/management/vendor-devices`（`source=HIKVISION_FIRECLOUD`）按精确序列号建档，或在海康接入页使用 `/api/management/hikvision/devices/{externalId}/assignment` 明确关联；这不是厂商在线/离线确权或联系人绑定。登记结果不明时走 `POST /api/management/device-registrations/{id}/reconcile`，不要重新新增。[消防设备查询 V3](https://open.hikfirecloud.com/artemis-portal/document/100#297)按既知云 ID 或序列号分页核对；响应不完整或超出核对上限时保留未知，不证明未找到或唯一匹配。
+- **注销：** 管理端 `POST /api/management/devices/{id}/cloud-delete` 与本地解绑、归档独立。[消防设备删除 V2](https://open.hikfirecloud.com/artemis-portal/document/69#243)以云 `deviceID` 为目标；厂商接受且完整查询确认授权范围内记录不存在，才记为云记录删除已核实。设备断电、硬件注销、真实海康云写入和实际回调投递不属于本地测试的结论。
+- **推送与补拉：** `POST /api/hooks/hikvision/{credential}` 验证已启用且绑定账号的 URL 凭证，把原始信封入库后返回空 HTTP 200；这是平台 ACK，未验证厂商 ACK/重试合同。默认只消费 `980016`，可显式启用[报警、故障和监测推送](https://open.hikfirecloud.com/artemis-portal/document/92#doc1)。厂商订阅写入须走 `/api/management/hikvision/subscriptions` 的预览、执行及回读，不自动注册或重发结果未知的写入。
+- **历史与结果：** [V2 单位查询](https://open.hikfirecloud.com/artemis-portal/document/69#257)使用页号；报警/故障补拉分别查询发生和恢复时间，另读当前监测、监测历史及设备事件。推送与补拉沿用来源 ID 去重，区分来源与接收时间；移交后迟到的原事件仍归原单位，归属前或时序未知的记录不能写进新单位。仅有 `faultState=1` 表示来源确认恢复但未提供时间，不用接收时间补造，也不据此关闭火警。监测历史不冒充当前快照；当前监测按指标合并。回执 `PROCESSED` 仅表示已交解码器。同账号、同型号的 `PARTIAL`/`REJECTED` 可由有 `integrations:write` 的管理者以当前密码、修订和幂等键请求重解析；保留原文和首次接收时间，旧回执重放不代表实时处理结果。
 
 回调处理只在`all`/`ingest`角色运行；`APP_HIKVISION_CALLBACK_POLL_MS`（`app.hikvision-callback-poll-ms`，默认1000ms，100..60000）和`APP_HIKVISION_CALLBACK_BATCH_SIZE`（`app.hikvision-callback-batch-size`，默认10，1..100）分别界定扫描间隔与每tick最大收件数。管理端`enabled`仅控制回调接收/处理，不依赖轮询配置开关；切换绑定海康账号须提供新的64位凭证。
 

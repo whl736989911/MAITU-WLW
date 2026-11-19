@@ -66,6 +66,102 @@ class HikvisionIngestionTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id=? AND physical_state='FIRE'",Long.class,device)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT physical_state FROM devices WHERE id=?",String.class,device)).isEqualTo("FIRE");
     }
+    @Test void hikvisionPollingDoesNotRefreshLivenessAndStaleMonitoringCannotReplaceBattery() {
+        var original = observed.minusHours(2);
+        jdbc.update("UPDATE devices SET last_message_at=?,battery_percent=70 WHERE id=?", original, device);
+
+        accept(Stream.FAULT, fault("polled-fault", observed, observed.minusSeconds(1), observed.plusSeconds(1), "1"));
+        assertThat(lastMessageAt()).isEqualTo(original);
+        var fireAt = observed.plusSeconds(1);
+        accept(Stream.ALARM, alarm("polled-fire", "0", fireAt, null));
+        assertThat(lastMessageAt()).isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT physical_state FROM devices WHERE id=?", String.class, device)).isEqualTo("FIRE");
+        assertThat(jdbc.queryForObject("""
+            SELECT a.occurred_at FROM hikvision_alarm_state s JOIN alarms a ON a.id=s.local_alarm_id
+            WHERE s.source_alarm_id='polled-fire' AND a.tenant_id=? AND a.device_id=? AND a.physical_state='FIRE'
+            """, OffsetDateTime.class, tenant, device)).isEqualTo(fireAt);
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM hikvision_fault_state WHERE source_fault_id='polled-fault' AND source_recovered=TRUE
+            """, Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT battery_percent FROM devices WHERE id=?", Integer.class, device)).isEqualTo(70);
+
+        var latest = observed.plusSeconds(2);
+        accept(Stream.MONITOR, batterySnapshot(latest, 40));
+        accept(Stream.MONITOR, batterySnapshot(latest.minusSeconds(1), 20));
+        assertThat(lastMessageAt()).isEqualTo(latest);
+        assertThat(jdbc.queryForObject("SELECT battery_percent FROM devices WHERE id=?", Integer.class, device)).isEqualTo(40);
+        assertThat(jdbc.queryForList("SELECT battery_percent FROM real_device_battery_observations WHERE device_id=? ORDER BY observed_at",
+            Integer.class, device)).containsExactly(20, 40);
+    }
+
+    @Test void timedPushUsesSourceTimeEvenAfterTheSameAlarmWasPolled() {
+        var fire = alarm("poll-then-push", "0", observed, null);
+        accept(Stream.ALARM, fire);
+        assertThat(lastMessageAt()).isNull();
+
+        push(Stream.ALARM, fire);
+        push(Stream.ALARM, fire);
+        accept(Stream.ALARM, fire);
+        ingestion.replay("source-1", observed.plusDays(1));
+        assertThat(lastMessageAt()).isEqualTo(observed);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alarms WHERE tenant_id=? AND device_id=? AND physical_state='FIRE'",
+            Long.class, tenant, device)).isEqualTo(1L);
+        assertThat(jdbc.queryForList("SELECT ingress FROM hikvision_raw_records WHERE external_key='poll-then-push'", String.class))
+            .containsExactlyInAnyOrder("HIKVISION_POLL", "HIKVISION_PUSH");
+        assertThat(jdbc.queryForObject("""
+            SELECT count(*) FROM alarm_configuration_outcomes o JOIN alarms a ON a.id=o.alarm_id AND a.tenant_id=o.tenant_id
+            WHERE a.device_id=? AND o.outcome_kind='NOTIFICATION_GATE'
+            """, Long.class, device)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_provider_attempts WHERE device_id=?", Long.class, device)).isZero();
+        push(Stream.ALARM, alarm("stale-push", "0", observed.minusSeconds(1), null));
+        assertThat(lastMessageAt()).isEqualTo(observed);
+
+        var detectorFaultAt = observed.plusSeconds(1);
+        var detectorFault = fault("detector-push", detectorFaultAt, null, null, "0");
+        accept(Stream.FAULT, detectorFault);
+        assertThat(lastMessageAt()).isEqualTo(observed);
+        push(Stream.FAULT, detectorFault);
+        push(Stream.FAULT, detectorFault);
+        assertThat(lastMessageAt()).isEqualTo(detectorFaultAt);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM legacy_ingest_events WHERE device_id=? AND kind='FAULT'", Long.class, device)).isEqualTo(1L);
+        var cloudFault = fault("cloud-push", observed.plusSeconds(2), null, null, "0");
+        cloudFault.put("faultType", "300001");
+        push(Stream.FAULT, cloudFault);
+        assertThat(lastMessageAt()).isEqualTo(detectorFaultAt);
+        push(Stream.FAULT, fault("detector-push", observed.plusSeconds(3), null, null, "1"));
+        push(Stream.ALARM, alarm("poll-then-push", "1", observed, observed.plusSeconds(4)));
+        assertThat(lastMessageAt()).isEqualTo(detectorFaultAt);
+    }
+
+    @Test void replayUsesStoredIngressAndObservationInsteadOfLinkTime() {
+        jdbc.update("UPDATE hikvision_discovered_devices SET local_device_id=NULL WHERE external_id='source-1'");
+        var fire = alarm("pending-push", "0", observed, null);
+        accept(Stream.ALARM, fire);
+        push(Stream.ALARM, fire);
+        push(Stream.ALARM, fire);
+        accept(Stream.ALARM, alarm("pending-poll", "0", observed.plusSeconds(1), null));
+        assertThat(lastMessageAt()).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alarms WHERE device_id=?", Long.class, device)).isZero();
+
+        jdbc.update("UPDATE hikvision_discovered_devices SET local_device_id=? WHERE external_id='source-1'", device);
+        ingestion.replay("source-1", observed.plusMinutes(4));
+        ingestion.replay("source-1", observed.plusMinutes(5));
+        assertThat(lastMessageAt()).isEqualTo(observed);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alarms WHERE tenant_id=? AND device_id=? AND physical_state='FIRE'",
+            Long.class, tenant, device)).isEqualTo(2L);
+        assertThat(jdbc.queryForList("SELECT ingress FROM hikvision_raw_records WHERE external_key='pending-push' AND applied_device_id=?", String.class, device))
+            .containsExactlyInAnyOrder("HIKVISION_POLL", "HIKVISION_PUSH");
+    }
+
+    private Map<String, ?> batterySnapshot(OffsetDateTime at, int percent) {
+        return Map.of("resourceID", "source-1", "monitorTime", at.toString(),
+            "data", List.of(Map.of("monitorType", "400001", "monitorValue", percent, "monitorUnit", "%")));
+    }
+
+    private OffsetDateTime lastMessageAt() {
+        return jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id=?", OffsetDateTime.class, device);
+    }
+
     @Test void snapshotsDoNotDoubleCountHistoryAndKeepSourceUnitsAndFractionalBattery(){
         var temperature=Map.of("monitorType","400006","monitorValue","24.4","monitorUnit","℃","circuitNo",0);
         accept(Stream.HISTORY_MONITOR,Map.of("resourceID","source-1","monitorTime",observed.toString(),"data",List.of(temperature)));
@@ -83,9 +179,15 @@ class HikvisionIngestionTest {
         assertThat(jdbc.queryForObject("SELECT DISTINCT ingress FROM legacy_ingest_messages WHERE device_id=?",String.class,device)).isEqualTo("HIKVISION_POLL");
     }
     @Test void currentOnlySourceObservationAdvancesDeviceTimeButNeverThePollingTime(){
-        accept(Stream.MONITOR,Map.of("resourceID","source-1","monitorTime",observed.toString(),"data",List.of(Map.of("monitorType","400006","monitorValue","24.4","monitorUnit","℃"))));
+        Map<String,Object> snapshot=Map.of("resourceID","source-1","monitorTime",observed.toString(),
+            "data",List.of(Map.of("monitorType","400006","monitorValue","24.4","monitorUnit","℃")));
+        accept(Stream.MONITOR,snapshot);
+        push(Stream.MONITOR,snapshot);
         assertThat(jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id=?",OffsetDateTime.class,device)).isEqualTo(observed);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_events WHERE device_id=? AND kind='PARAM'",Long.class,device)).isZero();
+        assertThat(jdbc.queryForList("SELECT ingress FROM hikvision_raw_records WHERE stream_kind='MONITOR' AND applied_device_id=?",String.class,device))
+            .containsExactlyInAnyOrder("HIKVISION_POLL","HIKVISION_PUSH");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_messages WHERE device_id=?",Long.class,device)).isEqualTo(1L);
         assertThat(telemetry.current(actor,tenant,ScopeFilter.Selection.all(),"temperature",1,20).items().getFirst().readings().getFirst().value()).isEqualTo("24.4");
     }
     @Test void missingSourceAlarmTimeIsRetainedAsUnknownTimeRiskWithoutInventingPollTime(){
@@ -297,6 +399,9 @@ class HikvisionIngestionTest {
         assertThat(jdbc.queryForObject("SELECT source_recovered FROM hikvision_fault_state WHERE source_fault_id='push-fault-old'",Boolean.class)).isTrue();
         assertThat(jdbc.queryForObject("SELECT r.applied_device_id FROM hikvision_fault_state s JOIN hikvision_raw_records r ON r.id=s.latest_raw_id WHERE s.source_fault_id='push-fault-old'",String.class)).isEqualTo(device);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_events WHERE kind='FAULT' AND device_id=?",Long.class,targetDevice)).isZero();
+        push(Stream.FAULT,fault("push-fault-old",observed.plusMinutes(3),null,null,"0"));
+        assertThat(lastMessageAt()).isEqualTo(observed);
+        assertThat(jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id=?",OffsetDateTime.class,targetDevice)).isNull();
         push(Stream.ALARM,alarm("push-alarm-new","0",observed.plusMinutes(3),null));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE device_id=? AND physical_state='FIRE'",Long.class,targetDevice)).isEqualTo(1L);
         push(Stream.ALARM,alarm("push-alarm-stale","0",observed.plusMinutes(1),null));

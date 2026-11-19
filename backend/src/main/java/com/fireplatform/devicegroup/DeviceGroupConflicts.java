@@ -8,7 +8,10 @@ import java.util.regex.Pattern;
 public final class DeviceGroupConflicts {
     private DeviceGroupConflicts() { }
     private static final String NAME="uq_device_groups_tenant_name";
-    private static final Pattern H2_NAME=Pattern.compile("\"(?:PUBLIC\\.)?UQ_DEVICE_GROUPS_TENANT_NAME_INDEX_[0-9A-F]+ ON (?:PUBLIC\\.)?DEVICE_GROUPS\\(TENANT_ID NULLS FIRST, NAME NULLS FIRST\\)",Pattern.CASE_INSENSITIVE);
+    private static final Pattern H2_NAME = Pattern.compile(
+            "\\AUnique index or primary key violation: \"(?:PUBLIC\\.)?(UQ_DEVICE_GROUPS_TENANT_NAME) INDEX "
+                    + "(?:PUBLIC\\.)?\\1_INDEX_[0-9A-F]+ ON (?:PUBLIC\\.)?DEVICE_GROUPS\\(TENANT_ID NULLS FIRST, NAME NULLS FIRST\\)",
+            Pattern.CASE_INSENSITIVE);
     public static boolean name(Throwable failure){
         var seen=Collections.newSetFromMap(new IdentityHashMap<Throwable,Boolean>());for(Throwable cause=failure;cause!=null&&seen.size()<32&&seen.add(cause);cause=cause.getCause()){
             if(!(cause instanceof SQLException sql)||!"23505".equals(sql.getSQLState()))continue;

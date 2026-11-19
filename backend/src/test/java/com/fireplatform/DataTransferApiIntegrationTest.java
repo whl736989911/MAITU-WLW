@@ -4,16 +4,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fireplatform.bootstrap.Bootstrap;
 import com.fireplatform.product.JsonPointerParser;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,6 +25,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -181,8 +185,8 @@ class DataTransferApiIntegrationTest {
             List.of("Imported own smoke",eui,"Own installation",version.get("id").asText(),child,"消防","烟感"),
             List.of("Invalid identifier","invalid eui","Own installation",version.get("id").asText(),child,"",""),
             List.of("Foreign installation","foreign-"+UUID.randomUUID(),"Foreign installation",version.get("id").asText(),foreignPlace,"","")));
-        assertThat(devicePreview.get("valid_count").asInt()).isEqualTo(2);
-        assertThat(devicePreview.get("error_count").asInt()).isEqualTo(1);
+        assertThat(devicePreview.get("valid_count").asInt()).isEqualTo(1);
+        assertThat(devicePreview.get("error_count").asInt()).isEqualTo(2);
         JsonNode deviceJob=customerConfirm(customer,devicePreview);
         assertThat(deviceJob.get("status").asText()).isEqualTo("COMPLETED_WITH_ERRORS");
         assertThat(deviceJob.get("success_count").asInt()).isEqualTo(1);
@@ -190,6 +194,8 @@ class DataTransferApiIntegrationTest {
         String imported=jdbc.queryForObject("SELECT id FROM devices WHERE tenant_id='tenant-a' AND device_eui=? AND place_id=? AND product_version_id=? AND is_simulated=FALSE AND integration_state='PENDING_INTEGRATION'",String.class,eui,child,version.get("id").asText());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE tenant_id='tenant-b'",Long.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE name IN ('Invalid identifier','Foreign installation')",Long.class)).isZero();
+        call(HttpMethod.GET,"/api/customer/data-transfer/jobs/"+deviceJob.get("id").asText()+"/rows",customer,null,null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$[2].status").value("INVALID"));
         JsonNode errorFile=body(call(HttpMethod.GET,"/api/customer/data-transfer/jobs/"+deviceJob.get("id").asText()+"/errors/download?format=CSV",customer,null,null,null).andExpect(status().isOk()));
         byte[] errorBytes=Base64.getDecoder().decode(errorFile.get("content_base64").asText());
         assertThat(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(errorBytes))).isEqualTo(errorFile.get("content_sha256").asText());
@@ -216,10 +222,74 @@ class DataTransferApiIntegrationTest {
         JsonNode version=fixture.published(fixture.product().get("id").asText(),"1");
         String eui="scope-refused-"+UUID.randomUUID();
         JsonNode preview=customerPreview(customer,"DEVICES",List.of(List.of("No scope device",eui,"Own address",version.get("id").asText(),fixture.placeId,"","")));
-        JsonNode job=customerConfirm(customer,preview);
-        assertThat(job.get("success_count").asInt()).isZero();
+        assertThat(preview.get("valid_count").asInt()).isZero();
+        assertThat(preview.get("rows").get(0).get("status").asText()).isEqualTo("INVALID");
+        call(HttpMethod.POST,"/api/customer/data-transfer/confirm",customer,null,"no-scope-confirm",customerConfirmRequest(preview))
+            .andExpect(status().isBadRequest());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE device_eui=?",Long.class,eui)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM user_device_scopes WHERE user_id=? AND tenant_id='tenant-a'",Long.class,user)).isZero();
+    }
+
+    @Test void deviceWorkbookKeepsPhysicalRowsAndRejectsUnavailablePlacesThroughConfirmation() throws Exception {
+        String customer=customerWriter();
+        String user=jdbc.queryForObject("SELECT id FROM app_users WHERE username='customer-a'",String.class);
+        String child="transfer-child", outside="transfer-outside", foreign="transfer-foreign", archived="transfer-archived";
+        jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id) VALUES (?,'tenant-a','Allowed child',?)",child,fixture.placeId);
+        jdbc.update("INSERT INTO places(id,tenant_id,name) VALUES (?,'tenant-a','Outside subtree'),(?,'tenant-b','Foreign place')",outside,foreign);
+        jdbc.update("INSERT INTO places(id,tenant_id,name,parent_place_id,archived_at) VALUES (?,'tenant-a','Archived child',?,CURRENT_TIMESTAMP)",archived,fixture.placeId);
+        jdbc.update("UPDATE user_device_scopes SET mode='PLACE_SUBTREE',revision=revision+1 WHERE user_id=? AND tenant_id='tenant-a'",user);
+        jdbc.update("INSERT INTO user_device_scope_places(user_id,tenant_id,place_id) VALUES (?,'tenant-a',?)",user,fixture.placeId);
+        String version=fixture.published(fixture.product().get("id").asText(),"1").get("id").asText();
+        JsonNode template=body(call(HttpMethod.GET,"/api/customer/data-transfer/template?kind=DEVICES&format=XLSX",customer,null,null,null)
+            .andExpect(status().isOk()));
+        String content;
+        try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(Base64.getDecoder().decode(template.get("content_base64").asText())));
+            var out=new ByteArrayOutputStream()) {
+            var sheet=workbook.getSheetAt(0);
+            sheet.createRow(2).createCell(0).setCellValue(" ");
+            var targets=List.of(child, foreign, "transfer-missing", outside, archived);
+            int[] physicalRows={4,6,7,9,10};
+            for(int i=0;i<targets.size();i++){
+                var row=sheet.createRow(physicalRows[i]-1);
+                var cells=List.of("Workbook device "+i,"xlsx-device-"+i,"Installation address",version,targets.get(i),"","");
+                for(int c=0;c<cells.size();c++)row.createCell(c).setCellValue(cells.get(c));
+            }
+            workbook.write(out);
+            content=Base64.getEncoder().encodeToString(out.toByteArray());
+        }
+        JsonNode preview=body(call(HttpMethod.POST,"/api/customer/data-transfer/preview",customer,null,null,
+            Map.of("kind","DEVICES","format","XLSX","tenant_id","tenant-a","content_base64",content)).andExpect(status().isOk()));
+        Iterable<JsonNode> previewRows=preview.get("rows");
+        assertAll(
+            () -> assertThat(preview.get("row_count").asInt()).isEqualTo(5),
+            () -> assertThat(previewRows).extracting(row->row.get("row_no").asInt()).containsExactly(4,6,7,9,10),
+            () -> assertThat(previewRows).extracting(row->row.get("status").asText()).containsExactly("VALID","INVALID","INVALID","INVALID","INVALID"));
+
+        String key="workbook-confirm";
+        var confirm=customerConfirmRequest(preview);
+        jdbc.update("UPDATE user_device_scope_places SET place_id=? WHERE user_id=? AND tenant_id='tenant-a'",outside,user);
+        call(HttpMethod.POST,"/api/customer/data-transfer/confirm",customer,null,key,confirm)
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PLAN_INVALID"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM data_transfer_jobs WHERE plan_id=?",Long.class,preview.get("plan_id").asText())).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE device_eui LIKE 'xlsx-device-%'",Long.class)).isZero();
+
+        jdbc.update("UPDATE user_device_scope_places SET place_id=? WHERE user_id=? AND tenant_id='tenant-a'",fixture.placeId,user);
+        JsonNode job=customerConfirm(customer,preview,key);
+        assertThat(job.get("status").asText()).isEqualTo("COMPLETED_WITH_ERRORS");
+        assertThat(job.get("success_count").asInt()).isEqualTo(1);
+        assertThat(job.get("error_count").asInt()).isEqualTo(4);
+        String jobId=job.get("id").asText(), jobPath="/api/customer/data-transfer/jobs/"+jobId;
+        Iterable<JsonNode> rows=body(call(HttpMethod.GET,jobPath+"/rows",customer,null,null,null).andExpect(status().isOk()));
+        assertThat(rows).extracting(row->row.get("row_no").asInt()+":"+row.get("status").asText())
+            .containsExactly("4:SUCCEEDED","6:INVALID","7:INVALID","9:INVALID","10:INVALID");
+        Iterable<JsonNode> errors=body(call(HttpMethod.GET,jobPath+"/errors",customer,null,null,null).andExpect(status().isOk()));
+        assertThat(errors).extracting(row->row.get("row_no").asInt()).containsExactly(6,7,9,10);
+        call(HttpMethod.POST,"/api/customer/data-transfer/confirm",customer,null,key,confirm)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(jobId));
+        assertThat(jdbc.queryForList("SELECT idem_key FROM idempotency_records WHERE user_id=? AND operation='device-register'",String.class,user))
+            .containsExactly("data-transfer:"+jobId+":4");
+        assertThat(jdbc.queryForList("SELECT device_eui || ':' || tenant_id || ':' || place_id FROM devices WHERE device_eui LIKE 'xlsx-device-%'",String.class))
+            .containsExactly("xlsx-device-0:tenant-a:"+child);
     }
 
     @Test void managementContactPreviewUsesTheSamePhoneAndTypePolicyAsManualWrites() throws Exception {
@@ -297,9 +367,14 @@ class DataTransferApiIntegrationTest {
         assertThat(originalJob.get("success_count").asInt()).isEqualTo(1);
         String originalId=jdbc.queryForObject("SELECT id FROM notification_rules WHERE name='Independent fault channels'",String.class);
         assertThat(jdbc.queryForObject("SELECT wechat_escalation_interval_seconds FROM notification_rules WHERE id=?",Long.class,originalId)).isEqualTo(300);
+        call(HttpMethod.POST,"/api/customer/notification-settings/rules",customer,null,UUID.randomUUID().toString(),
+            Map.of("name","Device scoped draft","enabled",false,"event_scope","FAULT","scope_type","DEVICE",
+                "scope_id","device-a","sms_escalation_interval_minutes",0,"voice_escalation_interval_minutes",0,
+                "reason","Scoped rule must not be exported as a unit draft",
+                "receivers",List.of(Map.of("channel","SMS","contact_id",first.get("id").asText(),"level",1))))
+            .andExpect(status().isCreated());
         var exportInput=json.createObjectNode().put("kind","UNIT_NOTIFICATION_RULES").put("format","CSV").put("tenant_id","tenant-a").put("reason","Multi-channel roundtrip fixture");
         exportInput.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","place_ids","")));
-        exportInput.set("selected_ids",json.valueToTree(List.of(originalId)));
         JsonNode exported=body(call(HttpMethod.POST,"/api/customer/data-transfer/exports",customer,null,UUID.randomUUID().toString(),exportInput).andExpect(status().isOk()));
         assertThat(exported.get("row_count").asInt()).isEqualTo(1);
         JsonNode file=body(call(HttpMethod.GET,"/api/customer/data-transfer/exports/"+exported.get("id").asText()+"/download",customer,null,null,null).andExpect(status().isOk()));
@@ -356,8 +431,17 @@ class DataTransferApiIntegrationTest {
         return body(call(HttpMethod.POST,"/api/customer/data-transfer/preview",token,null,null,Map.of("kind",kind,"format","CSV","tenant_id","tenant-a","content_base64",Base64.getEncoder().encodeToString(csv.toString().getBytes(StandardCharsets.UTF_8)))).andExpect(status().isOk()));
     }
 
+    private Map<String,String> customerConfirmRequest(JsonNode preview) {
+        return Map.of("plan_id",preview.get("plan_id").asText(),"expected_sha256",preview.get("source_sha256").asText(),
+            "tenant_id","tenant-a","reason","Own-unit import verification");
+    }
+
     private JsonNode customerConfirm(String token,JsonNode preview) throws Exception {
-        JsonNode first=body(call(HttpMethod.POST,"/api/customer/data-transfer/confirm",token,null,"customer-confirm-"+UUID.randomUUID(),Map.of("plan_id",preview.get("plan_id").asText(),"expected_sha256",preview.get("source_sha256").asText(),"tenant_id","tenant-a","reason","Own-unit import verification")).andExpect(status().isOk()));
+        return customerConfirm(token,preview,"customer-confirm-"+UUID.randomUUID());
+    }
+
+    private JsonNode customerConfirm(String token,JsonNode preview,String key) throws Exception {
+        JsonNode first=body(call(HttpMethod.POST,"/api/customer/data-transfer/confirm",token,null,key,customerConfirmRequest(preview)).andExpect(status().isOk()));
         String state=first.get("status").asText();long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
         while(List.of("QUEUED","RUNNING").contains(state)&&System.nanoTime()<deadline){Thread.sleep(25);state=jdbc.queryForObject("SELECT status FROM data_transfer_jobs WHERE id=?",String.class,first.get("id").asText());}
         assertThat(state).isNotIn("QUEUED","RUNNING");

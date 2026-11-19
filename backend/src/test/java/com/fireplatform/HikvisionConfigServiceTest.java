@@ -25,7 +25,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.MethodOrderer.OrderAnnotation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -41,7 +41,7 @@ class HikvisionConfigServiceTest {
     @Autowired IdempotencyStore idem;
     @Autowired Clock clock;
     @Autowired TransactionTemplate transactions;
-    @MockBean ManagementGuard guard;
+    @MockitoBean ManagementGuard guard;
     private AuthService.Identity actor;
 
     @BeforeEach void setUp() {

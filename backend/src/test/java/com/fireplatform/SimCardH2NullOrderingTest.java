@@ -14,7 +14,11 @@ import static org.assertj.core.api.Assertions.*;
 /** Real H2 driver regressions; reports structural index metadata, never row values. */
 class SimCardH2NullOrderingTest {
     private static final String DRIVER="org.h2.jdbc.JdbcSQLIntegrityConstraintViolationException";
-    private static final Pattern INDEX=Pattern.compile("\"(?:PUBLIC\\.)?(UQ_SIM_CARDS_TENANT_ICCID_INDEX_[0-9A-F]+) ON (?:PUBLIC\\.)?SIM_CARDS\\((TENANT_ID NULLS (?:FIRST|LAST), ICCID NULLS (?:FIRST|LAST))\\)",Pattern.CASE_INSENSITIVE);
+    private static final String VIOLATION_PREFIX = "Unique index or primary key violation: \"";
+    private static final Pattern INDEX = Pattern.compile(
+            "\\A" + VIOLATION_PREFIX + "PUBLIC\\.UQ_SIM_CARDS_TENANT_ICCID INDEX PUBLIC\\.(UQ_SIM_CARDS_TENANT_ICCID_INDEX_[0-9A-F]+) "
+                    + "ON PUBLIC\\.SIM_CARDS\\((TENANT_ID NULLS (?:FIRST|LAST), ICCID NULLS (?:FIRST|LAST))\\)",
+            Pattern.CASE_INSENSITIVE);
     @Test void realLowNullOrderingClassifiesOnlyTheNamedTenantIccidConstraint(){exercise("LOW","FIRST");}
     @Test void realHighNullOrderingClassifiesOnlyTheNamedTenantIccidConstraint(){exercise("HIGH","LAST");}
 
@@ -64,7 +68,8 @@ class SimCardH2NullOrderingTest {
         fixtures.card(jdbc,"a","ProbeFirst");
         notIccid(failure(()->fixtures.card(jdbc,"a","ProbeSecond")),"23505");
 
-        String structuralOnly="\"PUBLIC.UQ_SIM_CARDS_TENANT_ICCID_INDEX_A ON PUBLIC.SIM_CARDS(TENANT_ID NULLS "+nullPosition+", ICCID NULLS "+nullPosition+")";
+        String structuralOnly = VIOLATION_PREFIX + "PUBLIC.UQ_SIM_CARDS_TENANT_ICCID INDEX PUBLIC.UQ_SIM_CARDS_TENANT_ICCID_INDEX_A"
+                + " ON PUBLIC.SIM_CARDS(TENANT_ID NULLS " + nullPosition + ", ICCID NULLS " + nullPosition + ")";
         var arbitrary=new SQLException(structuralOnly,"23505");
         assertThat(SimCardConflicts.iccid(arbitrary)).as("unstructured SQLException cannot impersonate driver metadata").isFalse();
         assertThat(SimCardConflicts.iccid(new DataIntegrityViolationException("synthetic wrapper",arbitrary))).isFalse();

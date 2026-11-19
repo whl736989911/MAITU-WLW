@@ -6,15 +6,17 @@ import { useSession } from '@/lib/store'
 import { allowedPage, type Alarm, type AlarmWorkbenchFilters, type AlarmWorkbenchMetrics, type AlarmWorkbench } from '@/lib/types'
 import { compileAlarmDraft, emptyAlarmDraft, emptyAlarmFilters, validateAlarmWorkbench, type AlarmFilterDraft } from '@/lib/alarm-workbench'
 import { conclusions } from '@/lib/format'
+import { alarmTimeText } from '@/lib/alarm-time'
 import { AlarmTable } from '@/components/data-tables'
 import { AlarmReview } from '@/components/alarm-review'
 import { AlarmDetail } from '@/components/alarm-detail'
-import { AlarmConfigVoice } from '@/components/alarm-config-voice'
+import { AlarmConfigVoice, canReadBrowserVoice } from '@/components/alarm-config-voice'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageHelp } from '@/components/page-tools'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { useObjectRevision } from '@/lib/object-events'
 import { publishObjectChange } from '@/lib/object-events'
 import { Empty, ErrorNotice, Loading, PageHeading, Pager, RefreshButton } from '@/components/common'
@@ -67,6 +69,7 @@ function AlarmWorkbenchContent() {
   const [draft, setDraft] = useState<AlarmFilterDraft>({ ...emptyAlarmDraft }), [appliedDraft, setAppliedDraft] = useState<AlarmFilterDraft>({ ...emptyAlarmDraft })
   const [applied, setApplied] = useState<AlarmWorkbenchFilters>({ ...emptyAlarmFilters }), [filterError, setFilterError] = useState<unknown>()
   const [selected, setSelected] = useState<Alarm | null>(null), [detailId, setDetailId] = useState<string | null>(null), [detailTenantId, setDetailTenantId] = useState<string | undefined>(), [notice, setNotice] = useState('')
+  const [voiceTarget, setVoiceTarget] = useState<Alarm | null>(null)
   const { generation } = useSession()
   const [changesOpen, setChangesOpen] = useState(false), [changeRefreshNonce, setChangeRefreshNonce] = useState(0), [knownDirty, setKnownDirty] = useState(false)
   const [authorityState, setAuthorityState] = useState({ epoch: 0, blocked: false, recovering: false })
@@ -99,6 +102,9 @@ function AlarmWorkbenchContent() {
   const candidate = !alarms.loading && !alarms.error && !invalid ? alarms.data : undefined
   const candidateProof = candidate ? starts.current.get(candidate) : undefined
   const data = !authority.current.blocked && candidateProof?.authorityEpoch === authority.current.epoch ? candidate : undefined
+  const voiceAlarm = voiceTarget && data?.items.find(alarm => alarm.id === voiceTarget.id && alarm.tenant_id === voiceTarget.tenant_id && alarm.device_id === voiceTarget.device_id && alarm.event_type === 'FIRE')
+  const canSpeak = canReadBrowserVoice('FIRE')
+  useEffect(() => setVoiceTarget(null), [query, alarms.loading, canSpeak])
   useEffect(() => {
     const attempt = recovery.current
     if (!attempt || !attempt.started || !attempt.completed || alarms.loading || !authority.current.recovering || attempt.epoch !== authority.current.epoch || attempt.nonce !== changeRefreshNonce || attempt.query !== query || attempt.generation !== generation) return
@@ -214,7 +220,7 @@ function AlarmWorkbenchContent() {
 <div className="section-header alarm-list-title">
 <h2>当前筛选报警记录</h2>
 <span className="muted-note">occurred_at DESC,id · 只展示服务端已确认查询</span>
-</div>{data.items.length ? <AlarmTable items={data.items} onSelect={alarm => { if (authority.current.blocked || authorityState.epoch !== authority.current.epoch) return; cancelBridge(); setDetailId(null); setDetailTenantId(undefined); setSelected(alarm) }} onDetailSelect={alarm => { if (authority.current.blocked || authorityState.epoch !== authority.current.epoch || !alarm.tenant_id) return; cancelBridge(); setSelected(null); setDetailId(alarm.id); setDetailTenantId(alarm.tenant_id) }}/> : data.total === 0 ? <Empty title="当前条件无匹配报警">真实聚合为0，不改写/删除任何报警或补造记录。</Empty> : <Empty title="当前页无记录，匹配总量仍非0">
+</div>{data.items.length ? <AlarmTable items={data.items} onSelect={alarm => { if (authority.current.blocked || authorityState.epoch !== authority.current.epoch) return; cancelBridge(); setDetailId(null); setDetailTenantId(undefined); setSelected(alarm) }} onDetailSelect={alarm => { if (authority.current.blocked || authorityState.epoch !== authority.current.epoch || !alarm.tenant_id) return; cancelBridge(); setSelected(null); setDetailId(alarm.id); setDetailTenantId(alarm.tenant_id) }} actions={canSpeak ? alarm => alarm.event_type === 'FIRE' && <Button type="button" variant="ghost" size="sm" onClick={() => setVoiceTarget(alarm)}>本地语音</Button> : undefined}/> : data.total === 0 ? <Empty title="当前条件无匹配报警">真实聚合为0，不改写/删除任何报警或补造记录。</Empty> : <Empty title="当前页无记录，匹配总量仍非0">
 <Button type="button" variant="outline" onClick={() => { cancelBridge(); setPage(1) }}>返回第1页（沿用已应用条件）</Button>
 </Empty>}<Pager page={data.page} size={data.size} total={data.total} onChange={next => { cancelBridge(); setPage(next) }}/>
 </CardContent>
@@ -229,6 +235,11 @@ function AlarmWorkbenchContent() {
 </details>
 <AlarmReview alarm={selected} onClose={() => setSelected(null)} onReviewed={afterReview}/>
 <AlarmDetail alarmId={detailId} tenantId={detailTenantId} onClose={() => { setDetailId(null); setDetailTenantId(undefined) }} onChanged={() => afterReview(true)}/>
-{selected?.event_type === 'FIRE' && selected.tenant_id && <AlarmConfigVoice tenantId={selected.tenant_id} sourceId={selected.id} eventType="FIRE" occurredAt={selected.occurred_at ?? '发生时间未知'}/>}
+{canSpeak && voiceAlarm && <Sheet open onOpenChange={open => { if (!open) setVoiceTarget(null) }}>
+  <SheetContent className="review-sheet alarm-detail-sheet">
+    <SheetHeader><SheetTitle>报警本地语音</SheetTitle><SheetDescription>{voiceAlarm.device_name ?? voiceAlarm.device_id} · {voiceAlarm.id}</SheetDescription></SheetHeader>
+    <div className="review-body"><AlarmConfigVoice tenantId={voiceAlarm.tenant_id} deviceId={voiceAlarm.device_id} sourceId={voiceAlarm.id} eventType="FIRE" occurredAt={alarmTimeText(voiceAlarm)}/></div>
+  </SheetContent>
+</Sheet>}
 </>
 }

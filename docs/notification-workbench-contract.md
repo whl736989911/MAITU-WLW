@@ -1,9 +1,10 @@
 # P8c1 通知记录安全只读查询工作台（Root冻结v1）
+> 本文保留历史合同或验收记录；原始报告、截图、JAR及未公开合同不随公开源码发布，文中历史结论不代表当前版本验收。
 
 ## 工作账本
 
 - Goal：goal-4d414f64-dfe6-4127-a5ef-9dd385428039 rev2，用户2026-10-26 12:07继续开发；前P8b3已complete，不resume旧goal。
-- Baseline：C8CE98F7CF71B5025E4A3D1DB4C2F3207E88B3F72C791F75392C09E1CCBEF499 / 30449636bytes / BE240+FE357=597 / 34有限阶段及只自有清理已0。[C8CE原byte归档证明](<../artifacts/p8c1-baseline-proof.json>)实际核JAR与43 static，今后不把新target/dist冒作旧证据。
+- Baseline：C8CE98F7CF71B5025E4A3D1DB4C2F3207E88B3F72C791F75392C09E1CCBEF499 / 30449636bytes / BE240+FE357=597 / 34有限阶段及只自有清理已0。C8CE原byte归档证明实际核JAR与43 static，今后不把新target/dist冒作旧证据。
 - Reviewed01：Root源读发现P7已存在双端通知列表/详情/attempt/history与管理操作，故本轮不是重复实现/改名。task46/47仅只读，源码/测试/dist尚未授权修改。Root48独占合同、脚本/CI/文档/最终集成。
 - Reviewed02：真实权限为notifications:read，客户catalog已可显式委派但默认四权没有它；不改seed/catalog/默认grant或实际账号。fixture只给一次性dummy读权，产品继续既有P2显式委派。不存在要由我们擅定的全客户开放。
 - Reviewed03：旧management+configread详情有rendered_message，旧management history有actor/reason；新路径即便full-admin也不请求这些，不能先取旧正文再前端hide。ContactPhoneStorage无reveal API，新读不依赖phone/key-ready/解密/worker或模拟开关。
@@ -55,6 +56,6 @@
 
 ## Root最终观测10：本地有限闭合
 
-[最终证明](<../backend/p8c1-final-verification-proof.json>)actual0：同8EEBADB517A68EF313B3123507A351E8133A88F23A862E5F546C65CE9D6DAEC4/30,473,062bytes，BE268+FE394=662（原597未改），新2与原34按原flags全36唯一阶段actual collect0；focused/候选/失败/重试不另计覆盖。[运行后byte复核](<../backend/p8c1-post-runtime-package-proof.json>)核44全部static/332 Java21（原322类不变）/11原迁移/eager495151与冻源，295范围外源观察不变，非Git历史真实性证明。源码/夹具失败与最小修分别见[过程记录](<verification.md>)、[BE](<../backend/P8c1-handoff.md>)/[FE](<../frontend/P8c1-handoff.md>)/[原生脚本](<../artifacts/ubuntu-only-before/scripts/P8c1-native-handoff.md>)/[浏览器脚本](<../artifacts/ubuntu-only-before/scripts/P8c1-browser-handoff.md>)；原17字段/8状态/19码/null/4与2应用读预算没有为通过改口径。
+最终证明actual0：同8EEBADB517A68EF313B3123507A351E8133A88F23A862E5F546C65CE9D6DAEC4/30,473,062bytes，BE268+FE394=662（原597未改），新2与原34按原flags全36唯一阶段actual collect0；focused/候选/失败/重试不另计覆盖。运行后byte复核核44全部static/332 Java21（原322类不变）/11原迁移/eager495151与冻源，295范围外源观察不变，非Git历史真实性证明。源码/夹具失败与最小修分别见过程记录、BE/FE/原生脚本/浏览器脚本；原17字段/8状态/19码/null/4与2应用读预算没有为通过改口径。
 
-[6原PNG](<screenshots/p8c1-final-original-proof.json>)已逐张read_image并原byte归档，管理1440×1080、客户document与Sheet390×844；窄屏可纵向滚动，不伪称六条件九卡同屏。nativePG实际RO/RR/并发旧组与next新组、44表成功GET区间连audit/idem同hash；DENIED/auth/fixture写区间分列，H2不冒native/PG wire4与2。全部当前阶段jobs已收，14:20:43+08[只自有清理](<../backend/p8c1-final-cleanup-proof.json>)0且保既存PG18与DSH；保日志/数据目录，非删全目录/全系统PG0。真实厂商/渠道/硬件、Linux/远程CI、WSS/LB/HA/容量/灾备/无丢失与全面安全认证仍不在这次有限证据内。
+6原PNG已逐张read_image并原byte归档，管理1440×1080、客户document与Sheet390×844；窄屏可纵向滚动，不伪称六条件九卡同屏。nativePG实际RO/RR/并发旧组与next新组、44表成功GET区间连audit/idem同hash；DENIED/auth/fixture写区间分列，H2不冒native/PG wire4与2。全部当前阶段jobs已收，14:20:43+08只自有清理0且保既存PG18与DSH；保日志/数据目录，非删全目录/全系统PG0。真实厂商/渠道/硬件、Linux/远程CI、WSS/LB/HA/容量/灾备/无丢失与全面安全认证仍不在这次有限证据内。
