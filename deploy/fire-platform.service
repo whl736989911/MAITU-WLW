@@ -1,0 +1,24 @@
+[Unit]
+Description=Fire Platform Ubuntu service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=fire-platform
+Group=fire-platform
+WorkingDirectory=/var/lib/fire-platform
+EnvironmentFile=/etc/fire-platform/platform.env
+ExecStart=/usr/bin/java -jar /opt/fire-platform/fire-platform.jar
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+StateDirectory=fire-platform
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fire-platform
+
+[Install]
+WantedBy=multi-user.target

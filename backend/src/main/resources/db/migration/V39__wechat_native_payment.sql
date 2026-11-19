@@ -1,0 +1,2 @@
+ALTER TABLE notification_resource_orders ADD COLUMN out_trade_no VARCHAR(32);
+CREATE UNIQUE INDEX ux_notification_resource_orders_out_trade_no ON notification_resource_orders(out_trade_no);

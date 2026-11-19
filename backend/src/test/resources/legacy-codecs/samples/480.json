@@ -1,0 +1,20 @@
+{
+ "mode": "data-hex",
+ "payload_hex": "7E010000000004A5000A0100140200000B010F240164F9BF7E",
+ "expected": [
+  {
+   "method": "thing.event.heartbeat",
+   "params": [
+    {
+     "smoke_concentration": 0,
+     "temperature_value": 15,
+     "frame_protocol_ver": 1,
+     "deviceState": "心跳上报",
+     "fcnt": 1189,
+     "battery": 100
+    }
+   ],
+   "version": "2.0"
+  }
+ ]
+}

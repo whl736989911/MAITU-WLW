@@ -1,0 +1,14 @@
+{
+  "name": "fire-platform-codec-sandbox",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated QuickJS WebAssembly execution boundary for legacy codec decoders",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+    "quickjs-emscripten-core": "0.32.0"
+  }
+}

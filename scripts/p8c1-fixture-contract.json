@@ -1,0 +1,41 @@
+{
+  "role": "Root private-stdin fixture interface; metadata only, never credentials or runtime results",
+  "payload": {
+    "required": ["url", "tenant_id", "other_tenant_id", "record_id", "other_record_id", "record_keyword", "literal_keyword", "total", "other_total", "literal_total", "literal_ids", "expected_metrics", "other_expected_metrics", "precision", "html_text", "cases", "artifact_directory", "record_reader_platform", "other_reader_platform", "record_reader_customer", "other_reader_customer"],
+    "actor_keys": ["username", "password", "user_id", "audience", "tenant_id"],
+    "precision_keys": ["created_from", "created_to", "expected_ids", "expected_total", "created_at", "beijing_created_at"],
+    "facts": "Python derives expected values from controlled fixture records/known writes, not a browser-invented dataset; payload only private stdin, not file/env/argv/output. The ui object below documents the actual frozen component only; it is not an input or dynamically merged adapter. cases includes a nonempty4-condition AND and a zero-result predicate. No privileged credentials or Node-only canaries go to browser contexts; DOM bytes come back to Node for exact-value scanning."
+  },
+  "ui": {
+    "open": "打开通知记录只读查询工作台",
+    "region": "通知记录只读查询工作台",
+    "heading": "通知记录只读查询工作台",
+    "keyword": "通知记录关键字",
+    "status": "模拟通知状态",
+    "channel": "模拟通知渠道",
+    "dispatch_id": "通知调度批次ID",
+    "created_from": "创建开始（北京时间，含）",
+    "created_to": "创建结束（北京时间，不含）",
+    "apply": "应用通知筛选",
+    "reset": "清空通知条件",
+    "refresh": "刷新通知工作台",
+    "back": "返回原通知列表",
+    "cancel_read": "取消本次通知读取",
+    "detail": "查看只读通知详情",
+    "detail_title": "通知记录只读详情",
+    "detail_refresh": "刷新当前只读记录"
+  },
+  "attributes": ["data-notification-workbench", "data-notification-workbench-as-of", "data-notification-record-id", "data-notification-metric", "data-notification-detail-id", "data-notification-detail-as-of"],
+  "metric_labels": {
+    "notification_total": "匹配通知记录",
+    "pending": "待模拟执行",
+    "wait_retry": "等待规则重试",
+    "succeeded_simulation": "模拟成功（未发送）",
+    "failed": "模拟明确失败（未发送）",
+    "uncertain": "结果不确定（UNCERTAIN）",
+    "cancelled": "已取消待发模拟",
+    "suppressed": "待发已抑制",
+    "rejected": "执行资格已拒绝"
+  },
+  "boundary": "UI names were supplied by frontend owner during task50 and must match actual source before execution. No production test hook. This is a frozen coordination schema, not evidence that UI, records, browser or tests have passed."
+}

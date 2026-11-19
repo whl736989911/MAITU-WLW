@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Fire Platform PostgreSQL backup schedule
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=fire-platform-backup.service
+
+[Install]
+WantedBy=timers.target

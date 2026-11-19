@@ -1,0 +1,111 @@
+{
+  "retrieved_at": "2026-10-22T06:35:10.883Z",
+  "style": "radix-nova",
+  "transformations": [
+    "cn import → @/lib/utils (clsx + tailwind-merge)",
+    "@/registry/radix-nova/ui → @/components/ui",
+    "IconPlaceholder XIcon → lucide-react XIcon",
+    "Close screen-reader label → 关闭"
+  ],
+  "records": [
+    {
+      "name": "button",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/button.json",
+      "upstream_path": "registry/radix-nova/ui/button.tsx",
+      "output": "src/components/ui/button.tsx",
+      "registry_sha256": "c07a8feb7b7ed07ad5279023e45ce23ed7b5b94c7dba3de5c08f30a2aa037de3",
+      "source_sha256": "08e5f87833c5db8436e89337ebde0f776bcdbf649d3de69fb89be6441ca2e366",
+      "output_sha256": "eff75f2b1fdf9b57e57f472f63679a411826224ab361ed221dd5ccf8152cd027",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "input",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/input.json",
+      "upstream_path": "registry/radix-nova/ui/input.tsx",
+      "output": "src/components/ui/input.tsx",
+      "registry_sha256": "2a94c176dcab621485ad6f902ec9a8b928b1a380a13c196d467ae46923e49044",
+      "source_sha256": "75418e030b2a54dd017ac0f4588db4bbdbabca7525e88bbc9d84cb3e18bcb905",
+      "output_sha256": "a387752d3db4ac3f76893b216ee7fd7374b2dcc8f2edaa2d38faf6f7af125399",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "badge",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/badge.json",
+      "upstream_path": "registry/radix-nova/ui/badge.tsx",
+      "output": "src/components/ui/badge.tsx",
+      "registry_sha256": "4c7eae206938e55350a0d506c7b35b4c20bfe8b0f51ad2883fd75d6d4a956c27",
+      "source_sha256": "59953420d01d23d172b4e32583426db153ff09226e2d460d53526b9f25282801",
+      "output_sha256": "ac24435d9954a37fd7e72815e565fc9b68ffc2170cf221a7042cb529ba041e9d",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "card",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/card.json",
+      "upstream_path": "registry/radix-nova/ui/card.tsx",
+      "output": "src/components/ui/card.tsx",
+      "registry_sha256": "acf04c936ab6b613ed761067d8c2963508ba0f009f2accf2565aa5c3aeb4c06a",
+      "source_sha256": "645c3d73e387a99f1492220cc619453b0c7f5454134ee3cd548be7a80f7eccde",
+      "output_sha256": "8b8f57b4b78193b9483e3a052d7253563bbedbb48dabed6ad930ab1451a4cbb3",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "table",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/table.json",
+      "upstream_path": "registry/radix-nova/ui/table.tsx",
+      "output": "src/components/ui/table.tsx",
+      "registry_sha256": "99e6991f093e71db516a0cc88395d862b713d2b40d309d78de6e11d122232da7",
+      "source_sha256": "749b0501e97591f8d7c9ef81366d636e4b47857a15a28e6cf3b87841232e74bf",
+      "output_sha256": "af2c73194ef5e018a595fee5d8422e70f944949dceaa9bd817ba0292e1139777",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "sheet",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/sheet.json",
+      "upstream_path": "registry/radix-nova/ui/sheet.tsx",
+      "output": "src/components/ui/sheet.tsx",
+      "registry_sha256": "2bd0d9a16075ad5d9179b575d71ea1967ba73b1fb39400018b519dd9989607e2",
+      "source_sha256": "0598c3a868ef88da6e142d9e440fef56e0231b3d0c9644302ef4a931f6928d25",
+      "output_sha256": "e5213a60c0b61c12b07d35d457b6fe1139a87ac609e70c9aa446a69517f06dd3",
+      "dependencies": [
+        "cn"
+      ],
+      "registryDependencies": [
+        "button"
+      ]
+    },
+    {
+      "name": "label",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/label.json",
+      "upstream_path": "registry/radix-nova/ui/label.tsx",
+      "output": "src/components/ui/label.tsx",
+      "registry_sha256": "043f0ce3b7d12e8fcbf4af6aa58bc341894f0a3862af7bc3861d78ef0283361f",
+      "source_sha256": "344bde38b8531615dbf8e14af3895517c24d8ef6ce56ddeda7e2e6fe4b5d0c00",
+      "output_sha256": "db5dfcd98a78c5b7c3c01e0bb7726a3adbf0470f4d552e777ccf4751b51e6a56",
+      "dependencies": [
+        "cn"
+      ]
+    },
+    {
+      "name": "separator",
+      "url": "https://ui.shadcn.com/r/styles/radix-nova/separator.json",
+      "upstream_path": "registry/radix-nova/ui/separator.tsx",
+      "output": "src/components/ui/separator.tsx",
+      "registry_sha256": "1df209eff67aeefa35ff65002ddf9762044a4202ba217b82d447b2f8b8ffd4f2",
+      "source_sha256": "b5b5460e5337c2d5f361c1512001615b2e5eacb38c7449a4418bb9ddb47c4bba",
+      "output_sha256": "81be5dc979069b4521aeca25bfcfb5c36b4862f39a2b86d8a93b03f4d175a852",
+      "dependencies": [
+        "cn"
+      ]
+    }
+  ]
+}

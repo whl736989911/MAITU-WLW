@@ -1,0 +1,28 @@
+{
+ "mode": "payload-hex",
+ "payload_hex": "7e016ae7ac2807fa00400100650800000000000000016901b71702000c020102140200140b01122401196c02fcb86d0200a06e0200566f020000700a0000000000000000000171040000004de4627e",
+ "expected": [
+  {
+   "method": "thing.event.other",
+   "params": [
+    {
+     "ICCID": "00000000000000000001",
+     "rssi": -73,
+     "temperature_value": 18,
+     "IMEI": "0000000000000001",
+     "rsrp": "-84.0",
+     "fcnt": 2042,
+     "battery": 25,
+     "sinr": "16.0",
+     "ecl": 0,
+     "smoke_concentration": 20,
+     "pci": 86,
+     "frame_protocol_ver": 1,
+     "deviceState": "烟感低电量报警",
+     "cell_id": 77
+    }
+   ],
+   "version": "2.0"
+  }
+ ]
+}

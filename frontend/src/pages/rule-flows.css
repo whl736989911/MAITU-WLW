@@ -1,0 +1,72 @@
+/* Rule flow editor: bounded SVG canvas plus real form properties. No graph library, no canvas widget. */
+.rule-flow-page { display:grid; grid-template-columns:minmax(320px,420px) minmax(0,1fr); gap:16px; align-items:start; }
+.rule-flow-detail { min-width:0; }
+.rule-flow-editor { display:flex; flex-direction:column; gap:14px; }
+
+.rule-flow-layout {
+  display:grid; grid-template-columns:186px minmax(0,1fr) 330px; gap:12px; align-items:start;
+  border:1px solid var(--color-border); border-radius:12px; background:var(--card); padding:12px;
+}
+.rule-flow-palette { min-width:0; border-right:1px solid var(--color-border); padding-right:10px; }
+.rule-flow-palette h3 { font-size:12px; color:#34444d; }
+.rule-flow-palette-group { margin-top:10px; }
+.rule-flow-palette-group h4 { font-size:10px; letter-spacing:.08em; color:#7b8789; text-transform:uppercase; margin-bottom:6px; }
+.rule-flow-palette-item {
+  display:flex; align-items:center; gap:6px; width:100%; text-align:left; font-size:12px;
+  padding:6px 8px; margin-bottom:4px; border:1px solid var(--color-border); border-radius:8px;
+  background:#fbfcfd; color:#1d2b2a; cursor:pointer;
+}
+.rule-flow-palette-item:hover:not(:disabled) { background:var(--color-accent); border-color:#bcd3f7; }
+.rule-flow-palette-item:disabled { opacity:.45; cursor:not-allowed; }
+
+.rule-flow-canvas {
+  position:relative; overflow:auto; min-width:0;
+  background:repeating-linear-gradient(0deg,#f7f9fb 0 23px,#f1f4f7 23px 24px),
+             repeating-linear-gradient(90deg,#f7f9fb 0 23px,#f1f4f7 23px 24px);
+  border:1px dashed var(--color-border); border-radius:10px;
+}
+.rule-flow-edges { position:absolute; inset:0; pointer-events:none; }
+.rule-flow-node {
+  position:absolute; padding:8px 10px; border-radius:10px; border:1px solid #cfd8e3;
+  background:#fff; box-shadow:0 1px 2px rgba(16,32,48,.06); cursor:grab; touch-action:none;
+  font-size:12px; outline-offset:2px;
+}
+.rule-flow-node:active { cursor:grabbing; }
+.rule-flow-node.selected { border-color:var(--color-primary); box-shadow:0 0 0 2px rgba(31,111,235,.18); }
+.rule-flow-node.invalid { border-color:#d03050; background:#fff7f8; }
+.rule-flow-node header { display:flex; align-items:center; gap:6px; font-weight:600; color:#1d2b2a; }
+.rule-flow-fixed { font-size:9px; font-weight:500; color:#1557c0; background:#eaf2ff; border-radius:5px; padding:1px 5px; }
+.rule-flow-node-id { font-size:10px; color:#98a4ad; margin-top:2px; overflow-wrap:anywhere; }
+.rule-flow-node-warning { display:flex; align-items:center; gap:4px; color:#d03050; font-size:10px; margin-top:4px; }
+
+.rule-flow-properties { min-width:0; display:flex; flex-direction:column; gap:10px; }
+.rule-flow-properties h3 { font-size:13px; }
+.rule-flow-properties .field { min-width:0; }
+
+.rule-flow-receiver { display:grid; grid-template-columns:minmax(0,1fr) 96px auto; gap:6px; margin-bottom:6px; }
+.rule-flow-chips { display:flex; flex-wrap:wrap; gap:6px; min-height:26px; margin-bottom:6px; }
+.rule-flow-chip {
+  display:inline-flex; align-items:center; gap:6px; max-width:100%;
+  font-size:11px; padding:3px 8px; border-radius:999px; background:var(--color-accent); color:var(--color-accent-foreground);
+}
+.rule-flow-chip button { border:0; background:transparent; cursor:pointer; color:inherit; font-size:13px; line-height:1; }
+.rule-flow-options { display:flex; flex-direction:column; max-height:160px; overflow:auto; border:1px solid var(--color-border); border-radius:8px; }
+.rule-flow-options button {
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left;
+  border:0; border-bottom:1px solid var(--color-border); background:#fff; padding:6px 8px; cursor:pointer; font-size:12px;
+}
+.rule-flow-options button:last-child { border-bottom:0; }
+.rule-flow-options button:hover:not(:disabled) { background:var(--color-accent); }
+.rule-flow-options small { color:#7b8789; font-size:10px; }
+
+.rule-flow-issues { list-style:none; display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+.rule-flow-issues li { font-size:12px; padding:7px 10px; border-radius:8px; background:#f5f8fb; }
+.rule-flow-issues li.error { background:#fff4f5; color:#8c1b33; }
+.rule-flow-issues li.note { background:#f6f8f4; color:#40503c; }
+.rule-flow-diff { display:block; max-width:340px; overflow-wrap:anywhere; font-size:11px; color:#3f4f5a; }
+
+@media (max-width:1360px) {
+  .rule-flow-page { grid-template-columns:1fr; }
+  .rule-flow-layout { grid-template-columns:1fr; }
+  .rule-flow-palette { border-right:0; border-bottom:1px solid var(--color-border); padding:0 0 10px; }
+}

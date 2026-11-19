@@ -1,0 +1,21 @@
+.notification-account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.notification-account-card {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.notification-account-card h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.notification-account-card header p { margin: 6px 0 0; overflow-wrap: anywhere; }
+.notification-account-balances { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.notification-account-balances dt, .notification-account-balances small { color: var(--color-muted-foreground); font-size: 12px; }
+.notification-account-balances dd { margin: 5px 0; font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.notification-account-balances small { display: block; }
+.notification-account-footer { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.notification-account-footer details { min-width: 0; font-size: 12px; }
+.notification-account-footer summary { cursor: pointer; color: var(--color-muted-foreground); }
+.notification-account-footer p { overflow-wrap: anywhere; }

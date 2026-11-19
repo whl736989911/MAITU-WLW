@@ -1,0 +1,17 @@
+{
+ "mode": "data-hex",
+ "payload_hex": "B28000130000E1",
+ "expected": [
+  {
+   "method": "thing.event.heartbeat",
+   "params": [
+    {
+     "temperature_value": 19,
+     "deviceState": "心跳上报",
+     "fcnt": 8
+    }
+   ],
+   "version": "1.0"
+  }
+ ]
+}

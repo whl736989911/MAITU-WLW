@@ -1,0 +1,18 @@
+ALTER TABLE tenants ADD COLUMN credit_code VARCHAR(18);
+ALTER TABLE tenants ADD COLUMN region_id VARCHAR(64);
+ALTER TABLE tenants ADD COLUMN unit_type VARCHAR(64);
+ALTER TABLE tenants ADD COLUMN industry VARCHAR(128);
+ALTER TABLE tenants ADD COLUMN map_address VARCHAR(256);
+ALTER TABLE tenants ADD COLUMN detail_address VARCHAR(40);
+ALTER TABLE tenants ADD COLUMN contact_name VARCHAR(30);
+ALTER TABLE tenants ADD COLUMN contact_phone VARCHAR(18);
+ALTER TABLE tenants ADD COLUMN remark VARCHAR(70);
+ALTER TABLE tenants ADD COLUMN latitude DOUBLE PRECISION;
+ALTER TABLE tenants ADD COLUMN longitude DOUBLE PRECISION;
+ALTER TABLE tenants ADD COLUMN service_start DATE;
+ALTER TABLE tenants ADD COLUMN service_end DATE;
+ALTER TABLE tenants ADD COLUMN engineering_service_start DATE;
+ALTER TABLE tenants ADD COLUMN engineering_service_end DATE;
+ALTER TABLE tenants ADD CONSTRAINT chk_tenant_coordinates CHECK ((latitude IS NULL AND longitude IS NULL) OR (latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180));
+ALTER TABLE tenants ADD CONSTRAINT chk_tenant_service_dates CHECK ((service_start IS NULL OR service_end IS NULL OR service_start <= service_end) AND (engineering_service_start IS NULL OR engineering_service_end IS NULL OR engineering_service_start <= engineering_service_end));
+CREATE INDEX idx_tenants_credit_code ON tenants(credit_code);

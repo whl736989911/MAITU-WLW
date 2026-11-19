@@ -1,0 +1,29 @@
+# Local portable toolchains and runtime data
+.tools/
+.runtime/
+.local-ingest/
+scripts/codec-sandbox/node_modules/
+.env
+.env.*
+!.env.example
+*.log
+*.pid
+__pycache__/
+*.pyc
+backend/target/
+# Local exports, raw captures, and packaged release artifacts stay out of Git.
+/artifacts/
+/data/
+*.mv.db
+*.trace.db
+backend/data/
+frontend/node_modules
+frontend/dist/
+frontend/coverage/
+*.tgz
+frontend/test-results/
+frontend/playwright-report/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

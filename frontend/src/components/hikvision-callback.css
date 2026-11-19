@@ -1,0 +1,38 @@
+.hik-callback { display: grid; gap: 14px; min-width: 0; }
+.hik-callback .ant-card { min-width: 0; }
+.hik-callback .ant-card-body { min-width: 0; }
+.hik-callback-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.hik-callback-metrics > div { min-width: 0; padding: 10px; border: 1px solid #e7ece7; border-radius: 7px; background: #fafbf9; }
+.hik-callback-metrics small, .hik-callback-metrics strong { display: block; }
+.hik-callback-metrics small { color: #75817b; font-size: 11px; }
+.hik-callback-metrics strong { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.hik-callback-metrics .hik-callback-time { font-size: 12px; }
+.hik-callback-note { margin: 10px 0; color: #68766c; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.hik-callback-reparse { display: grid; gap: 10px; min-width: 0; }
+.hik-callback-reparse label { display: grid; gap: 6px; }
+.hik-callback-reparse p { margin: 0; overflow-wrap: anywhere; }
+.hik-callback .ant-table-wrapper { max-width: 100%; }
+.hik-callback .ant-table-cell { white-space: nowrap; }
+@media (max-width: 390px) {
+  .hik-callback .ant-card-body { padding: 10px; }
+  .hik-callback .ant-card-head { padding-inline: 10px; }
+  .hik-callback .ant-card-head-title { white-space: normal; }
+  .hik-callback-editor, .hik-callback-reparse { max-width: 100%; overflow-wrap: anywhere; }
+  .hik-callback .ant-pagination { max-width: 100%; overflow-x: auto; }
+}
+.hik-callback-editor { display: grid; gap: 12px; max-width: 680px; margin-top: 14px; padding: 14px; border: 1px solid #e4e9e5; border-radius: 8px; }
+.hik-callback-editor label { display: grid; gap: 6px; font-size: 12px; }
+.hik-callback-editor .hik-callback-switch { display: flex; align-items: center; gap: 10px; }
+.hik-callback-editor > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.hik-callback-editor .ant-typography { max-width: 100%; overflow-wrap: anywhere; }
+.hik-callback-table { max-width: 100%; overflow-x: auto; }
+.hik-callback-ellipsis { display: block; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 480px) {
+  .hik-callback-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hik-callback .ant-card-head { padding-inline: 12px; }
+  .hik-callback .ant-card-body { padding: 12px; }
+  .hik-callback-editor { padding: 10px; }
+}
+.hik-callback-secondary > summary { padding: 12px 16px; border: 1px solid #e4e9e5; border-radius: 7px; font-weight: 600; cursor: pointer; }
+.hik-callback-note > summary { cursor: pointer; }
+.hik-callback-table .ant-table-cell { white-space: nowrap; }

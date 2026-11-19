@@ -1,0 +1,58 @@
+server:
+  address: ${APP_BIND_ADDRESS:127.0.0.1}
+  port: ${APP_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+spring:
+  application:
+    name: fire-platform
+  profiles:
+    active: ${APP_PROFILE:dev}
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      fail-on-unknown-properties: true
+      fail-on-trailing-tokens: true
+      accept-float-as-int: false
+  datasource:
+    url: ${APP_DB_URL:jdbc:h2:file:./data/fire;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${APP_DB_USERNAME:sa}
+    password: ${APP_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${APP_DB_POOL_MAX:5}
+      minimum-idle: ${APP_DB_POOL_MIN:1}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    clean-disabled: true
+  h2:
+    console:
+      enabled: false
+app:
+  storage: ${APP_STORAGE:h2-dev}
+  generic-ingest-enabled: ${APP_GENERIC_INGEST_ENABLED:false}
+  reparse-enabled: ${APP_REPARSE_ENABLED:false}
+  task-poll-ms: ${APP_TASK_POLL_MS:500}
+  roles: ${APP_ROLES:all}
+  hikvision-config-key: ${APP_HIKVISION_CONFIG_KEY:}
+  device-service:
+    approved-hosts: ${APP_DEVICE_SERVICE_APPROVED_HOSTS:}
+    legacy-approved-origins: ${APP_LEGACY_SOURCE_APPROVED_ORIGINS:}
+fire:
+  hikvision:
+    enabled: ${HIKVISION_ENABLED:false}
+    app-key: ${HIKVISION_APP_KEY:}
+    app-secret: ${HIKVISION_APP_SECRET:}
+    poll-ms: ${HIKVISION_POLL_MS:30000}
+  legacy:
+    # 空值表示未启用；接收端返回 503 LEGACY_INGEST_DISABLED，绝不默认放行。
+    ingest-token: ${APP_LEGACY_INGEST_TOKEN:}
+    offline-scan-ms: ${APP_LEGACY_OFFLINE_SCAN_MS:300000}
+    offline-initial-delay-ms: ${APP_LEGACY_OFFLINE_INITIAL_DELAY_MS:60000}
+    codec-node: ${APP_LEGACY_CODEC_NODE:node}
+    codec-script: ${APP_LEGACY_CODEC_SCRIPT:scripts/codec-sandbox/run.mjs}
+    codec-timeout-ms: ${APP_LEGACY_CODEC_TIMEOUT_MS:1000}
+logging:
+  level:
+    org.springframework.web: WARN
