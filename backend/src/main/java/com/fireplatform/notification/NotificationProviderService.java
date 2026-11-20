@@ -61,10 +61,10 @@ public class NotificationProviderService {
         boolean sms=NotificationPolicy.flag(input.smsEnabled()), voice=NotificationPolicy.flag(input.voiceEnabled());
         boolean testMode=NotificationPolicy.flag(input.testModeEnabled());
         String sign=optional(input.smsSignName(),200), smsCode=optional(input.smsTemplateCode(),100), tts=optional(input.ttsCode(),100), called=optional(input.ttsCalledShowNumber(),50);
-        Map<String,String> smsVariables = parseVariables(input.smsTemplateVariables());
-        Map<String,String> voiceVariables = parseVariables(input.voiceTemplateVariables());
-        if (sms && smsVariables == null) throw ApiError.bad("启用短信前必须核对并填写短信模板变量映射；无变量请填写空对象");
-        if (voice && voiceVariables == null) throw ApiError.bad("启用语音前必须核对并填写语音模板变量映射；无变量请填写空对象");
+        var smsVariables = resolveVariables("短信", sms, smsCode, current.smsCode(), current.smsVariables(),
+            input.smsTemplateVariables(), input.smsTemplateVariablesConfirmed());
+        var voiceVariables = resolveVariables("语音", voice, tts, current.tts(), current.voiceVariables(),
+            input.voiceTemplateVariables(), input.voiceTemplateVariablesConfirmed());
         String smsEndpoint=endpoint(input.smsEndpoint(),"https://dysmsapi.aliyuncs.com/"), voiceEndpoint=endpoint(input.voiceEndpoint(),"https://dyvmsapi.aliyuncs.com/");
         String accessKeyId=input.accessKeyId()==null||input.accessKeyId().isBlank()?current.accessKeyId():NotificationPolicy.text(input.accessKeyId(),200).trim();
         String cipher=current.secretCipher(), nonce=current.secretNonce(), masked=current.secretMasked();
@@ -159,6 +159,18 @@ public class NotificationProviderService {
         // Disable only the runtime send template; retain stored templates and credentials for receipt queries.
         return new AliyunNotificationClient.Config(row.accessKeyId(),secret,row.sign(),row.smsEnabled()?row.smsCode():null,
             row.voiceEnabled()?row.tts():null,row.called(),row.smsEndpoint(),row.voiceEndpoint(),row.smsVariables(),row.voiceVariables());
+    }
+
+    private static Map<String,String> resolveVariables(String channel, boolean enabled, String templateId, String currentTemplateId,
+            Map<String,String> currentVariables, JsonNode submitted, Boolean confirmed) {
+        boolean templateChanged = !Objects.equals(templateId, currentTemplateId);
+        // Omission preserves a mapping only for the same ID; explicit JSON null clears it.
+        var mapping = submitted == null && !templateChanged ? currentVariables : parseVariables(submitted);
+        if (mapping != null && (templateChanged || currentVariables == null) && !Boolean.TRUE.equals(confirmed))
+            throw ApiError.bad("请先核对并确认" + channel + "模板 ID 与变量映射");
+        if (enabled && mapping == null)
+            throw ApiError.bad("启用" + channel + "前必须核对并填写" + channel + "模板变量映射；无变量请填写空对象");
+        return mapping;
     }
 
     private static Map<String,String> parseVariables(JsonNode node) {
