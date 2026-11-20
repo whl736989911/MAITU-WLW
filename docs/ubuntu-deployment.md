@@ -47,6 +47,22 @@ APP_SIMULATION_ENABLED=false
 - 阿里云凭证、短信签名与模板、语音模板、发送通道开关和 HTTPS 地址在管理端通知通道配置保存，以数据库配置为准。连接、请求超时留在服务环境；真实发送开关必须单独启用。
 - 管理端配置设备上报超时、报警升级间隔和重复提醒周期。`APP_LEGACY_OFFLINE_*` 和 `FIRE_ALARM_REMINDER_*` 只改变后台扫描频率，不改变业务阈值。
 
+### PostgreSQL 备份与恢复演练
+
+- 演练使用专用 PostgreSQL 实例、独立目录和独占回环端口（或私有 Unix socket）、合成归档和只有演练库权限的角色。不要载入生产服务环境、凭据或备份目录。`backup.sh` 会按保留策略清理输出目录中的旧归档；演练须显式设置 `BACKUP_DIR`、`BACKUP_DATABASE` 和隔离连接（`PGHOST`、`PGPORT`、`PGUSER`），不能使用生产调度环境。
+- `restore.sh` 必须显式传入单一 `--host`、`--port` 和纯数据库名 `--database`（不接受 URI 或连接串）。预备份和恢复使用同一组参数；继承的 `PGHOSTADDR`、`PGSERVICE` 不参与连接。演练用确切回环地址或私有 socket，不用可能转发到生产的名称或代理。
+
+```bash
+export BACKUP_DIR=/path/to/private-rehearsal-backups
+export PGUSER=fire_platform_rehearsal
+bash scripts/ops/restore.sh /path/to/synthetic.dump \
+  --host 127.0.0.1 --port 55432 --database fire_platform_rehearsal
+```
+
+确认计划显示的主机或 socket、端口、库名和归档路径均属于隔离实例，再用相同参数加 `--yes`。脚本先保存独立的 `pre-restore` 归档，再在单事务中清理并恢复归档所列对象；不会移除目标库中所有未列出的对象。恢复后核对行数和业务不变量，不以退出码或健康状态代替验收。H2 切库同样只使用单一、显式的隔离 JDBC 端点及全空目标，先查阅 `cutover.sh` 的只读计划，再决定是否 `--execute`。
+
+生产恢复不是演练。实际端点、角色权限、备份保留和可恢复性、停写及回退界线须在目标机由管理员核验。目标已有新业务写入或写入状态不明时，不得直接覆盖或回指旧库。
+
 ## 3. 非root systemd
 
 [服务模板](<../deploy/fire-platform.service>)是需管理员审阅后手动部署的样例，本项目不自动创建账号、安装、enable/restart服务。约定：
