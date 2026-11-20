@@ -25,6 +25,59 @@ public class AliyunNotificationClient {
         public boolean success() { return outcome == Outcome.ACCEPTED; }
         public boolean unknown() { return outcome == Outcome.UNKNOWN; }
     }
+
+    public sealed interface SendPreparation permits PreparedSend, NotSent { }
+
+    /** A local failure: no HTTP request was submitted. */
+    public enum NotSent implements SendPreparation {
+        SMS_NOT_CONFIGURED("NOT_CONFIGURED", "Aliyun SMS is not configured"),
+        VOICE_NOT_CONFIGURED("NOT_CONFIGURED", "Aliyun voice is not configured"),
+        TEMPLATE_VARIABLE_MISSING("TEMPLATE_VARIABLE_MISSING", "当前事件缺少模板字段，未向阿里云发送");
+
+        private final Result result;
+
+        NotSent(String code, String message) {
+            result = new Result(Result.Outcome.REJECTED, null, code, message);
+        }
+
+        public Result result() { return result; }
+    }
+
+    /** Keeps the validated account and rendered template together even if a new config is published. */
+    public final class PreparedSend implements SendPreparation {
+        private final Config snapshot;
+        private final boolean sms;
+        private final String renderedVariables;
+
+        private PreparedSend(Config snapshot, boolean sms, String renderedVariables) {
+            this.snapshot = snapshot;
+            this.sms = sms;
+            this.renderedVariables = renderedVariables;
+        }
+
+        public String accountFingerprint() {
+            return AliyunNotificationClient.accountFingerprint(snapshot.accessKeyId());
+        }
+
+        public Result send(String phone, String outId) {
+            Map<String, String> params = base(snapshot, sms ? "SendSms" : "SingleCallByTts", "2017-05-25");
+            if (sms) {
+                params.put("PhoneNumbers", phone);
+                params.put("SignName", snapshot.smsSignName());
+                params.put("TemplateCode", snapshot.smsTemplateCode());
+                if (!renderedVariables.isEmpty()) params.put("TemplateParam", renderedVariables);
+                if (outId != null && !outId.isBlank()) params.put("OutId", outId);
+                return call(snapshot, snapshot.smsEndpoint(), params);
+            }
+            params.put("CalledNumber", phone);
+            params.put("TtsCode", snapshot.ttsCode());
+            if (!renderedVariables.isEmpty()) params.put("TtsParam", renderedVariables);
+            if (!snapshot.ttsCalledShowNumber().isBlank()) params.put("CalledShowNumber", snapshot.ttsCalledShowNumber());
+            // Official voice contract limits OutId to 1..15 characters; omit an unusable identifier instead of truncating it.
+            if (outId != null && outId.length() >= 1 && outId.length() <= 15) params.put("OutId", outId);
+            return call(snapshot, snapshot.voiceEndpoint(), params);
+        }
+    }
     public record SmsDetail(String bizId,String outId,String phoneMasked,int sendStatus,String errCode,String templateCode,String sendAt,String receiveAt) { }
     public record SmsQuery(boolean success,String code,String message,String requestId,int totalCount,List<SmsDetail> details) { }
     public record VoiceDetail(String callId,String state,String stateDesc,String startAt,String endAt,String calleeMasked,String callerMasked,String gmtCreate,Integer duration) { }
@@ -79,34 +132,41 @@ public class AliyunNotificationClient {
     public boolean enabled() { return config.canSendSms(); }
     public boolean voiceReady() { return config.canSendVoice(); }
 
+    public SendPreparation prepareSms(Map<String, String> templateParams) {
+        Config snapshot = config;
+        if (!snapshot.canSendSms()) return NotSent.SMS_NOT_CONFIGURED;
+        String rendered = renderVariables(snapshot.smsVariables(), templateParams);
+        return rendered == null ? NotSent.TEMPLATE_VARIABLE_MISSING : new PreparedSend(snapshot, true, rendered);
+    }
+
+    public SendPreparation prepareVoice(Map<String, String> templateParams) {
+        Config snapshot = config;
+        if (!snapshot.canSendVoice()) return NotSent.VOICE_NOT_CONFIGURED;
+        String rendered = renderVariables(snapshot.voiceVariables(), templateParams);
+        return rendered == null ? NotSent.TEMPLATE_VARIABLE_MISSING : new PreparedSend(snapshot, false, rendered);
+    }
+
     public Result sendSms(String phone, Map<String, String> templateParams, String outId) {
-        Config current = config;
-        if (!current.canSendSms()) return new Result(Result.Outcome.REJECTED, null, "NOT_CONFIGURED", "Aliyun SMS is not configured");
-        Map<String, String> params = base(current, "SendSms", "2017-05-25");
-        params.put("PhoneNumbers", phone);
-        params.put("SignName", current.smsSignName());
-        params.put("TemplateCode", current.smsTemplateCode());
-        if (!putVariables(params, "TemplateParam", current.smsVariables(), templateParams)) return missingVariable();
-        if (outId != null && !outId.isBlank()) params.put("OutId", outId);
-        return call(current, current.smsEndpoint(), params);
+        return send(prepareSms(templateParams), phone, outId);
     }
 
     public Result sendVoice(String phone, Map<String, String> templateParams, String outId) {
-        Config current = config;
-        if (!current.canSendVoice()) return new Result(Result.Outcome.REJECTED, null, "NOT_CONFIGURED", "Aliyun voice is not configured");
-        Map<String, String> params = base(current, "SingleCallByTts", "2017-05-25");
-        params.put("CalledNumber", phone);
-        params.put("TtsCode", current.ttsCode());
-        if (!putVariables(params, "TtsParam", current.voiceVariables(), templateParams)) return missingVariable();
-        if (!current.ttsCalledShowNumber().isBlank()) params.put("CalledShowNumber", current.ttsCalledShowNumber());
-        // Official voice contract limits OutId to 1..15 characters; omit an unusable identifier instead of truncating it.
-        if (outId != null && outId.length() >= 1 && outId.length() <= 15) params.put("OutId", outId);
-        return call(current, current.voiceEndpoint(), params);
+        return send(prepareVoice(templateParams), phone, outId);
+    }
+
+    private static Result send(SendPreparation preparation, String phone, String outId) {
+        return switch (preparation) {
+            case NotSent notSent -> notSent.result();
+            case PreparedSend prepared -> prepared.send(phone, outId);
+        };
     }
 
     /** Provider account identity for historical receipt binding. Never the secret. */
     public String accountFingerprint() {
-        String id = config.accessKeyId();
+        return accountFingerprint(config.accessKeyId());
+    }
+
+    private static String accountFingerprint(String id) {
         if (id.isBlank()) return null;
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8)));
@@ -275,21 +335,15 @@ public class AliyunNotificationClient {
         return Base64.getEncoder().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
     }
 
-    private static boolean putVariables(Map<String,String> request, String parameter, Map<String,String> variables,
-                                        Map<String,String> values) {
-        if (variables.isEmpty()) return true;
+    private static String renderVariables(Map<String,String> variables, Map<String,String> values) {
+        if (variables.isEmpty()) return "";
         Map<String,String> mapped = new TreeMap<>();
         for (var field : variables.entrySet()) {
             String value = values.get(field.getValue());
-            if (value == null || value.isBlank()) return false;
+            if (value == null || value.isBlank()) return null;
             mapped.put(field.getKey(), value);
         }
-        request.put(parameter, MAPPER.valueToTree(mapped).toString());
-        return true;
-    }
-
-    private static Result missingVariable() {
-        return new Result(Result.Outcome.REJECTED, null, "TEMPLATE_VARIABLE_MISSING", "当前事件缺少模板字段，未向阿里云发送");
+        return MAPPER.valueToTree(mapped).toString();
     }
 
     private static String trim(String value) { return value == null ? "" : value.trim(); }
