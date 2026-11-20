@@ -21,6 +21,37 @@ public class RealNotificationService {
     public record Stats(boolean enabled, long sent, long failed, OffsetDateTime cursor) { }
     private static final Logger log = LoggerFactory.getLogger(RealNotificationService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int SCAN_PAGE_SIZE = 20;
+    private static final String FIRE_SCAN = """
+        SELECT a.id,a.tenant_id,a.device_id,a.device_name,a.address,a.occurred_at,a.source_time_known,
+               a.physical_state,a.response_state,d.model AS device_model,'FIRE' AS event_kind,
+               'ALARM' AS source_kind,a.event_type AS event_code
+        FROM alarms a JOIN devices d ON d.id=a.device_id AND d.tenant_id=a.tenant_id
+        WHERE a.event_type='FIRE' AND a.is_simulated=FALSE AND a.occurred_at>?
+          AND NOT EXISTS(SELECT 1 FROM real_notification_completions c
+                         WHERE c.tenant_id=a.tenant_id AND c.source_kind='ALARM' AND c.source_id=a.id)
+        """;
+    private static final String FAULT_SCAN = """
+        SELECT f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,
+               f.event_code,f.subscription_detail,f.occurred_at,f.source_kind,'FAULT' AS event_kind,
+               NULL AS physical_state,NULL AS response_state
+        FROM (
+            SELECT e.id AS source_id,e.tenant_id,e.device_id,e.business_code AS event_code,
+                   CAST(NULL AS VARCHAR) AS subscription_detail,e.observed_at AS occurred_at,'LEGACY_FAULT' AS source_kind
+            FROM legacy_ingest_events e JOIN alarm_configuration_outcomes o
+              ON o.tenant_id=e.tenant_id AND o.source_id=e.id AND o.source_kind='LEGACY_FAULT'
+             AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED'
+            WHERE e.kind='FAULT' AND e.observed_at>?
+            UNION ALL
+            SELECT r.id,r.tenant_id,r.device_id,NULL,o.detail_json,o.occurred_at,'RAW_FAULT'
+            FROM raw_messages r JOIN alarm_configuration_outcomes o
+              ON o.tenant_id=r.tenant_id AND o.source_id=r.id AND o.source_kind='FAULT_MESSAGE'
+             AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED'
+            WHERE r.device_id IS NOT NULL AND o.occurred_at>?
+        ) f JOIN devices d ON d.id=f.device_id AND d.tenant_id=f.tenant_id
+        WHERE d.is_simulated=FALSE AND NOT EXISTS(SELECT 1 FROM real_notification_completions c
+              WHERE c.tenant_id=f.tenant_id AND c.source_kind=f.source_kind AND c.source_id=f.source_id)
+        """;
     private final JdbcTemplate jdbc;
     private final ContactPhoneStorage phones;
     private final AliyunNotificationClient client;
@@ -38,6 +69,17 @@ public class RealNotificationService {
     private final com.fireplatform.configuration.RuntimeConfig runtime;
     /** First-scan lower bound captured when this worker instance starts, not when the first event happens to arrive. */
     private final OffsetDateTime activationBoundary;
+    // Scheduled traversal only; never saved as the durable activation floor or used by targeted dispatch.
+    private ScanPosition fireAfter;
+    private ScanPosition faultAfter;
+
+    private record ScanPosition(OffsetDateTime occurredAt,String sourceId,String sourceKind) {
+        static ScanPosition afterFullPage(List<Map<String,Object>> page) {
+            if (page.size() < SCAN_PAGE_SIZE) return null;
+            var last=page.getLast();
+            return new ScanPosition((OffsetDateTime)last.get("occurred_at"),(String)last.get("id"),(String)last.get("source_kind"));
+        }
+    }
     @Autowired
     public RealNotificationService(JdbcTemplate jdbc, ContactPhoneStorage phones, AliyunNotificationClient client,
             NotificationResourceService resources, SuppressionCommands suppressions, NotificationProviderAttemptService attempts, NotificationProviderService provider,
@@ -54,13 +96,16 @@ public class RealNotificationService {
             fixedDelayString = "${fire.notification.real-poll-ms:5000}")
     public void poll() {
         if (!requested || !workerRole()) return;
-        OffsetDateTime cursor = initializedCursor();
-        List<Map<String, Object>> events = new ArrayList<>(jdbc.queryForList(
-                "SELECT a.id,a.tenant_id,a.device_id,a.device_name,a.address,a.occurred_at,a.source_time_known,a.physical_state,a.response_state,d.model AS device_model,'FIRE' AS event_kind,'ALARM' AS source_kind,a.event_type AS event_code FROM alarms a JOIN devices d ON d.id=a.device_id AND d.tenant_id=a.tenant_id WHERE a.event_type='FIRE' AND a.is_simulated=FALSE AND a.occurred_at>? AND NOT EXISTS(SELECT 1 FROM real_notification_completions c WHERE c.tenant_id=a.tenant_id AND c.source_kind='ALARM' AND c.source_id=a.id) ORDER BY a.occurred_at,a.id LIMIT 20", cursor));
-        events.addAll(jdbc.queryForList(
-                "SELECT f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,f.event_code,f.subscription_detail,f.occurred_at,f.source_kind,'FAULT' AS event_kind,NULL AS physical_state,NULL AS response_state FROM ("+
-                "SELECT e.id AS source_id,e.tenant_id,e.device_id,e.business_code AS event_code,CAST(NULL AS VARCHAR) AS subscription_detail,e.observed_at AS occurred_at,'LEGACY_FAULT' AS source_kind FROM legacy_ingest_events e JOIN alarm_configuration_outcomes o ON o.tenant_id=e.tenant_id AND o.source_id=e.id AND o.source_kind='LEGACY_FAULT' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE e.kind='FAULT' AND e.observed_at>? "+
-                "UNION ALL SELECT r.id,r.tenant_id,r.device_id,NULL,o.detail_json,o.occurred_at,'RAW_FAULT' FROM raw_messages r JOIN alarm_configuration_outcomes o ON o.tenant_id=r.tenant_id AND o.source_id=r.id AND o.source_kind='FAULT_MESSAGE' AND o.outcome_kind='SUBSCRIPTION' AND o.outcome='SUBSCRIBED' WHERE r.device_id IS NOT NULL AND o.occurred_at>?) f JOIN devices d ON d.id=f.device_id AND d.tenant_id=f.tenant_id WHERE d.is_simulated=FALSE AND NOT EXISTS(SELECT 1 FROM real_notification_completions c WHERE c.tenant_id=f.tenant_id AND c.source_kind=f.source_kind AND c.source_id=f.source_id) ORDER BY f.occurred_at,f.source_id LIMIT 20",cursor,cursor));
+        OffsetDateTime floor = initializedCursor();
+        var fires=firePage(floor,fireAfter);
+        if (fires.isEmpty() && fireAfter!=null) fires=firePage(floor,null);
+        fireAfter=ScanPosition.afterFullPage(fires);
+        var faults=faultPage(floor,faultAfter);
+        if (faults.isEmpty() && faultAfter!=null) faults=faultPage(floor,null);
+        faultAfter=ScanPosition.afterFullPage(faults);
+        List<Map<String,Object>> events=new ArrayList<>(fires.size()+faults.size());
+        events.addAll(fires);
+        events.addAll(faults);
         if (events.isEmpty()) return;
         events.sort(Comparator.comparing((Map<String,Object> e)->(OffsetDateTime)e.get("occurred_at")).thenComparing(e->String.valueOf(e.get("id"))));
         for (Map<String, Object> event : events) {
@@ -72,6 +117,23 @@ public class RealNotificationService {
                 tenant,sourceKind,sourceId,time.now(),tenant,sourceKind,sourceId);
         }
     }
+
+    private List<Map<String,Object>> firePage(OffsetDateTime floor,ScanPosition after) {
+        String order=" ORDER BY a.occurred_at,a.id LIMIT ?";
+        return after==null
+            ? jdbc.queryForList(FIRE_SCAN+order,floor,SCAN_PAGE_SIZE)
+            : jdbc.queryForList(FIRE_SCAN+" AND (a.occurred_at,a.id)>(?,?)"+order,
+                floor,after.occurredAt(),after.sourceId(),SCAN_PAGE_SIZE);
+    }
+
+    private List<Map<String,Object>> faultPage(OffsetDateTime floor,ScanPosition after) {
+        String order=" ORDER BY f.occurred_at,f.source_id,f.source_kind LIMIT ?";
+        return after==null
+            ? jdbc.queryForList(FAULT_SCAN+order,floor,floor,SCAN_PAGE_SIZE)
+            : jdbc.queryForList(FAULT_SCAN+" AND (f.occurred_at,f.source_id,f.source_kind)>(?,?,?)"+order,
+                floor,floor,after.occurredAt(),after.sourceId(),after.sourceKind(),SCAN_PAGE_SIZE);
+    }
+
     public void dispatchInitialAlarm(String tenantId,String alarmId) {
         if(!requested||!workerRole())return;
         OffsetDateTime cursor=initializedCursor();

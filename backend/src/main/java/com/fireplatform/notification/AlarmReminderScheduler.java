@@ -5,6 +5,7 @@ import com.fireplatform.configuration.DatabaseTime;
 import com.fireplatform.shared.ReminderScheduling;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -14,10 +15,14 @@ import org.springframework.transaction.annotation.Transactional;
 /** Schedules periodic reminders for still-unhandled local alarms; it never changes alarm state. */
 @Service
 public class AlarmReminderScheduler implements ReminderScheduling {
+    private static final int SCAN_PAGE_SIZE = 100;
     private final JdbcTemplate jdbc;
     private final AlarmBaseConfigurationQueries configuration;
     private final RealNotificationService notifications;
     private final DatabaseTime time;
+    // Scheduled traversal only; changing pages does not change any reminder's due time or cycle.
+    private DuePosition dueAfter;
+    private record DuePosition(OffsetDateTime dueAt,String tenantId,String alarmId) { }
 
     public AlarmReminderScheduler(JdbcTemplate jdbc, AlarmBaseConfigurationQueries configuration,
             RealNotificationService notifications, DatabaseTime time) {
@@ -78,7 +83,15 @@ public class AlarmReminderScheduler implements ReminderScheduling {
     @Scheduled(initialDelayString = "${fire.alarm-reminder-initial-delay-ms:30000}", fixedDelayString = "${fire.alarm-reminder-scan-ms:15000}")
     @Transactional
     public int processDue() {
-        List<java.util.Map<String, Object>> due = jdbc.queryForList("SELECT s.tenant_id,s.alarm_id,s.cycle_number,s.cycle_started_at,s.period_hours,a.response_state,a.occurred_at,a.device_id,d.model FROM (SELECT tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at FROM alarm_reminder_schedule WHERE status='WAITING' AND next_due_at<=" + time.expression() + " ORDER BY next_due_at,tenant_id,alarm_id LIMIT 100 FOR UPDATE SKIP LOCKED) s LEFT JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id LEFT JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id ORDER BY s.next_due_at,s.tenant_id,s.alarm_id");
+        var due=duePage(dueAfter);
+        if (due.isEmpty() && dueAfter!=null) due=duePage(null);
+        // Use the selected keys, not the due dates after processing/rescheduling the rows.
+        if (due.size()==SCAN_PAGE_SIZE) {
+            var last=due.getLast();
+            dueAfter=new DuePosition((OffsetDateTime)last.get("next_due_at"),(String)last.get("tenant_id"),(String)last.get("alarm_id"));
+        } else {
+            dueAfter=null;
+        }
         int accepted = 0;
         for (var row : due) {
             String tenantId = String.valueOf(row.get("tenant_id"));
@@ -112,6 +125,25 @@ public class AlarmReminderScheduler implements ReminderScheduling {
             }
         }
         return accepted;
+    }
+
+    private List<Map<String,Object>> duePage(DuePosition after) {
+        String select="""
+            SELECT s.tenant_id,s.alarm_id,s.cycle_number,s.cycle_started_at,s.period_hours,s.next_due_at,
+                   a.response_state,a.occurred_at,a.device_id,d.model
+            FROM (SELECT tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at
+                  FROM alarm_reminder_schedule WHERE status='WAITING' AND next_due_at<=
+            """+time.expression();
+        String orderAndLock="""
+             ORDER BY next_due_at,tenant_id,alarm_id LIMIT ? FOR UPDATE SKIP LOCKED) s
+             LEFT JOIN alarms a ON a.id=s.alarm_id AND a.tenant_id=s.tenant_id
+             LEFT JOIN devices d ON d.tenant_id=a.tenant_id AND d.id=a.device_id
+             ORDER BY s.next_due_at,s.tenant_id,s.alarm_id
+            """;
+        return after==null
+            ? jdbc.queryForList(select+orderAndLock,SCAN_PAGE_SIZE)
+            : jdbc.queryForList(select+" AND (next_due_at,tenant_id,alarm_id)>(?,?,?)"+orderAndLock,
+                after.dueAt(),after.tenantId(),after.alarmId(),SCAN_PAGE_SIZE);
     }
 
     private AlarmBaseConfigurationQueries.DeliveryPolicy reminderPolicy(String tenantId,String deviceId,String model) {

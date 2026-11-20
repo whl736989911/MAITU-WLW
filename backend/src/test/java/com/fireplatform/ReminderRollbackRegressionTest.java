@@ -78,7 +78,7 @@ class ReminderRollbackRegressionTest {
             .thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "voice-accepted", "OK", "accepted"));
     }
 
-    private String dueAlarm() throws Exception {
+    private NotificationIntegrationTest reminderFixtures() throws Exception {
         NotificationIntegrationTest notifications = new NotificationIntegrationTest();
         notifications.mvc = mvc;
         notifications.json = json;
@@ -94,6 +94,11 @@ class ReminderRollbackRegressionTest {
         notifications.realResources = resources;
         notifications.reset();
         notifications.initialNotificationFixtures();
+        return notifications;
+    }
+
+    private String dueAlarm() throws Exception {
+        var notifications=reminderFixtures();
 
         OffsetDateTime now = time.now();
         String alarm = notifications.initialNotificationEvent("FIRE", now.minusHours(2));
@@ -160,5 +165,54 @@ class ReminderRollbackRegressionTest {
             .containsExactly("UNKNOWN");
         assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(1L);
         verify(client, org.mockito.Mockito.times(1)).sendSms(anyString(), anyMap(), anyString());
+    }
+
+    @Test
+    void reminderScanReachesReadyChannelBeyondFullPendingPageAndResumesSameCycles() throws Exception {
+        var notifications=reminderFixtures();
+        notifications.addReadyVoiceOnlyDevice();
+        jdbc.update("UPDATE notification_resource_accounts SET sms_total=150,voice_total=150 WHERE tenant_id='tenant-a'");
+        when(client.enabled()).thenReturn(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var now=time.now();
+            jdbc.update("INSERT INTO alarm_base_configurations(tenant_id,config_json,revision,updated_by,updated_at) "
+                + "VALUES ('tenant-a','{\"pushRules\":{\"periodHours\":1}}',1,'bootstrap-admin',?)",now);
+            for (int i=0;i<100;i++) {
+                String alarm=notifications.initialNotificationEvent("FIRE",now.minusHours(2));
+                seedDueReminder(alarm,now.minusMinutes(2),now);
+            }
+            String ready=notifications.initialNotificationEvent("FIRE",now.minusHours(1));
+            jdbc.update("UPDATE alarms SET device_id='device-ready' WHERE id=?",ready);
+            seedDueReminder(ready,now.minusMinutes(1),now);
+            assertThat(scheduler.processDue()).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_reminder_schedule WHERE cycle_number=1 AND last_accepted_at IS NULL",Long.class)).isEqualTo(101);
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(100);
+            assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isZero();
+
+            assertThat(scheduler.processDue()).isEqualTo(1);
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=? AND occurrence_key='REMINDER:1' AND status='SENT'",String.class,ready))
+                .containsExactly("VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_reminder_schedule WHERE cycle_number=1 AND last_accepted_at IS NULL",Long.class)).isEqualTo(100);
+
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            when(client.enabled()).thenReturn(true);
+            assertThat(scheduler.processDue()).isEqualTo(100);
+            assertThat(scheduler.processDue()).isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_reminder_schedule WHERE cycle_number=2 AND last_accepted_at IS NOT NULL",Long.class)).isEqualTo(101);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE occurrence_key='REMINDER:1' AND status='SENT'",Long.class)).isEqualTo(201);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts",Long.class)).isEqualTo(201);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME' AND channel='SMS'",Long.class)).isEqualTo(100);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME' AND channel='VOICE'",Long.class)).isEqualTo(101);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    private void seedDueReminder(String alarm,OffsetDateTime due,OffsetDateTime now) {
+        jdbc.update("INSERT INTO alarm_reminder_schedule(tenant_id,alarm_id,cycle_number,period_hours,cycle_started_at,"
+            + "next_due_at,last_accepted_at,status,revision,updated_at) VALUES ('tenant-a',?,1,1,?,?,NULL,'WAITING',1,?)",
+            alarm,due,due,now);
     }
 }
