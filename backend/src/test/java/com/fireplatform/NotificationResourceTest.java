@@ -69,7 +69,27 @@ class NotificationResourceTest {
     JsonNode body(ResultActions result) throws Exception { return json.readTree(result.andReturn().getResponse().getContentAsString()); }
     String login(String name,String password,String audience) throws Exception { return body(call(HttpMethod.POST,"/api/auth/login",null,null,null,Map.of("username",name,"password",password,"audience",audience)).andExpect(status().isOk())).get("access_token").asText(); }
     Map<String,Object> org(String channel,long quantity){ return Map.of("owner_type","ORGANIZATION","owner_id","tenant-a","channel",channel,"quantity",quantity,"reference","N09 资源测试"); }
-    Map<String,Object> providerBody(){ var m=new java.util.HashMap<String,Object>(); m.put("sms_enabled",false); m.put("voice_enabled",false); m.put("sms_sign_name","测试签名"); m.put("sms_template_code","SMS_TEST"); m.put("tts_code","TTS_TEST"); m.put("tts_called_show_number",null); m.put("sms_template_variables",Map.of("deviceName","device_name")); m.put("voice_template_variables",Map.of()); m.put("sms_endpoint","https://dysmsapi.aliyuncs.com/"); m.put("voice_endpoint","https://dyvmsapi.aliyuncs.com/"); m.put("access_key_id",null); m.put("access_key_secret",null); m.put("test_mode_enabled",true); m.put("test_phone","18896992408"); m.put("expected_revision",jdbc.queryForObject("SELECT revision FROM notification_provider_config WHERE id=1",Long.class)); return m; }
+    Map<String,Object> providerBody() {
+        var m = new java.util.HashMap<String,Object>();
+        m.put("sms_enabled",false);
+        m.put("voice_enabled",false);
+        m.put("sms_sign_name","测试签名");
+        m.put("sms_template_code","SMS_TEST");
+        m.put("tts_code","TTS_TEST");
+        m.put("tts_called_show_number",null);
+        m.put("sms_template_variables",Map.of("deviceName","device_name"));
+        m.put("voice_template_variables",Map.of());
+        m.put("sms_template_variables_confirmed",true);
+        m.put("voice_template_variables_confirmed",true);
+        m.put("sms_endpoint","https://dysmsapi.aliyuncs.com/");
+        m.put("voice_endpoint","https://dyvmsapi.aliyuncs.com/");
+        m.put("access_key_id",null);
+        m.put("access_key_secret",null);
+        m.put("test_mode_enabled",true);
+        m.put("test_phone","18896992408");
+        m.put("expected_revision",jdbc.queryForObject("SELECT revision FROM notification_provider_config WHERE id=1",Long.class));
+        return m;
+    }
     Map<String,Object> order(String channel,long quantity){ return Map.of("owner_type","ORGANIZATION","owner_id","tenant-a","channel",channel,"quantity",quantity); }
 
     @Test void senderUsesOnlyCommittedProviderSettings() throws Exception {
@@ -295,7 +315,7 @@ class NotificationResourceTest {
     @Test void validatesTemplateMappingsAndPersistsEmptyMapDistinctFromNotConfigured() throws Exception {
         var input=providerBody();
         input.put("sms_enabled",true);
-        input.remove("sms_template_variables");
+        input.put("sms_template_variables",null);
         call(HttpMethod.PUT,"/api/management/notification-provider",root,null,null,input).andExpect(status().isBadRequest());
         for (Object invalid : List.of(Map.of("device",17), Map.of("device","phone"), Map.of("bad-variable","device_name"), List.of("device_name"))) {
             input.put("sms_template_variables",invalid);

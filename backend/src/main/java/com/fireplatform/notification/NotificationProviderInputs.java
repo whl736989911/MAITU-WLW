@@ -14,6 +14,8 @@ public final class NotificationProviderInputs {
                            @JsonDeserialize(using=TextOnly.class) String ttsCalledShowNumber,
                            JsonNode smsTemplateVariables,
                            JsonNode voiceTemplateVariables,
+                           @JsonDeserialize(using=BooleanOnly.class) Boolean smsTemplateVariablesConfirmed,
+                           @JsonDeserialize(using=BooleanOnly.class) Boolean voiceTemplateVariablesConfirmed,
                            @JsonDeserialize(using=TextOnly.class) String smsEndpoint,
                            @JsonDeserialize(using=TextOnly.class) String voiceEndpoint,
                            @JsonDeserialize(using=TextOnly.class) String accessKeyId,
