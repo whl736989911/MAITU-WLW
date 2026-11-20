@@ -360,7 +360,9 @@ public class RealNotificationService {
                 String key=initial?spoolId+"__"+contactId+"__"+channel:spoolId+"__"+occurrenceKey.replace(':','_')+"__"+contactId+"__"+channel;
                 if(spool.isDone(occurrenceKey,spoolId,contactId,channel)||spool.isDead(occurrenceKey,spoolId,contactId,channel))continue;
                 boolean sms=channel.equals("SMS");
-                if(sms?!client.enabled():!client.voiceReady()) {
+                var preparation=sms?client.prepareSms(params):client.prepareVoice(params);
+                if(preparation==AliyunNotificationClient.NotSent.SMS_NOT_CONFIGURED
+                        ||preparation==AliyunNotificationClient.NotSent.VOICE_NOT_CONFIGURED) {
                     if(sms?providerSettings.smsEnabled():providerSettings.voiceEnabled()) {
                         // Stay in the existing scan window, without claiming a send or moving the completion boundary.
                         pending=true;
@@ -375,15 +377,7 @@ public class RealNotificationService {
                     continue;
                 }
                 int nextAttempt=1;String claimId=null;
-                if(mergeSession!=null) {
-                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,contact.ruleId(),contactId,channel,level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
-                    if(!decision.proceed()) {
-                        if("RETRY_EXHAUSTED".equals(decision.reason())) spool.markDead(occurrenceKey,spoolId,contactId,channel,"SESSION_RETRY_EXHAUSTED",null);
-                        else spool.markDone(occurrenceKey,spoolId,contactId,channel,"SESSION_"+decision.reason(),null);
-                        continue;
-                    }
-                    claimId=decision.claimId(); nextAttempt=decision.attemptNo();
-                } else {
+                if(mergeSession==null) {
                     var latest=attempts.latest(tenant,eventKind,sourceKind,sendAlarmId,contactId,channel,occurrenceKey);
                     if(latest!=null) {
                         if(latest.status().equals("PENDING")){attempts.finish(latest.id(),"UNKNOWN","PENDING_ON_RESTART",null);continue;}
@@ -392,15 +386,35 @@ public class RealNotificationService {
                         if(nextAttempt>NotificationProviderAttemptService.MAX_ATTEMPTS)continue;
                     }
                 }
+                if(preparation instanceof AliyunNotificationClient.NotSent notSent) {
+                    String code=notSent.result().code();
+                    spool.markDead(occurrenceKey,spoolId,contactId,channel,code,null);
+                    log.info("real notification event={} kind={} contact={} channel={} status=NOT_SENT code={}",sourceId,eventKind,contactId,channel,code);
+                    continue;
+                }
+                var prepared=(AliyunNotificationClient.PreparedSend)preparation;
+                String actualPhone;
+                try {actualPhone=phones.normalize(phone);}
+                catch(RuntimeException error){spool.markDead(occurrenceKey,spoolId,contactId,channel,"PHONE_UNAVAILABLE",null);continue;}
+                if(mergeSession!=null) {
+                    var decision=merge.claim(tenant,mergeSession,occurrenceKey,contact.ruleId(),contactId,channel,level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
+                    if(!decision.proceed()) {
+                        if("RETRY_EXHAUSTED".equals(decision.reason())) spool.markDead(occurrenceKey,spoolId,contactId,channel,"SESSION_RETRY_EXHAUSTED",null);
+                        else spool.markDone(occurrenceKey,spoolId,contactId,channel,"SESSION_"+decision.reason(),null);
+                        continue;
+                    }
+                    claimId=decision.claimId(); nextAttempt=decision.attemptNo();
+                }
+                String accountFingerprint=prepared.accountFingerprint();
                 boolean delivered=false;String terminalStatus="FAILED",terminalCode=null,terminalProviderId=null;int lastAttempt=nextAttempt;
                 for(int attemptNo=nextAttempt;attemptNo<=NotificationProviderAttemptService.MAX_ATTEMPTS&&(initial||attemptNo==nextAttempt);attemptNo++) {
                     lastAttempt=attemptNo;
-                    var attempt=attempts.begin(tenant,eventKind,sourceKind,sendAlarmId,deviceId,contactId,channel,occurrenceKey,attemptNo,phone,client.accountFingerprint());
+                    var attempt=attempts.begin(tenant,eventKind,sourceKind,sendAlarmId,deviceId,contactId,channel,occurrenceKey,attemptNo,actualPhone,accountFingerprint);
                     NotificationResourceService.Reservation reservation;
                     try {reservation=resources.reserve(tenant,deviceId,channel);}
                     catch(RuntimeException error){attempts.finish(attempt.id(),"RESOURCE_UNAVAILABLE","NOTIFICATION_RESOURCE_UNAVAILABLE",null);terminalStatus="RESOURCE_UNAVAILABLE";terminalCode="NOTIFICATION_RESOURCE_UNAVAILABLE";break;}
                     AliyunNotificationClient.Result result;
-                    try {String actualPhone=phones.normalize(phone);result=channel.equals("SMS")?client.sendSms(actualPhone,params,NotificationProviderAttemptService.outIdFor(attempt.id())):client.sendVoice(actualPhone,params,NotificationProviderAttemptService.outIdFor(attempt.id()));}
+                    try {result=prepared.send(actualPhone,NotificationProviderAttemptService.outIdFor(attempt.id()));}
                     catch(RuntimeException error){attempts.finish(attempt.id(),"UNKNOWN","PROVIDER_EXCEPTION",null);terminalStatus="UNKNOWN";terminalCode="PROVIDER_EXCEPTION";break;}
                     if(result.unknown()){attempts.finish(attempt.id(),"UNKNOWN",result.code(),result.providerId());terminalStatus="UNKNOWN";terminalCode=result.code();terminalProviderId=result.providerId();break;}
                     if(result.success()){attempts.finish(attempt.id(),"SENT",result.code(),result.providerId());delivered=true;terminalStatus="SENT";terminalCode=result.code();terminalProviderId=result.providerId();break;}

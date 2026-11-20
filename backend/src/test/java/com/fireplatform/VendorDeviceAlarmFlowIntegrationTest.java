@@ -1,6 +1,10 @@
 package com.fireplatform;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -12,6 +16,7 @@ import com.fireplatform.hikvision.HikvisionClient;
 import com.fireplatform.hikvision.HikvisionIngestion;
 import com.fireplatform.notification.*;
 import com.fireplatform.product.JsonPointerParser;
+import com.fireplatform.transport.AliyunNotificationClient;
 import com.fireplatform.transport.NotificationSpool;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
@@ -49,7 +54,7 @@ class VendorDeviceAlarmFlowIntegrationTest {
     @Autowired NotificationResourceService resources;
     @Autowired RealNotificationService worker;
     @Autowired NotificationSpool spool;
-    @MockitoBean com.fireplatform.transport.AliyunNotificationClient client;
+    @MockitoBean AliyunNotificationClient client;
     IngestionIntegrationTest f;
     NotificationIntegrationTest notifications;
     String profile;
@@ -65,10 +70,12 @@ class VendorDeviceAlarmFlowIntegrationTest {
         jdbc.update("INSERT INTO product_versions(id,product_id,version_number,status,revision,schema_json,capabilities_json,parser_tested,schema_format,legacy_product_id,created_at) VALUES(?,?,1,'DRAFT',0,'{}','{}',FALSE,'LEGACY_ATTR_JS_V1',?,CURRENT_TIMESTAMP)",profile,product,"flow-legacy-"+UUID.randomUUID());
         jdbc.update("INSERT INTO notification_channel_policies(id,tenant_id,scope_type,scope_key,sms_enabled,voice_enabled,revision,changed_at) VALUES ('flow-policy','tenant-a','UNIT','tenant-a',TRUE,TRUE,1,CURRENT_TIMESTAMP)");
         notifications=new NotificationIntegrationTest();notifications.f=f;notifications.mvc=mvc;notifications.json=json;notifications.jdbc=jdbc;notifications.phones=phones;notifications.time=time;notifications.channelPolicies=policies;notifications.providerAttempts=attempts;notifications.baseConfiguration=configuration;notifications.providerService=providers;notifications.realResources=resources;
-        org.mockito.Mockito.when(client.enabled()).thenReturn(true);
-        org.mockito.Mockito.when(client.voiceReady()).thenReturn(true);
-        org.mockito.Mockito.when(client.sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new com.fireplatform.transport.AliyunNotificationClient.Result(com.fireplatform.transport.AliyunNotificationClient.Result.Outcome.ACCEPTED, "sms-fixture","OK","accepted"));
-        org.mockito.Mockito.when(client.sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new com.fireplatform.transport.AliyunNotificationClient.Result(com.fireplatform.transport.AliyunNotificationClient.Result.Outcome.ACCEPTED, "voice-fixture","OK","accepted"));
+        var sms=mock(AliyunNotificationClient.PreparedSend.class);
+        var voice=mock(AliyunNotificationClient.PreparedSend.class);
+        when(client.prepareSms(anyMap())).thenReturn(sms);
+        when(client.prepareVoice(anyMap())).thenReturn(voice);
+        when(sms.send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "sms-fixture","OK","accepted"));
+        when(voice.send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "voice-fixture","OK","accepted"));
     }
 
     @ParameterizedTest @ValueSource(strings={"LEGACY_REALTIME","HIKVISION_FIRECLOUD"})

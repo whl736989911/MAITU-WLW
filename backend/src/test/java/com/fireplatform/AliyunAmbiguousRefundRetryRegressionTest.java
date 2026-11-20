@@ -84,14 +84,16 @@ class AliyunAmbiguousRefundRetryRegressionTest {
         AtomicInteger smsSubmissions = new AtomicInteger();
         AtomicInteger voiceSubmissions = new AtomicInteger();
         AliyunNotificationClient client = mock(AliyunNotificationClient.class);
-        when(client.enabled()).thenReturn(true);
-        when(client.voiceReady()).thenReturn(true);
-        when(client.sendSms(anyString(), anyMap(), anyString())).thenAnswer(invocation -> {
+        var sms = mock(AliyunNotificationClient.PreparedSend.class);
+        var voice = mock(AliyunNotificationClient.PreparedSend.class);
+        when(client.prepareSms(anyMap())).thenReturn(sms);
+        when(client.prepareVoice(anyMap())).thenReturn(voice);
+        when(sms.send(anyString(), anyString())).thenAnswer(invocation -> {
             smsSubmissions.incrementAndGet();
             // The concrete adapter outcome is covered by AliyunSubmissionOutcomeTest.
             return new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.UNKNOWN, null, "PROVIDER_RESULT_UNKNOWN", "提交后响应丢失");
         });
-        when(client.sendVoice(anyString(), anyMap(), anyString())).thenAnswer(invocation -> {
+        when(voice.send(anyString(), anyString())).thenAnswer(invocation -> {
             voiceSubmissions.incrementAndGet();
             return new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.UNKNOWN, null, "PROVIDER_RESULT_UNKNOWN", "提交后响应丢失");
         });
