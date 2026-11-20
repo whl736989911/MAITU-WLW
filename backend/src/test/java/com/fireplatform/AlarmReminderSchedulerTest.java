@@ -25,7 +25,14 @@ class AlarmReminderSchedulerTest {
         jdbc.execute("CREATE TABLE alarms(tenant_id VARCHAR(64) NOT NULL,id VARCHAR(64) NOT NULL,device_id VARCHAR(64),response_state VARCHAR(16) NOT NULL,occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,PRIMARY KEY(tenant_id,id))");
         jdbc.execute("CREATE TABLE devices(tenant_id VARCHAR(64),id VARCHAR(64),model VARCHAR(64))");
         jdbc.execute("CREATE TABLE alarm_reminder_schedule(tenant_id VARCHAR(64) NOT NULL,alarm_id VARCHAR(64) NOT NULL,cycle_number BIGINT NOT NULL,cycle_started_at TIMESTAMP WITH TIME ZONE NOT NULL,period_hours INTEGER NOT NULL,next_due_at TIMESTAMP WITH TIME ZONE NOT NULL,status VARCHAR(16) NOT NULL,revision BIGINT NOT NULL,updated_at TIMESTAMP WITH TIME ZONE NOT NULL,PRIMARY KEY(tenant_id,alarm_id),FOREIGN KEY(tenant_id,alarm_id) REFERENCES alarms(tenant_id,id))");
+        jdbc.execute("CREATE INDEX idx_alarm_reminder_due ON alarm_reminder_schedule(status,next_due_at)");
         var now = OffsetDateTime.now(ZoneOffset.UTC);
+        for (int i=0;i<100;i++) {
+            String id="handled-first-"+i;
+            jdbc.update("INSERT INTO alarms(tenant_id,id,response_state,occurred_at) VALUES('unit',?,'HANDLED',?)",id,now.minusHours(3));
+            jdbc.update("INSERT INTO alarm_reminder_schedule(tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at,status,revision,updated_at) VALUES('unit',?,0,?,1,?,'WAITING',1,?)",
+                id,now.minusHours(2),now.minusHours(2),now);
+        }
         for (String id : new String[]{"handled-due", "handled-future"}) {
             jdbc.update("INSERT INTO alarms(tenant_id,id,response_state,occurred_at) VALUES('unit',?,'HANDLED',?)", id, now.minusHours(2));
             jdbc.update("INSERT INTO alarm_reminder_schedule(tenant_id,alarm_id,cycle_number,cycle_started_at,period_hours,next_due_at,status,revision,updated_at) VALUES('unit',?,0,?,1,?,'WAITING',1,?)", id, now.minusHours(1), id.equals("handled-due") ? now.minusHours(1) : now.plusHours(1), now);
@@ -37,12 +44,16 @@ class AlarmReminderSchedulerTest {
         var transaction = new TransactionTemplate(new DataSourceTransactionManager(source));
         Integer accepted = transaction.execute(status -> scheduler.processDue());
         assertThat(accepted).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_reminder_schedule WHERE status='CANCELLED'",Integer.class)).isEqualTo(100);
+        assertThat(jdbc.queryForObject("SELECT status FROM alarm_reminder_schedule WHERE alarm_id='handled-due'",String.class)).isEqualTo("WAITING");
+        accepted = transaction.execute(status -> scheduler.processDue());
+        assertThat(accepted).isZero();
         assertThat(jdbc.queryForMap("SELECT status,cycle_number,revision FROM alarm_reminder_schedule WHERE alarm_id='handled-due'"))
             .containsEntry("status", "CANCELLED");
         assertThat(jdbc.queryForObject("SELECT revision FROM alarm_reminder_schedule WHERE alarm_id='handled-due'", Long.class)).isEqualTo(2L);
         assertThat(jdbc.queryForObject("SELECT status FROM alarm_reminder_schedule WHERE alarm_id='handled-future'", String.class)).isEqualTo("WAITING");
         assertThat(jdbc.queryForObject("SELECT revision FROM alarm_reminder_schedule WHERE alarm_id='handled-future'", Long.class)).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE response_state='HANDLED'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarms WHERE response_state='HANDLED'", Integer.class)).isEqualTo(102);
     }
 
     @Test void h2CancelsOnlyDueHandledAlarm() {

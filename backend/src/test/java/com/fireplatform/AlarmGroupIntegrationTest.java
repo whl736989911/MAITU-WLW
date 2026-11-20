@@ -80,14 +80,21 @@ class AlarmGroupIntegrationTest {
         var suppressions=mock(SuppressionCommands.class);
         when(suppressions.blocked(anyString(),anyString(),anyBoolean(),anyString())).thenReturn(false);
         var provider=mock(NotificationProviderService.class);
+        when(provider.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,null));
         return new RealNotificationService(jdbc,phones,client,resources,suppressions,attempts,provider,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,gate,mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),NotificationIntegrationTest.notificationRuntime());
     }
-    AliyunNotificationClient successClient() {
+    private record AliyunFixture(AliyunNotificationClient client, AliyunNotificationClient.PreparedSend sms,
+                                 AliyunNotificationClient.PreparedSend voice) { }
+
+    private AliyunFixture aliyunFixture() {
         var client=mock(AliyunNotificationClient.class);
-        when(client.enabled()).thenReturn(true);when(client.voiceReady()).thenReturn(true);when(client.accountFingerprint()).thenReturn("account-a");
-        when(client.sendSms(anyString(),anyMap(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-sms","ACCEPTED","accepted"));
-        when(client.sendVoice(anyString(),anyMap(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-voice","ACCEPTED","accepted"));
-        return client;
+        var sms=mock(AliyunNotificationClient.PreparedSend.class);
+        var voice=mock(AliyunNotificationClient.PreparedSend.class);
+        when(client.prepareSms(anyMap())).thenReturn(sms);
+        when(client.prepareVoice(anyMap())).thenReturn(voice);
+        when(sms.accountFingerprint()).thenReturn("account-a");
+        when(voice.accountFingerprint()).thenReturn("account-a");
+        return new AliyunFixture(client,sms,voice);
     }
 
     @Test void physicalRecoveryAndReviewRemainPerAlarmWhileSessionMembershipStaysIndependent() throws Exception {
@@ -170,17 +177,20 @@ class AlarmGroupIntegrationTest {
         OffsetDateTime base=time.now().minusSeconds(30);
         String a=fire("tenant-a","device-a",base),b=fire("tenant-a","device-a",base.plusSeconds(5));
         assertThat(recover("tenant-a","device-a",a,base.plusSeconds(6))).isTrue();
-        var client=successClient();new NotificationSpool(spool.toString()).writeCursor(base.minusSeconds(1));
-        var worker=worker(spool,client);worker.poll();
-        verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
+        var client=aliyunFixture();
+        when(client.sms().send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-sms","ACCEPTED","accepted"));
+        when(client.voice().send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-voice","ACCEPTED","accepted"));
+        new NotificationSpool(spool.toString()).writeCursor(base.minusSeconds(1));
+        var worker=worker(spool,client.client());worker.poll();
+        verify(client.sms(),times(1)).send(anyString(),anyString());
+        verify(client.voice(),times(1)).send(anyString(),anyString());
         var claims=jdbc.queryForList("SELECT * FROM alarm_notification_claims ORDER BY channel");
         assertThat(claims).hasSize(2);
         for(var claim:claims){assertThat(claim.get("status")).isEqualTo("SENT");assertThat(claim.get("alarm_id")).isEqualTo(b);}
         assertThat(jdbc.queryForList("SELECT source_id FROM notification_provider_attempts",String.class)).containsOnly(b);
         String c=fire("tenant-a","device-a",base.plusSeconds(10));worker.poll();
-        verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
+        verify(client.sms(),times(1)).send(anyString(),anyString());
+        verify(client.voice(),times(1)).send(anyString(),anyString());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_members WHERE alarm_id=?",Long.class,c)).isEqualTo(1);
     }
 
@@ -190,14 +200,13 @@ class AlarmGroupIntegrationTest {
         OffsetDateTime base=time.now().minusSeconds(30);
         String a=fire("tenant-a","device-a",base),b=fire("tenant-a","device-a",base.plusSeconds(5));
         assertThat(recover("tenant-a","device-a",a,base.plusSeconds(6))).isTrue();
-        var client=mock(AliyunNotificationClient.class);
-        when(client.enabled()).thenReturn(true);when(client.voiceReady()).thenReturn(true);when(client.accountFingerprint()).thenReturn("account-a");
-        when(client.sendSms(anyString(),anyMap(),anyString())).thenThrow(new RuntimeException("uncertain"));
-        when(client.sendVoice(anyString(),anyMap(),anyString())).thenThrow(new RuntimeException("uncertain"));
+        var client=aliyunFixture();
+        when(client.sms().send(anyString(),anyString())).thenThrow(new RuntimeException("uncertain"));
+        when(client.voice().send(anyString(),anyString())).thenThrow(new RuntimeException("uncertain"));
         new NotificationSpool(spool.toString()).writeCursor(base.minusSeconds(1));
-        var worker=worker(spool,client);worker.poll();
-        verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
+        var worker=worker(spool,client.client());worker.poll();
+        verify(client.sms(),times(1)).send(anyString(),anyString());
+        verify(client.voice(),times(1)).send(anyString(),anyString());
         assertThat(jdbc.queryForList("SELECT status FROM alarm_notification_claims",String.class)).containsOnly("UNKNOWN");
         String originalRule=jdbc.queryForObject("SELECT id FROM notification_rules WHERE tenant_id='tenant-a'",String.class);
         jdbc.update("UPDATE notification_rules SET enabled=FALSE WHERE id=?",originalRule);
@@ -207,8 +216,8 @@ class AlarmGroupIntegrationTest {
         String c=fire("tenant-a","device-a",base.plusSeconds(10));
         assertThat(recover("tenant-a","device-a",b,base.plusSeconds(11))).isTrue();
         worker.poll();
-        verify(client,times(1)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(1)).sendVoice(anyString(),anyMap(),anyString());
+        verify(client.sms(),times(1)).send(anyString(),anyString());
+        verify(client.voice(),times(1)).send(anyString(),anyString());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_notification_claims",Long.class)).isEqualTo(2);
         assertThat(jdbc.queryForList("SELECT DISTINCT rule_id FROM alarm_notification_claims",String.class)).containsExactly(originalRule);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_members WHERE alarm_id=?",Long.class,c)).isEqualTo(1);
@@ -219,20 +228,19 @@ class AlarmGroupIntegrationTest {
         putPolicy("tenant-a",true,60,0,"policy-retry");
         OffsetDateTime base=time.now().minusSeconds(30);
         fire("tenant-a","device-a",base);fire("tenant-a","device-a",base.plusSeconds(5));
-        var client=mock(AliyunNotificationClient.class);
-        when(client.enabled()).thenReturn(true);when(client.voiceReady()).thenReturn(true);when(client.accountFingerprint()).thenReturn("account-a");
-        when(client.sendSms(anyString(),anyMap(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED, null,"BUSINESS_LIMIT_CONTROL","limited"));
-        when(client.sendVoice(anyString(),anyMap(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED, null,"BUSINESS_LIMIT_CONTROL","limited"));
+        var client=aliyunFixture();
+        when(client.sms().send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED, null,"BUSINESS_LIMIT_CONTROL","limited"));
+        when(client.voice().send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED, null,"BUSINESS_LIMIT_CONTROL","limited"));
         new NotificationSpool(spool.toString()).writeCursor(base.minusSeconds(1));
-        var worker=worker(spool,client);worker.poll();
-        verify(client,times(NotificationProviderAttemptService.MAX_ATTEMPTS)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(NotificationProviderAttemptService.MAX_ATTEMPTS)).sendVoice(anyString(),anyMap(),anyString());
+        var worker=worker(spool,client.client());worker.poll();
+        verify(client.sms(),times(NotificationProviderAttemptService.MAX_ATTEMPTS)).send(anyString(),anyString());
+        verify(client.voice(),times(NotificationProviderAttemptService.MAX_ATTEMPTS)).send(anyString(),anyString());
         var claims=jdbc.queryForList("SELECT * FROM alarm_notification_claims ORDER BY channel");
         assertThat(claims).hasSize(2);
         for(var claim:claims){assertThat(claim.get("status")).isEqualTo("FAILED");assertThat(((Number)claim.get("attempt_no")).intValue()).isEqualTo(NotificationProviderAttemptService.MAX_ATTEMPTS);}
         String c=fire("tenant-a","device-a",base.plusSeconds(10));worker.poll();
-        verify(client,times(NotificationProviderAttemptService.MAX_ATTEMPTS)).sendSms(anyString(),anyMap(),anyString());
-        verify(client,times(NotificationProviderAttemptService.MAX_ATTEMPTS)).sendVoice(anyString(),anyMap(),anyString());
+        verify(client.sms(),times(NotificationProviderAttemptService.MAX_ATTEMPTS)).send(anyString(),anyString());
+        verify(client.voice(),times(NotificationProviderAttemptService.MAX_ATTEMPTS)).send(anyString(),anyString());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm_session_members WHERE alarm_id=?",Long.class,c)).isEqualTo(1);
     }
 

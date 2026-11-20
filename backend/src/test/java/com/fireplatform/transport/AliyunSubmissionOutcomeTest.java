@@ -28,8 +28,8 @@ class AliyunSubmissionOutcomeTest {
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
             .thenThrow(new SocketTimeoutException("response lost after submission"));
         var timeout = Duration.ofMillis(1234);
-        var client = new AliyunNotificationClient("dummy-ak", "dummy-secret", "dummy-sign", "SMS_DUMMY", "TTS_DUMMY", "",
-            "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", http, timeout);
+        var client = new AliyunNotificationClient(new AliyunNotificationClient.Config("dummy-ak", "dummy-secret", "dummy-sign", "SMS_DUMMY", "TTS_DUMMY", "",
+            "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", Map.of(), Map.of()), http, timeout);
 
         var result = send(client, channel);
 
@@ -69,8 +69,8 @@ class AliyunSubmissionOutcomeTest {
     }
 
     private static AliyunNotificationClient client(HttpClient http) {
-        return new AliyunNotificationClient("dummy-ak", "dummy-secret", "dummy-sign", "SMS_DUMMY", "TTS_DUMMY", "",
-            "https://dysmsapi.aliyuncs.com/", "https://dyvmsapi.aliyuncs.com/", http);
+        return new AliyunNotificationClient(new AliyunNotificationClient.Config("dummy-ak", "dummy-secret", "dummy-sign", "SMS_DUMMY", "TTS_DUMMY", "",
+            "https://dysmsapi.aliyuncs.com/", "https://dyvmsapi.aliyuncs.com/", Map.of(), Map.of()), http, Duration.ofSeconds(8));
     }
 
     private static AliyunNotificationClient.Result send(AliyunNotificationClient client, String channel) {

@@ -100,7 +100,8 @@ class NotificationDeliveryReceiptEvidenceTest {
     @Test void eligibilityRequiresHistoricalAccountAndWindowProof() {
         LocalDate today = LocalDate.of(2026, 11, 12);
         Clock clock = Clock.fixed(today.atStartOfDay(PROVIDER_ZONE).plusHours(12).toInstant(), PROVIDER_ZONE);
-        var client = new AliyunNotificationClient("ak-current", "secret", "", "", "", "", "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice");
+        var client = new AliyunNotificationClient("ak-current", "secret", "", "", "", "",
+                "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", 5000, 8000);
         var queries = new NotificationDeliveryReceiptQueries(null, null, null, client, null, clock);
         String bound = client.accountFingerprint();
         assertThat(queries.eligibility("SMS", "SENT", "biz-1", "cipher", "nonce", "mac", today, bound).queryable()).isTrue();

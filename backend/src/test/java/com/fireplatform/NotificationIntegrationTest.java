@@ -26,6 +26,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static com.fireplatform.IngestionIntegrationTest.PASSWORD;
 import static com.fireplatform.IngestionIntegrationTest.INITIAL;
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(properties={"app.roles=all","app.generic-ingest-enabled=true","app.storage=h2-dev","app.notification-contact-key=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=","spring.datasource.url=jdbc:h2:mem:notification;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
@@ -79,23 +81,19 @@ class NotificationIntegrationTest {
         var legacyOnly=contact("Historical rule recipient","13800001999");jdbc.update("INSERT INTO notification_templates(id,name,channel,mode,body,enabled,created_at) VALUES ('legacy-sms','Historical SMS','SMS','SIMULATION','legacy',TRUE,CURRENT_TIMESTAMP),('legacy-voice','Historical voice','VOICE','SIMULATION','legacy',TRUE,CURRENT_TIMESTAMP)");jdbc.update("INSERT INTO notification_rules(id,tenant_id,name,enabled,event_scope,legacy_mode,legacy_sms_template_id,legacy_voice_template_id,legacy_max_attempts,legacy_retry_delay_seconds,escalation_interval_seconds,sms_escalation_interval_seconds,voice_escalation_interval_seconds,created_at) VALUES ('legacy-rule','tenant-a','Historical simulated rule',TRUE,'FIRE','SIMULATION','legacy-sms','legacy-voice',1,0,NULL,0,0,CURRENT_TIMESTAMP)");jdbc.update("INSERT INTO notification_rule_receivers(tenant_id,rule_id,contact_id,level,channel) VALUES ('tenant-a','legacy-rule',?,1,'SMS'),('tenant-a','legacy-rule',?,1,'VOICE')",legacyOnly.get("id").asText(),legacyOnly.get("id").asText());var listed=f.body(call(HttpMethod.GET,"/notification-rules","tenant-a",null,null));assertThat(listed.get("total").asLong()).isEqualTo(1);assertThat(listed.at("/items/0/id").asText()).isEqualTo(realRule.get("id").asText());assertThat(listed.toString()).doesNotContain("legacy_mode","legacy_sms_template_id","Historical simulated rule");
         String alarm=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,event_type,occurred_at,physical_state,response_state,conclusion,remark,revision,is_simulated,device_name,address) VALUES (?,'tenant-a','device-a','FIRE',CURRENT_TIMESTAMP,'FIRE','UNHANDLED',NULL,NULL,0,FALSE,'Reminder device','Reminder address')",alarm);
-        var client=org.mockito.Mockito.mock(AliyunNotificationClient.class);
-        org.mockito.Mockito.when(client.enabled()).thenReturn(true);
-        org.mockito.Mockito.when(client.voiceReady()).thenReturn(true);
-        org.mockito.Mockito.when(client.sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-sms","ACCEPTED","accepted"));
-        org.mockito.Mockito.when(client.sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "provider-voice","ACCEPTED","accepted"));
+        var client=new AliyunFixture(mock(AliyunNotificationClient.class));
         var resources=org.mockito.Mockito.mock(NotificationResourceService.class);
         var suppression=org.mockito.Mockito.mock(SuppressionCommands.class);
         org.mockito.Mockito.when(suppression.blocked("tenant-a", "device-a", true, alarm)).thenReturn(false);
-        var real=new RealNotificationService(jdbc,phones,client,resources,suppression,providerAttempts,providerService,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,org.mockito.Mockito.mock(AlarmSessionNotificationGate.class),org.mockito.Mockito.mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
+        var real=new RealNotificationService(jdbc,phones,client.client(),resources,suppression,providerAttempts,providerService,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,mock(AlarmSessionNotificationGate.class),mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
         var anchor=time.now().minusSeconds(1);
         assertThat(real.runDueReminder("tenant-a",alarm,1,anchor).lastAcceptedAt()).isNotNull();
         assertThat(real.runDueReminder("tenant-a",alarm,1,anchor).lastAcceptedAt()).isNotNull();
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(5)).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(5)).sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),times(5)).send(anyString(),anyString());
+        verify(client.voice(),times(5)).send(anyString(),anyString());
         assertThat(real.runDueReminder("tenant-a",alarm,2,time.now().minusSeconds(1)).lastAcceptedAt()).isNotNull();
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(10)).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(10)).sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),times(10)).send(anyString(),anyString());
+        verify(client.voice(),times(10)).send(anyString(),anyString());
         assertThat(jdbc.queryForList("SELECT DISTINCT occurrence_key FROM notification_provider_attempts WHERE alarm_id=? ORDER BY occurrence_key",String.class,alarm)).containsExactly("REMINDER:1","REMINDER:2");
     }
     @Test void authorizedContactOverviewIncludesRealRowsFromEveryGrantedUnitAndTreeSelectionNarrows()throws Exception{
@@ -143,14 +141,51 @@ class NotificationIntegrationTest {
         }
         for(String channel:List.of("SMS","VOICE"))call(HttpMethod.POST,"/notification-resources/recharge","tenant-a",UUID.randomUUID().toString(),Map.of("owner_type","ORGANIZATION","owner_id","tenant-a","channel",channel,"quantity",100,"reference","Isolated notification regression")).andExpect(status().isOk());
     }
-    AliyunNotificationClient initialNotificationClient() throws Exception {
+    void addReadyVoiceOnlyDevice() throws Exception {
+        jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,integration_state) "
+            + "VALUES ('device-ready','tenant-a','Ready device','fairness-fixture','legacy-model','Fixture address','NORMAL',FALSE,'LEGACY_UNVERIFIED')");
+        jdbc.update("UPDATE notification_rules SET scope_type='DEVICE',scope_device_id='device-a' WHERE tenant_id='tenant-a'");
+        String recipient=jdbc.queryForObject("SELECT id FROM notification_contacts WHERE tenant_id='tenant-a'",String.class);
+        for (String kind:List.of("FIRE","FAULT")) {
+            var input=ruleInput("Ready voice "+kind,List.of(Map.of("channel","VOICE","contact_id",recipient,"level",1)),0,0);
+            input.put("event_scope",kind);
+            input.put("scope_type","DEVICE");
+            input.put("scope_id","device-ready");
+            call(HttpMethod.POST,"/notification-rules","tenant-a",UUID.randomUUID().toString(),input).andExpect(status().isCreated());
+        }
+    }
+    record AliyunFixture(AliyunNotificationClient client, AliyunNotificationClient.PreparedSend sms,
+                         AliyunNotificationClient.PreparedSend voice) {
+        AliyunFixture(AliyunNotificationClient client) {
+            this(client,mock(AliyunNotificationClient.PreparedSend.class),mock(AliyunNotificationClient.PreparedSend.class));
+            smsReady(true);
+            voiceReady(true);
+            when(sms.send(anyString(),anyString())).thenReturn(accepted("sms-id"));
+            when(voice.send(anyString(),anyString())).thenReturn(accepted("voice-id"));
+        }
+
+        void smsReady(boolean ready) {
+            when(client.prepareSms(anyMap())).thenReturn(ready ? sms : AliyunNotificationClient.NotSent.SMS_NOT_CONFIGURED);
+        }
+
+        void voiceReady(boolean ready) {
+            when(client.prepareVoice(anyMap())).thenReturn(ready ? voice : AliyunNotificationClient.NotSent.VOICE_NOT_CONFIGURED);
+        }
+
+        private static AliyunNotificationClient.Result accepted(String id) {
+            return new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED,id,"OK","accepted");
+        }
+    }
+
+    AliyunFixture initialNotificationClient() throws Exception {
         initialNotificationFixtures();
-        var client=org.mockito.Mockito.mock(AliyunNotificationClient.class);
-        org.mockito.Mockito.when(client.enabled()).thenReturn(true);
-        org.mockito.Mockito.when(client.voiceReady()).thenReturn(true);
-        org.mockito.Mockito.when(client.sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "sms-id","OK","accepted"));
-        org.mockito.Mockito.when(client.sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "voice-id","OK","accepted"));
-        return client;
+        return new AliyunFixture(mock(AliyunNotificationClient.class));
+    }
+    RealNotificationService initialNotificationWorker(AliyunFixture client,java.nio.file.Path spool){
+        return initialNotificationWorker(client.client(),spool,time);
+    }
+    RealNotificationService initialNotificationWorker(AliyunFixture client,java.nio.file.Path spool,DatabaseTime workerTime){
+        return initialNotificationWorker(client.client(),spool,workerTime);
     }
     RealNotificationService initialNotificationWorker(AliyunNotificationClient client,java.nio.file.Path spool){
         return initialNotificationWorker(client,spool,time);
@@ -166,7 +201,10 @@ class NotificationIntegrationTest {
         return new com.fireplatform.configuration.RuntimeConfig(environment);
     }
     String initialNotificationEvent(String kind,OffsetDateTime occurred){
-        String id=UUID.randomUUID().toString();
+        return initialNotificationEvent(kind,occurred,UUID.randomUUID().toString());
+    }
+
+    String initialNotificationEvent(String kind,OffsetDateTime occurred,String id) {
         if("FIRE".equals(kind))jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,device_name,address,event_type,occurred_at,physical_state,response_state,is_simulated,source_time_known,platform_recorded_at) VALUES (?,'tenant-a','device-a','Late device','Address','FIRE',?,'FIRE','UNHANDLED',FALSE,TRUE,CURRENT_TIMESTAMP)",id,occurred);
         else{
             jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at,business_code) VALUES (?,'tenant-a','device-a','FAULT','FAULT','{}',?,CURRENT_TIMESTAMP,'LOW_BATTERY')",id,occurred);
@@ -206,6 +244,214 @@ class NotificationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id IN (?,?)",Long.class,fire,fault)).isEqualTo(4L);
         assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
         assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
+    }
+
+    @Test void enabledUnreadySmsKeepsEligibleFireAndFaultPendingWithoutReplayingHistory(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        client.smsReady(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var boundary=time.now().minusMinutes(10);
+            new NotificationSpool(spool.toString()).writeCursor(boundary);
+            String oldFire=initialNotificationEvent("FIRE",boundary.minusSeconds(1));
+            String oldFault=initialNotificationEvent("FAULT",boundary.minusSeconds(1));
+            String fire=initialNotificationEvent("FIRE",boundary.plusSeconds(1));
+            String fault=initialNotificationEvent("FAULT",boundary.plusSeconds(2));
+            String recovered=initialNotificationEvent("FIRE",boundary.plusSeconds(3));
+            String completed=initialNotificationEvent("FIRE",boundary.plusSeconds(4));
+            jdbc.update("INSERT INTO real_notification_completions(tenant_id,source_kind,source_id,completed_at) VALUES ('tenant-a','ALARM',?,CURRENT_TIMESTAMP)",completed);
+            var worker=initialNotificationWorker(client,spool);
+            worker.dispatchInitialAlarm("tenant-a",fire);
+            worker.poll();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id IN (?,?,?)",String.class,fire,fault,recovered))
+                .containsExactly("VOICE","VOICE","VOICE");
+            assertThat(jdbc.queryForList("SELECT source_id FROM real_notification_completions",String.class)).containsExactly(completed);
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind IN ('CONSUME','REFUND')",String.class))
+                .containsExactly("VOICE","VOICE","VOICE");
+
+            jdbc.update("UPDATE alarms SET physical_state='NORMAL' WHERE id=?",recovered);
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            client.smsReady(true);
+            var restarted=initialNotificationWorker(client,spool);
+            restarted.poll();
+            restarted.dispatchInitialAlarm("tenant-a",fire);
+            restarted.poll();
+            for (String source:List.of(fire,fault)) {
+                assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=? AND status='SENT'",String.class,source))
+                    .containsExactlyInAnyOrder("SMS","VOICE");
+            }
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id IN (?,?,?)",Long.class,oldFire,oldFault,completed)).isZero();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=?",String.class,recovered))
+                .containsExactly("VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM real_notification_completions",Long.class)).isEqualTo(4);
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind='CONSUME'",String.class))
+                .containsExactlyInAnyOrder("SMS","SMS","VOICE","VOICE","VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"FIRE","FAULT"})
+    void periodicScanReachesReadyChannelBeyondFullPendingPageAndReturnsToHeldRows(
+            String kind,@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        addReadyVoiceOnlyDevice();
+        client.smsReady(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var boundary=time.now().minusMinutes(10).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            var markers=new NotificationSpool(spool.toString());
+            markers.writeCursor(boundary);
+            for (int i=0;i<19;i++) initialNotificationEvent(kind,boundary.plusSeconds(1));
+            String held=initialNotificationEvent(kind,boundary.plusSeconds(2));
+            String ready,readyKind;
+            int heldCount=20;
+            if (kind.equals("FIRE")) {
+                ready=initialNotificationEvent(kind,boundary.plusSeconds(3));
+                readyKind="ALARM";
+                jdbc.update("UPDATE alarms SET device_id='device-ready' WHERE id=?",ready);
+            } else {
+                // A LEGACY_FAULT and RAW_FAULT can share ID and timestamp at the page boundary.
+                String source=f.sid(f.source("tenant-a",false));
+                rawFault(source,held,"SUBSCRIBED","{\"event_code\":\"LOW_BATTERY\"}",boundary.plusSeconds(2));
+                heldCount++;
+                ready=rawFault(source,"ready-fault","SUBSCRIBED","{\"event_code\":\"LOW_BATTERY\"}",boundary.plusSeconds(3));
+                readyKind="RAW_FAULT";
+                jdbc.update("UPDATE raw_messages SET device_id='device-ready' WHERE id=?",ready);
+            }
+            var worker=initialNotificationWorker(client,spool);
+            worker.poll();
+            assertThat(jdbc.queryForList("SELECT source_id FROM real_notification_completions",String.class)).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(20);
+            assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isZero();
+            worker.poll();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_kind=? AND source_id=? AND status='SENT'",String.class,readyKind,ready))
+                .containsExactly("VOICE");
+            assertThat(jdbc.queryForList("SELECT source_id FROM real_notification_completions",String.class)).containsExactly(ready);
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class))
+                .isEqualTo(heldCount+1);
+
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            client.smsReady(true);
+            worker.poll();
+            worker.poll();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM real_notification_completions",Long.class)).isEqualTo(heldCount+1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE status='SENT' AND channel='SMS'",Long.class)).isEqualTo(heldCount);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE status='SENT' AND channel='VOICE'",Long.class)).isEqualTo(heldCount+1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts",Long.class)).isEqualTo(2L*heldCount+1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME' AND channel='SMS'",Long.class)).isEqualTo(heldCount);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME' AND channel='VOICE'",Long.class)).isEqualTo(heldCount+1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+            assertThat(markers.cursor()).isEqualTo(boundary);
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"FIRE","FAULT"})
+    void periodicScanRevisitsHeldEntriesDespiteContinuallyRefilledTail(
+            String kind,@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        addReadyVoiceOnlyDevice();
+        client.smsReady(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var floor=time.now().minusMinutes(10).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            var markers=new NotificationSpool(spool.toString());
+            markers.writeCursor(floor);
+            var eventTime=floor.plusSeconds(1);
+            for (int i=0;i<20;i++) initialNotificationEvent(kind,eventTime,"held-"+i);
+            seedReadyTail(kind,eventTime,0);
+            var worker=initialNotificationWorker(client,spool);
+            worker.poll();
+            assertThat(acceptedInitialChannels("held-0")).containsExactly("VOICE");
+            assertThat(acceptedInitialChannels("ready-0-0")).isEmpty();
+            seedReadyTail(kind,eventTime,1);
+            worker.poll();
+            assertThat(acceptedInitialChannels("ready-0-0")).containsExactly("VOICE");
+            assertThat(acceptedInitialChannels("held-0")).containsExactly("VOICE");
+
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            client.smsReady(true);
+            seedReadyTail(kind,eventTime,2);
+            worker.poll();
+            assertThat(acceptedInitialChannels("held-0")).containsExactlyInAnyOrder("VOICE","SMS");
+            seedReadyTail(kind,eventTime,3);
+            worker.poll();
+            assertThat(acceptedInitialChannels("ready-1-0")).containsExactly("VOICE");
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(60);
+            assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(20);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE status='SENT'",Long.class)).isEqualTo(80);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME'",Long.class)).isEqualTo(80);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+            assertThat(markers.cursor()).isEqualTo(floor);
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    private void seedReadyTail(String kind,OffsetDateTime occurred,int batch) {
+        for (int i=0;i<20;i++) {
+            String id=initialNotificationEvent(kind,occurred,"ready-"+batch+"-"+i);
+            jdbc.update(kind.equals("FIRE") ? "UPDATE alarms SET device_id='device-ready' WHERE id=?"
+                : "UPDATE legacy_ingest_events SET device_id='device-ready' WHERE id=?",id);
+        }
+    }
+
+    private List<String> acceptedInitialChannels(String sourceId) {
+        return jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=? AND status='SENT'",String.class,sourceId);
+    }
+
+    @Test void unlocatedFireAndFaultUseUnknownLocationInBothVendorTemplatesWithoutChangingFacts(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        initialNotificationFixtures();
+        jdbc.update("UPDATE devices SET address='',place_id=NULL WHERE id='device-a'");
+        var boundary=time.now().minusMinutes(10);
+        new NotificationSpool(spool.toString()).writeCursor(boundary);
+        String fire=initialNotificationEvent("FIRE",boundary.plusSeconds(1));
+        jdbc.update("UPDATE alarms SET address='' WHERE id=?",fire);
+        String fault=initialNotificationEvent("FAULT",boundary.plusSeconds(2));
+        var requests=new CopyOnWriteArrayList<String>();
+        var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange->{
+            String query=java.net.URLDecoder.decode(exchange.getRequestURI().getRawQuery(),java.nio.charset.StandardCharsets.UTF_8);
+            requests.add(query);
+            try(exchange) {
+                byte[] reply=(query.contains("Action=SendSms")?"{\"Code\":\"OK\",\"BizId\":\"sms\"}":"{\"Code\":\"OK\",\"CallId\":\"voice\"}")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,reply.length);
+                exchange.getResponseBody().write(reply);
+            }
+        });
+        server.start();
+        try {
+            String endpoint="http://127.0.0.1:"+server.getAddress().getPort()+"/";
+            var client=new AliyunNotificationClient("fixture","synthetic","fixture","SMS_TEST","TTS_TEST","",endpoint,endpoint,5000,8000);
+            client.apply(new AliyunNotificationClient.Config("fixture","synthetic","fixture","SMS_TEST","TTS_TEST","",endpoint,endpoint,
+                Map.of("smsLocation","address","kind","event"),Map.of("ttsLocation","address","kind","event")));
+            var worker=initialNotificationWorker(client,spool);
+            worker.dispatchInitialAlarm("tenant-a",fire);
+            worker.poll();
+            worker.poll();
+            for (String kind:List.of("火灾报警","设备故障")) {
+                assertThat(requests).anyMatch(query->query.contains("TemplateParam={\"kind\":\""+kind+"\",\"smsLocation\":\"位置未知\"}"));
+                assertThat(requests).anyMatch(query->query.contains("TtsParam={\"kind\":\""+kind+"\",\"ttsLocation\":\"位置未知\"}"));
+            }
+            assertThat(requests).hasSize(4);
+            assertThat(jdbc.queryForList("SELECT status FROM notification_provider_attempts WHERE source_id IN (?,?)",String.class,fire,fault))
+                .containsExactly("SENT","SENT","SENT","SENT");
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind='CONSUME'",String.class))
+                .containsExactlyInAnyOrder("SMS","SMS","VOICE","VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT address FROM alarms WHERE id=?",String.class,fire)).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT address FROM devices WHERE id='device-a'",String.class)).isEmpty();
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test void scopedRecipientRulesShareTheEffectivePreviewAndRealFireDispatch(
@@ -259,8 +505,7 @@ class NotificationIntegrationTest {
         worker.poll();worker.poll();
 
         for(String code:List.of("LOW_BATTERY","SENSOR_FAULT")){
-            org.mockito.Mockito.verify(client).sendSms(org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.argThat(p->code.equals(p.get("event_code"))),org.mockito.ArgumentMatchers.anyString());
+            verify(client.client()).prepareSms(argThat(p->code.equals(p.get("event_code"))));
         }
         assertThat(jdbc.queryForList("SELECT source_id FROM notification_provider_attempts WHERE tenant_id='tenant-a' AND channel='SMS'",String.class))
             .containsExactlyInAnyOrder(raw,legacy).doesNotContain(excluded,missing);
@@ -394,8 +639,8 @@ class NotificationIntegrationTest {
         String id=initialNotificationEvent("FIRE",time.now().minusMinutes(1));
         var worker=initialNotificationWorker(client,spool);
         worker.dispatchInitialAlarm("tenant-a",id);
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),never()).send(anyString(),anyString());
+        verify(client.voice(),never()).send(anyString(),anyString());
         assertThat(jdbc.queryForList("SELECT channel,status,provider_code FROM notification_provider_attempts WHERE source_id=? ORDER BY channel",id)).extracting(row->row.get("channel")+":"+row.get("status")+":"+row.get("provider_code")).containsExactly("SMS:RESOURCE_UNAVAILABLE:NOTIFICATION_RESOURCE_UNAVAILABLE","VOICE:RESOURCE_UNAVAILABLE:NOTIFICATION_RESOURCE_UNAVAILABLE");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE tenant_id='tenant-a'",Long.class)).isZero();
         worker.poll();
@@ -403,7 +648,7 @@ class NotificationIntegrationTest {
     }
     @Test void definiteProviderRejectionRefundsTheChannelAndDoesNotBlockTheOther(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
-        org.mockito.Mockito.when(client.sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED, null,"isv.BUSINESS_LIMIT_CONTROL","rejected"));
+        when(client.sms().send(anyString(),anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.REJECTED,null,"isv.BUSINESS_LIMIT_CONTROL","rejected"));
         new NotificationSpool(spool.toString()).writeCursor(time.now().minusMinutes(10));
         String id=initialNotificationEvent("FIRE",time.now().minusMinutes(1));
         var worker=initialNotificationWorker(client,spool);
@@ -432,7 +677,7 @@ class NotificationIntegrationTest {
     }
     @Test void disabledSmsDoesNotReserveCreditWhileVoiceCanNotifyIndependently(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
-        org.mockito.Mockito.when(client.enabled()).thenReturn(false);
+        client.smsReady(false);
         var start=time.now().minusMinutes(10);
         new NotificationSpool(spool.toString()).writeCursor(start);
         String id=initialNotificationEvent("FIRE",start.plusMinutes(1));
@@ -442,19 +687,19 @@ class NotificationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE tenant_id='tenant-a' AND channel='SMS' AND kind IN ('CONSUME','REFUND')",Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id=? AND channel='SMS' AND status='RESOURCE_UNAVAILABLE' AND provider_code='SMS_PROVIDER_NOT_READY'",Long.class,id)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id=? AND channel='VOICE' AND status='SENT'",Long.class,id)).isEqualTo(1L);
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),never()).send(anyString(),anyString());
     }
     @Test void testRecipientOverrideKeepsRealFireAndFaultRuleEligibility(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
         var recipient=org.mockito.Mockito.mock(NotificationProviderService.class);
-        org.mockito.Mockito.when(recipient.testRecipient()).thenReturn("+8613900001234");
+        org.mockito.Mockito.when(recipient.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,"+8613900001234"));
         var markers=new NotificationSpool(spool.toString());markers.writeCursor(time.now().minusMinutes(2));
         for(String kind:List.of("FIRE","FAULT")) {
             var second=contact("Second "+kind+" level",kind.equals("FIRE")?"13800001239":"13800001240");
             String ruleId=jdbc.queryForObject("SELECT id FROM notification_rules WHERE tenant_id='tenant-a' AND name=? AND event_scope=?",String.class,kind+" initial notification",kind);
             for(String channel:List.of("SMS","VOICE","WECHAT"))jdbc.update("INSERT INTO notification_rule_receivers(tenant_id,rule_id,contact_id,level,channel) VALUES ('tenant-a',?,?,2,?)",ruleId,second.path("id").asText(),channel);
         }
-        var worker=new RealNotificationService(jdbc,phones,client,realResources,org.mockito.Mockito.mock(SuppressionCommands.class),providerAttempts,recipient,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,org.mockito.Mockito.mock(AlarmSessionNotificationGate.class),org.mockito.Mockito.mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
+        var worker=new RealNotificationService(jdbc,phones,client.client(),realResources,mock(SuppressionCommands.class),providerAttempts,recipient,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,mock(AlarmSessionNotificationGate.class),mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
         for(String kind:List.of("FIRE","FAULT")) {
             String id=initialNotificationEvent(kind,time.now().minusMinutes(1));
             // Production routes an immediate alarm insert through dispatchInitialAlarm, while FAULT sources are only consumed by poll().
@@ -466,22 +711,22 @@ class NotificationIntegrationTest {
         }
         assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(4L);
         assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(4L);
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(4)).sendSms(org.mockito.ArgumentMatchers.eq("+8613900001234"),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(4)).sendVoice(org.mockito.ArgumentMatchers.eq("+8613900001234"),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),times(4)).send(eq("+8613900001234"),anyString());
+        verify(client.voice(),times(4)).send(eq("+8613900001234"),anyString());
     }
     @Test void testRecipientOverrideDoesNotCreateEligibilityWithoutARealContact(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
         var recipient=org.mockito.Mockito.mock(NotificationProviderService.class);
-        org.mockito.Mockito.when(recipient.testRecipient()).thenReturn("+8613900001234");
+        org.mockito.Mockito.when(recipient.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,"+8613900001234"));
         jdbc.update("UPDATE notification_rules SET enabled=FALSE");
         String id=initialNotificationEvent("FAULT",time.now().minusMinutes(1));
         var markers=new NotificationSpool(spool.toString());markers.writeCursor(time.now().minusMinutes(2));
-        var worker=new RealNotificationService(jdbc,phones,client,realResources,org.mockito.Mockito.mock(SuppressionCommands.class),providerAttempts,recipient,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,org.mockito.Mockito.mock(AlarmSessionNotificationGate.class),org.mockito.Mockito.mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
+        var worker=new RealNotificationService(jdbc,phones,client.client(),realResources,mock(SuppressionCommands.class),providerAttempts,recipient,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,mock(AlarmSessionNotificationGate.class),mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());
         // FAULT has no alarm row, so its only real consumer is the poller; dispatchInitialAlarm would make this assertion vacuous.
         worker.poll();
         assertThat(providerAttempts.list("tenant-a",1,20).items()).noneMatch(attempt->id.equals(attempt.sourceId()));
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString());
+        verify(client.sms(),never()).send(anyString(),anyString());
+        verify(client.voice(),never()).send(anyString(),anyString());
     }
 
     @Test void sameTimeFireAndFaultBatchesBeyondOnePageAreNotLostOrChargedAgain(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
@@ -500,12 +745,15 @@ class NotificationIntegrationTest {
         String fault=UUID.randomUUID().toString();var occurred=time.now().minusSeconds(10);
         jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at,business_code) VALUES (?,'tenant-a','device-a','FAULT','FAULT','{}',?,?,'LOW_BATTERY')",fault,occurred,occurred);
         jdbc.update("INSERT INTO alarm_configuration_outcomes(id,tenant_id,source_kind,source_id,event_type,configuration_revision,outcome_kind,outcome,detail_json,occurred_at) VALUES (?,'tenant-a','LEGACY_FAULT',?,'LOW_BATTERY',1,'SUBSCRIPTION','SUBSCRIBED','{}',?)",UUID.randomUUID().toString(),fault,occurred);
-        var client=org.mockito.Mockito.mock(AliyunNotificationClient.class);org.mockito.Mockito.when(client.enabled()).thenReturn(true);org.mockito.Mockito.when(client.voiceReady()).thenReturn(true);org.mockito.Mockito.when(client.sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenThrow(new IllegalStateException("provider result unknown"));org.mockito.Mockito.when(client.sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyMap(),org.mockito.ArgumentMatchers.anyString())).thenReturn(new AliyunNotificationClient.Result(AliyunNotificationClient.Result.Outcome.ACCEPTED, "voice-id","ACCEPTED","provider-accepted"));
+        var client=new AliyunFixture(mock(AliyunNotificationClient.class));
+        when(client.sms().send(anyString(),anyString())).thenThrow(new IllegalStateException("provider result unknown"));
         var resources=org.mockito.Mockito.mock(NotificationResourceService.class);org.mockito.Mockito.when(resources.reserve("tenant-a","device-a","SMS")).thenReturn(new NotificationResourceService.Reservation("account-a","SMS","tenant-a"));org.mockito.Mockito.when(resources.reserve("tenant-a","device-a","VOICE")).thenReturn(new NotificationResourceService.Reservation("account-a","VOICE","tenant-a"));
         var suppression=org.mockito.Mockito.mock(SuppressionCommands.class);org.mockito.Mockito.when(suppression.blocked("tenant-a","device-a",false,fault)).thenReturn(false);
-        var worker=new RealNotificationService(jdbc,phones,client,resources,suppression,providerAttempts,providerService,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,org.mockito.Mockito.mock(AlarmSessionNotificationGate.class),org.mockito.Mockito.mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());var markers=new NotificationSpool(spool.toString());markers.writeCursor(occurred.minusSeconds(1));worker.poll();worker.poll();
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(1)).sendSms(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.argThat(params->"LOW_BATTERY".equals(params.get("event_code"))&&"FAULT".equals(params.get("event_kind"))&&!params.containsKey("alarm_id")),org.mockito.ArgumentMatchers.anyString());
-        org.mockito.Mockito.verify(client,org.mockito.Mockito.times(1)).sendVoice(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.argThat(params->"LOW_BATTERY".equals(params.get("event_code"))&&"FAULT".equals(params.get("event_kind"))&&!params.containsKey("alarm_id")),org.mockito.ArgumentMatchers.anyString());
+        var worker=new RealNotificationService(jdbc,phones,client.client(),resources,suppression,providerAttempts,providerService,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,mock(AlarmSessionNotificationGate.class),mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),notificationRuntime());var markers=new NotificationSpool(spool.toString());markers.writeCursor(occurred.minusSeconds(1));worker.poll();worker.poll();
+        verify(client.client()).prepareSms(argThat(p->"LOW_BATTERY".equals(p.get("event_code"))&&"FAULT".equals(p.get("event_kind"))&&!p.containsKey("alarm_id")));
+        verify(client.client()).prepareVoice(argThat(p->"LOW_BATTERY".equals(p.get("event_code"))&&"FAULT".equals(p.get("event_kind"))&&!p.containsKey("alarm_id")));
+        verify(client.sms()).send(anyString(),anyString());
+        verify(client.voice()).send(anyString(),anyString());
         var attempts=providerAttempts.list("tenant-a",1,20).items();assertThat(attempts).hasSize(2);assertThat(attempts).allSatisfy(attempt->{assertThat(attempt.eventKind()).isEqualTo("FAULT");assertThat(attempt.sourceKind()).isEqualTo("LEGACY_FAULT");assertThat(attempt.sourceId()).isEqualTo(fault);assertThat(attempt.alarmId()).isNull();});assertThat(attempts).extracting(NotificationProviderAttemptService.Attempt::status).containsExactlyInAnyOrder("UNKNOWN","SENT");
         assertThat(jdbc.queryForObject("SELECT kind FROM legacy_ingest_events WHERE id=?",String.class,fault)).isEqualTo("FAULT");
     }

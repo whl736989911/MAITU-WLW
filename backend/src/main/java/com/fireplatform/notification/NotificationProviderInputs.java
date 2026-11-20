@@ -1,5 +1,6 @@
 package com.fireplatform.notification;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fireplatform.notification.NotificationInputs.*;
 
@@ -11,6 +12,10 @@ public final class NotificationProviderInputs {
                            @JsonDeserialize(using=TextOnly.class) String smsTemplateCode,
                            @JsonDeserialize(using=TextOnly.class) String ttsCode,
                            @JsonDeserialize(using=TextOnly.class) String ttsCalledShowNumber,
+                           JsonNode smsTemplateVariables,
+                           JsonNode voiceTemplateVariables,
+                           @JsonDeserialize(using=BooleanOnly.class) Boolean smsTemplateVariablesConfirmed,
+                           @JsonDeserialize(using=BooleanOnly.class) Boolean voiceTemplateVariablesConfirmed,
                            @JsonDeserialize(using=TextOnly.class) String smsEndpoint,
                            @JsonDeserialize(using=TextOnly.class) String voiceEndpoint,
                            @JsonDeserialize(using=TextOnly.class) String accessKeyId,
