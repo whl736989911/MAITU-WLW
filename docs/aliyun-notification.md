@@ -6,9 +6,9 @@
 
 发送总开关 `fire.notification.real-enabled` 默认 `false`。阿里云凭据、签名和模板可从 `fire.notification.aliyun.*` 配置；通知 provider 配置也由全局管理 API 持久化，读取/更新端点为 `GET/PUT /api/management/notification-provider`，状态端点为 `/status`。该配置需 `notification-config:read` / `notification-config:write` 管理权限，不能带 `X-Tenant-Id`；密钥存储密钥须由部署方安全提供。敏感配置仅保留掩码展示，禁止打印或提交任何凭据。
 
-在“通知通道”为短信、语音分别填写已审核模板的实际变量名。变量映射是 JSON 对象：如供应商模板有 `${deviceName}`，填写 `{"deviceName":"device_name"}`；值可选 `device_name`（设备名）、`address`（位置）、`alarmTime`（时间）、`event`（事件名）。无变量模板填写 `{}`。变更模板时须按新模板重新核对，数量与大小写都要一致。只向供应商发送声明的变量、不会发送其他事件字段。
+在“通知通道”为短信、语音分别填写已审核模板的实际变量名。变量映射是 JSON 对象：如供应商模板有 `${deviceName}`，填写 `{"deviceName":"device_name"}`；值可选 `device_name`（设备名）、`address`（位置）、`alarmTime`（时间）、`event`（事件名）。无变量模板填写 `{}`。首次核对或变更模板 ID 时，即使变量相同，也须勾选该通道的确认项。只有映射声明的变量会发给供应商，数量及大小写须匹配模板。
 
-升级 V96 保留原有模板、开关、凭据和历史回执，新增映射起初为空；空对象 `{}` 仅用于核对过的无变量模板。切换时保留原数据库和通知 spool（含 cursor、通道标记）；在通知 worker 接管前核对映射，并在 `/status` 确认每个启用通道均就绪。未获授权不要使用真实测试发送。
+升级 V96 保留原有模板、开关、凭据和历史回执，两张映射起初均为 `null`（未核验，不等于无变量）。允许在关闭通道时暂存新模板；API 调用方首次核验或更换模板 ID 并保存映射时，须对应传 `sms_template_variables_confirmed: true` 或 `voice_template_variables_confirmed: true`。同一模板省略映射则保留已验值，显式 `null` 则清除，未核验不能启用。切换时保留原数据库和通知 spool（含 cursor、通道标记）；在通知 worker 接管前核对映射，并在 `/status` 确认每个启用通道均就绪。未获授权不要使用真实测试发送。
 
 如果已接管但某个已启用通道尚未就绪，当前符合发送条件的该通道留待后续扫描：不外发、不新增尝试、不扣量、不因未就绪结案。已就绪通道可以发送，旧事件等待期间不阻塞扫描推进到后面的候选。
 
