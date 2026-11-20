@@ -208,6 +208,101 @@ class NotificationIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(2L);
     }
 
+    @Test void enabledUnreadySmsKeepsEligibleFireAndFaultPendingWithoutReplayingHistory(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        org.mockito.Mockito.when(client.enabled()).thenReturn(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var boundary=time.now().minusMinutes(10);
+            new NotificationSpool(spool.toString()).writeCursor(boundary);
+            String oldFire=initialNotificationEvent("FIRE",boundary.minusSeconds(1));
+            String oldFault=initialNotificationEvent("FAULT",boundary.minusSeconds(1));
+            String fire=initialNotificationEvent("FIRE",boundary.plusSeconds(1));
+            String fault=initialNotificationEvent("FAULT",boundary.plusSeconds(2));
+            String recovered=initialNotificationEvent("FIRE",boundary.plusSeconds(3));
+            String completed=initialNotificationEvent("FIRE",boundary.plusSeconds(4));
+            jdbc.update("INSERT INTO real_notification_completions(tenant_id,source_kind,source_id,completed_at) VALUES ('tenant-a','ALARM',?,CURRENT_TIMESTAMP)",completed);
+            var worker=initialNotificationWorker(client,spool);
+            worker.dispatchInitialAlarm("tenant-a",fire);
+            worker.poll();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id IN (?,?,?)",String.class,fire,fault,recovered))
+                .containsExactly("VOICE","VOICE","VOICE");
+            assertThat(jdbc.queryForList("SELECT source_id FROM real_notification_completions",String.class)).containsExactly(completed);
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind IN ('CONSUME','REFUND')",String.class))
+                .containsExactly("VOICE","VOICE","VOICE");
+
+            jdbc.update("UPDATE alarms SET physical_state='NORMAL' WHERE id=?",recovered);
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            org.mockito.Mockito.when(client.enabled()).thenReturn(true);
+            var restarted=initialNotificationWorker(client,spool);
+            restarted.poll();
+            restarted.dispatchInitialAlarm("tenant-a",fire);
+            restarted.poll();
+            for (String source:List.of(fire,fault)) {
+                assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=? AND status='SENT'",String.class,source))
+                    .containsExactlyInAnyOrder("SMS","VOICE");
+            }
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE source_id IN (?,?,?)",Long.class,oldFire,oldFault,completed)).isZero();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=?",String.class,recovered))
+                .containsExactly("VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM real_notification_completions",Long.class)).isEqualTo(4);
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind='CONSUME'",String.class))
+                .containsExactlyInAnyOrder("SMS","SMS","VOICE","VOICE","VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    @Test void unlocatedFireAndFaultUseUnknownLocationInBothVendorTemplatesWithoutChangingFacts(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        initialNotificationFixtures();
+        jdbc.update("UPDATE devices SET address='',place_id=NULL WHERE id='device-a'");
+        var boundary=time.now().minusMinutes(10);
+        new NotificationSpool(spool.toString()).writeCursor(boundary);
+        String fire=initialNotificationEvent("FIRE",boundary.plusSeconds(1));
+        jdbc.update("UPDATE alarms SET address='' WHERE id=?",fire);
+        String fault=initialNotificationEvent("FAULT",boundary.plusSeconds(2));
+        var requests=new CopyOnWriteArrayList<String>();
+        var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",exchange->{
+            String query=java.net.URLDecoder.decode(exchange.getRequestURI().getRawQuery(),java.nio.charset.StandardCharsets.UTF_8);
+            requests.add(query);
+            try(exchange) {
+                byte[] reply=(query.contains("Action=SendSms")?"{\"Code\":\"OK\",\"BizId\":\"sms\"}":"{\"Code\":\"OK\",\"CallId\":\"voice\"}")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200,reply.length);
+                exchange.getResponseBody().write(reply);
+            }
+        });
+        server.start();
+        try {
+            String endpoint="http://127.0.0.1:"+server.getAddress().getPort()+"/";
+            var client=new AliyunNotificationClient("fixture","synthetic","fixture","SMS_TEST","TTS_TEST","",endpoint,endpoint,5000,8000);
+            client.apply(new AliyunNotificationClient.Config("fixture","synthetic","fixture","SMS_TEST","TTS_TEST","",endpoint,endpoint,
+                Map.of("smsLocation","address","kind","event"),Map.of("ttsLocation","address","kind","event")));
+            var worker=initialNotificationWorker(client,spool);
+            worker.dispatchInitialAlarm("tenant-a",fire);
+            worker.poll();
+            worker.poll();
+            for (String kind:List.of("火灾报警","设备故障")) {
+                assertThat(requests).anyMatch(query->query.contains("TemplateParam={\"kind\":\""+kind+"\",\"smsLocation\":\"位置未知\"}"));
+                assertThat(requests).anyMatch(query->query.contains("TtsParam={\"kind\":\""+kind+"\",\"ttsLocation\":\"位置未知\"}"));
+            }
+            assertThat(requests).hasSize(4);
+            assertThat(jdbc.queryForList("SELECT status FROM notification_provider_attempts WHERE source_id IN (?,?)",String.class,fire,fault))
+                .containsExactly("SENT","SENT","SENT","SENT");
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_resource_ledger WHERE kind='CONSUME'",String.class))
+                .containsExactlyInAnyOrder("SMS","SMS","VOICE","VOICE");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT address FROM alarms WHERE id=?",String.class,fire)).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT address FROM devices WHERE id='device-a'",String.class)).isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test void scopedRecipientRulesShareTheEffectivePreviewAndRealFireDispatch(
             @org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
         var client = initialNotificationClient();
@@ -447,7 +542,7 @@ class NotificationIntegrationTest {
     @Test void testRecipientOverrideKeepsRealFireAndFaultRuleEligibility(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
         var recipient=org.mockito.Mockito.mock(NotificationProviderService.class);
-        org.mockito.Mockito.when(recipient.testRecipient()).thenReturn("+8613900001234");
+        org.mockito.Mockito.when(recipient.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,"+8613900001234"));
         var markers=new NotificationSpool(spool.toString());markers.writeCursor(time.now().minusMinutes(2));
         for(String kind:List.of("FIRE","FAULT")) {
             var second=contact("Second "+kind+" level",kind.equals("FIRE")?"13800001239":"13800001240");
@@ -472,7 +567,7 @@ class NotificationIntegrationTest {
     @Test void testRecipientOverrideDoesNotCreateEligibilityWithoutARealContact(@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool)throws Exception{
         var client=initialNotificationClient();
         var recipient=org.mockito.Mockito.mock(NotificationProviderService.class);
-        org.mockito.Mockito.when(recipient.testRecipient()).thenReturn("+8613900001234");
+        org.mockito.Mockito.when(recipient.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,"+8613900001234"));
         jdbc.update("UPDATE notification_rules SET enabled=FALSE");
         String id=initialNotificationEvent("FAULT",time.now().minusMinutes(1));
         var markers=new NotificationSpool(spool.toString());markers.writeCursor(time.now().minusMinutes(2));

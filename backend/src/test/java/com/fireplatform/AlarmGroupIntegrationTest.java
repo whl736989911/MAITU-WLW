@@ -80,6 +80,7 @@ class AlarmGroupIntegrationTest {
         var suppressions=mock(SuppressionCommands.class);
         when(suppressions.blocked(anyString(),anyString(),anyBoolean(),anyString())).thenReturn(false);
         var provider=mock(NotificationProviderService.class);
+        when(provider.dispatchSettings()).thenReturn(new NotificationProviderService.DispatchSettings(true,true,null));
         return new RealNotificationService(jdbc,phones,client,resources,suppressions,attempts,provider,baseConfiguration,channelPolicies,time,new NotificationSpool(spool.toString()),true,gate,mock(com.fireplatform.notification.officialaccount.WechatOfficialAccountChannel.class),NotificationIntegrationTest.notificationRuntime());
     }
     AliyunNotificationClient successClient() {

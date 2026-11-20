@@ -133,7 +133,7 @@ class NotificationResourceTest {
         var configured=body(call(HttpMethod.PUT,"/api/management/notification-provider",root,null,null,providerBody()).andExpect(status().isOk()));
         assertThat(configured.get("test_mode_enabled").asBoolean()).isTrue();
         assertThat(configured.get("test_phone_masked").asText()).endsWith("2408");
-        assertThat(providers.testRecipient()).isEqualTo("+8618896992408");
+        assertThat(providers.dispatchSettings().testRecipient()).isEqualTo("+8618896992408");
         var attempt=attempts.begin("tenant-a","FIRE","ALARM","alarm-a","device-a","contact-a","SMS","INITIAL",1,null,null);
         assertThat(attempts.latest("tenant-a","FIRE","ALARM","alarm-a","contact-a","SMS","INITIAL").status()).isEqualTo("PENDING");
         attempts.finish(attempt.id(),"SENT","OK","provider-1");

@@ -151,7 +151,8 @@ public class RealNotificationService {
         if(!baseConfiguration.effectiveForDevice(tenant,deviceId,eventKind).subscribed(deviceModel,eventCode)) {
             spool.markDead(occurrenceKey,spoolId,"DEVICE","SUPPRESSED","NOTIFICATION_SUBSCRIPTION_DISABLED",null);return true;
         }
-        String testPhone=provider.testRecipient();
+        var providerSettings=provider.dispatchSettings();
+        String testPhone=providerSettings.testRecipient();
         var contacts=NotificationRecipients.resolve(jdbc,tenant,deviceId,eventKind);
         OffsetDateTime scheduleAnchor=cycleStartedAt!=null?cycleStartedAt:(alarm.get("occurred_at") instanceof OffsetDateTime occurredAt?occurredAt:null);
         Map<String,String> params=paramsFor(alarm,fire,eventCode);
@@ -230,7 +231,6 @@ public class RealNotificationService {
             else try { phone=phones.reveal(tenant,contact.phoneCipher(),contact.phoneNonce()); }
             catch(RuntimeException error) { spool.markDead(occurrenceKey,spoolId,contactId,"DECRYPT","PHONE_UNAVAILABLE",null);continue; }
             if("SMS".equals(channel)||"VOICE".equals(channel)) {
-                if(channel.equals("SMS")?!client.enabled():!client.voiceReady()){String code=channel+"_PROVIDER_NOT_READY";if(attempts.latest(tenant,eventKind,sourceKind,sourceId,contactId,channel,occurrenceKey)==null){var unavailable=attempts.begin(tenant,eventKind,sourceKind,sourceId,deviceId,contactId,channel,occurrenceKey,1,null,null);attempts.finish(unavailable.id(),"RESOURCE_UNAVAILABLE",code,null);}spool.markDead(occurrenceKey,spoolId,contactId,channel,code,null);continue;}
                 String sendAlarmId=sourceId;
                 if(mergeSession!=null) {
                     // Re-resolve immediately before external work: the first member may recover while another stays active.
@@ -245,6 +245,21 @@ public class RealNotificationService {
                 if(suppressions.blocked(tenant,deviceId,fire,sendAlarmId)||!delivery.enabled()||!delivery.receiveAlarm()||("SMS".equals(channel)&&!delivery.pushMessage())||!policy.enabled()){spool.markDead(occurrenceKey,spoolId,contactId,channel,"NOTIFICATION_POLICY_DISABLED",null);continue;}
                 String key=initial?spoolId+"__"+contactId+"__"+channel:spoolId+"__"+occurrenceKey.replace(':','_')+"__"+contactId+"__"+channel;
                 if(spool.isDone(occurrenceKey,spoolId,contactId,channel)||spool.isDead(occurrenceKey,spoolId,contactId,channel))continue;
+                boolean sms=channel.equals("SMS");
+                if(sms?!client.enabled():!client.voiceReady()) {
+                    if(sms?providerSettings.smsEnabled():providerSettings.voiceEnabled()) {
+                        // Stay in the existing scan window, without claiming a send or moving the completion boundary.
+                        pending=true;
+                        continue;
+                    }
+                    String code=channel+"_PROVIDER_NOT_READY";
+                    if(attempts.latest(tenant,eventKind,sourceKind,sourceId,contactId,channel,occurrenceKey)==null) {
+                        var unavailable=attempts.begin(tenant,eventKind,sourceKind,sourceId,deviceId,contactId,channel,occurrenceKey,1,null,null);
+                        attempts.finish(unavailable.id(),"RESOURCE_UNAVAILABLE",code,null);
+                    }
+                    spool.markDead(occurrenceKey,spoolId,contactId,channel,code,null);
+                    continue;
+                }
                 int nextAttempt=1;String claimId=null;
                 if(mergeSession!=null) {
                     var decision=merge.claim(tenant,mergeSession,occurrenceKey,contact.ruleId(),contactId,channel,level,sendAlarmId,NotificationProviderAttemptService.MAX_ATTEMPTS);
@@ -298,6 +313,7 @@ public class RealNotificationService {
     private static Map<String,String> paramsFor(Map<String,Object> alarm,boolean fire,String eventCode) {
         Map<String,String> params=new LinkedHashMap<>();
         String deviceName=Objects.toString(alarm.get("device_name"),null),address=Objects.toString(alarm.get("address"),null);
+        if(address==null||address.isBlank()) address="位置未知";
         Object occurred=alarm.get("occurred_at");
         String alarmTime=occurred instanceof OffsetDateTime time?DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai")).format(time):Objects.toString(occurred,null);
         if(fire&&(Boolean.FALSE.equals(alarm.get("source_time_known"))||"false".equalsIgnoreCase(String.valueOf(alarm.get("source_time_known"))))) alarmTime="来源时间未知";

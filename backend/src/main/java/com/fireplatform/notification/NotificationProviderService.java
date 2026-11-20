@@ -137,12 +137,16 @@ public class NotificationProviderService {
             row.smsVariables(),row.voiceVariables(),mask(row.accessKeyId()),row.secretCipher()!=null&&row.secretNonce()!=null,
             row.testModeEnabled(),row.testPhoneMasked(),row.revision(),row.updatedAt());
     }
-    /** Internal real-send override. Returns null when test mode is off; never expose the plain phone through an API. */
-    public String testRecipient() {
+    /** Real-dispatch settings stay internal; never expose the plain test number through an API. */
+    public record DispatchSettings(boolean smsEnabled,boolean voiceEnabled,String testRecipient) { }
+    public DispatchSettings dispatchSettings() {
         var row=row();
-        if(!row.testModeEnabled() || row.testPhoneCipher()==null || row.testPhoneNonce()==null) return null;
-        if(!secrets.ready()) throw new ApiError(503,"PROVIDER_SECRET_STORAGE_UNAVAILABLE","测试接收号码密钥存储未配置");
-        return secrets.reveal(row.testPhoneCipher(),row.testPhoneNonce());
+        String recipient=null;
+        if(row.testModeEnabled() && row.testPhoneCipher()!=null && row.testPhoneNonce()!=null) {
+            if(!secrets.ready()) throw new ApiError(503,"PROVIDER_SECRET_STORAGE_UNAVAILABLE","测试接收号码密钥存储未配置");
+            recipient=secrets.reveal(row.testPhoneCipher(),row.testPhoneNonce());
+        }
+        return new DispatchSettings(row.smsEnabled(),row.voiceEnabled(),recipient);
     }
     private synchronized void publish(long revision, AliyunNotificationClient.Config config) {
         if (revision <= appliedRevision) return;
