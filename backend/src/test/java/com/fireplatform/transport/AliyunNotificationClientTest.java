@@ -26,15 +26,21 @@ class AliyunNotificationClientTest {
         server.start();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
-            var client = new AliyunNotificationClient("ak", "secret", "测试签名", "SMS_1", "TTS_1", "0571", base + "/sms", base + "/voice", HttpClient.newHttpClient());
+            var client = new AliyunNotificationClient(new AliyunNotificationClient.Config("ak", "secret", "测试签名", "SMS_1",
+                "TTS_1", "0571", base + "/sms", base + "/voice", Map.of("name","device_name"), Map.of("loc","address")),
+                HttpClient.newHttpClient(), Duration.ofSeconds(8));
             var sms = client.sendSms("+8613800000000", Map.of("device_name", "烟感", "address", "1号楼"), null);
             assertThat(sms.success()).isTrue();
             assertThat(sms.providerId()).isEqualTo("biz-1");
             assertThat(captured.get(0)).contains("Action=SendSms", "Signature=", "PhoneNumbers=%2B8613800000000");
-            var voice = client.sendVoice("+8613800000000", Map.of("device_name", "烟感"), null);
+            assertThat(java.net.URLDecoder.decode(captured.get(0), StandardCharsets.UTF_8)).contains("TemplateParam={\"name\":\"烟感\"}").doesNotContain("1号楼");
+            var voice = client.sendVoice("+8613800000000", Map.of("device_name", "烟感", "address", "1号楼"), null);
             assertThat(voice.success()).isTrue();
             assertThat(voice.providerId()).isEqualTo("call-1");
             assertThat(captured.get(1)).contains("Action=SingleCallByTts", "TtsCode=TTS_1", "Signature=");
+            assertThat(java.net.URLDecoder.decode(captured.get(1), StandardCharsets.UTF_8)).contains("TtsParam={\"loc\":\"1号楼\"}").doesNotContain("烟感");
+            assertThat(client.sendVoice("+8613800000000", Map.of("device_name", "烟感"), null).code()).isEqualTo("TEMPLATE_VARIABLE_MISSING");
+            assertThat(captured).hasSize(2);
         } finally {
             server.stop(0);
         }
@@ -58,7 +64,9 @@ class AliyunNotificationClientTest {
         server.start();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
-            var client = new AliyunNotificationClient("ak", "secret", "测试签名", "SMS_1", "TTS_1", "0571", base + "/sms", base + "/voice", HttpClient.newHttpClient());
+            var client = new AliyunNotificationClient(new AliyunNotificationClient.Config("ak", "secret", "测试签名", "SMS_1",
+                "TTS_1", "0571", base + "/sms", base + "/voice", Map.of(), Map.of()),
+                HttpClient.newHttpClient(), Duration.ofSeconds(8));
             assertThat(client.accountFingerprint()).hasSize(64);
             assertThat(client.sendSms("+8613900001234", Map.of("device_name", "烟感"), "abc").success()).isTrue();
             assertThat(client.sendVoice("+8613900001234", Map.of("device_name", "烟感"), "abc").success()).isTrue();
@@ -80,6 +88,8 @@ class AliyunNotificationClientTest {
             long queryDate = date.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
             assertThat(captured.get(0)).contains("Action=SendSms", "OutId=abc", "Signature=");
             assertThat(captured.get(1)).contains("Action=SingleCallByTts", "OutId=abc", "Signature=");
+            assertThat(captured.get(0)).doesNotContain("TemplateParam=");
+            assertThat(captured.get(1)).doesNotContain("TtsParam=");
             assertThat(captured.get(2)).contains("Action=QuerySendDetails", "BizId=biz-1", "SendDate=20261112", "PageSize=50", "CurrentPage=1", "Signature=");
             assertThat(captured.get(3)).contains("Action=QueryCallDetailByCallId", "CallId=call-1", "ProdId=11000000300006", "QueryDate=" + queryDate, "Signature=");
         } finally {
@@ -100,7 +110,8 @@ class AliyunNotificationClientTest {
         server.start();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
-            var client = new AliyunNotificationClient("ak", "secret", "", "", "TTS_ONLY", "", base, base, HttpClient.newHttpClient());
+            var client = new AliyunNotificationClient(new AliyunNotificationClient.Config("ak", "secret", "", "", "TTS_ONLY", "",
+                base, base, null, Map.of()), HttpClient.newHttpClient(), Duration.ofSeconds(8));
             assertThat(client.sendSms("+8613800000000", Map.of(), null).code()).isEqualTo("NOT_CONFIGURED");
             assertThat(client.sendVoice("+8613800000000", Map.of("device_name", "烟感"), null).providerId()).isEqualTo("voice-only");
             assertThat(captured).singleElement().asString().contains("Action=SingleCallByTts", "TtsCode=TTS_ONLY");
@@ -110,7 +121,8 @@ class AliyunNotificationClientTest {
     }
 
     @Test void missingCredentialsDisableProvider() {
-        var client = new AliyunNotificationClient("", "", "", "", "", "", "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", HttpClient.newHttpClient());
+        var client = new AliyunNotificationClient(new AliyunNotificationClient.Config("", "", "", "", "", "",
+            "http://127.0.0.1:1/sms", "http://127.0.0.1:1/voice", Map.of(), Map.of()), HttpClient.newHttpClient(), Duration.ofSeconds(8));
         assertThat(client.enabled()).isFalse();
         assertThat(client.sendSms("+8613800000000", Map.of(), null).code()).isEqualTo("NOT_CONFIGURED");
     }

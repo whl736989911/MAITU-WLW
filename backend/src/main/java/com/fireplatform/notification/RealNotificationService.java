@@ -277,7 +277,7 @@ public class RealNotificationService {
                     if(result.success()){attempts.finish(attempt.id(),"SENT",result.code(),result.providerId());delivered=true;terminalStatus="SENT";terminalCode=result.code();terminalProviderId=result.providerId();break;}
                     resources.release(reservation,key);attempts.finish(attempt.id(),"FAILED",result.code(),result.providerId());terminalStatus="FAILED";terminalCode=result.code();terminalProviderId=result.providerId();
                     log.warn("real notification event={} contact={} channel={} code={}",sourceId,contactId,channel,result.code());
-                    if("NOT_CONFIGURED".equals(result.code()))break;
+                    if("NOT_CONFIGURED".equals(result.code())||"TEMPLATE_VARIABLE_MISSING".equals(result.code()))break;
                 }
                 if(claimId!=null) {
                     // Keep CLAIMED while retrying; a crash here stays ambiguous and can never trigger a blind resend.
@@ -285,7 +285,7 @@ public class RealNotificationService {
                 }
                 if(delivered)spool.markDone(occurrenceKey,spoolId,contactId,channel,"SENT",terminalCode);
                 else if(!"UNKNOWN".equals(terminalStatus)) {
-                    if(initial||lastAttempt>=NotificationProviderAttemptService.MAX_ATTEMPTS)
+                    if(initial||"TEMPLATE_VARIABLE_MISSING".equals(terminalCode)||lastAttempt>=NotificationProviderAttemptService.MAX_ATTEMPTS)
                         spool.markDead(occurrenceKey,spoolId,contactId,channel,terminalCode==null?terminalStatus:terminalCode,null);
                     else pending=true;
                 }
@@ -297,9 +297,9 @@ public class RealNotificationService {
 
     private static Map<String,String> paramsFor(Map<String,Object> alarm,boolean fire,String eventCode) {
         Map<String,String> params=new LinkedHashMap<>();
-        String deviceName=String.valueOf(alarm.get("device_name")),address=String.valueOf(alarm.get("address"));
+        String deviceName=Objects.toString(alarm.get("device_name"),null),address=Objects.toString(alarm.get("address"),null);
         Object occurred=alarm.get("occurred_at");
-        String alarmTime=occurred instanceof OffsetDateTime time?DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai")).format(time):String.valueOf(occurred);
+        String alarmTime=occurred instanceof OffsetDateTime time?DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai")).format(time):Objects.toString(occurred,null);
         if(fire&&(Boolean.FALSE.equals(alarm.get("source_time_known"))||"false".equalsIgnoreCase(String.valueOf(alarm.get("source_time_known"))))) alarmTime="来源时间未知";
         if(fire)params.put("alarm_id",String.valueOf(alarm.get("id")));
         else {params.put("event_code",eventCode);params.put("event_kind","FAULT");}
