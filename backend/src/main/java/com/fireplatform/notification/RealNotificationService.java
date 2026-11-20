@@ -5,12 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fireplatform.alarmgroup.AlarmSessionNotificationGate;
 import com.fireplatform.transport.AliyunNotificationClient;
 import com.fireplatform.transport.NotificationSpool;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.ColumnMapRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -22,19 +25,30 @@ public class RealNotificationService {
     private static final Logger log = LoggerFactory.getLogger(RealNotificationService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int SCAN_PAGE_SIZE = 20;
-    private static final String FIRE_SCAN = """
-        SELECT a.id,a.tenant_id,a.device_id,a.device_name,a.address,a.occurred_at,a.source_time_known,
+    private static final ColumnMapRowMapper SCAN_ROW = new ColumnMapRowMapper() {
+        @Override
+        protected Object getColumnValue(ResultSet rs,int index) throws SQLException {
+            // Both scan projections start with the time key; JDBC's untyped value differs by database.
+            return index==1 ? rs.getObject(index,OffsetDateTime.class) : super.getColumnValue(rs,index);
+        }
+    };
+    private static final String FIRE_ROWS = """
+        SELECT a.occurred_at,a.id,a.tenant_id,a.device_id,a.device_name,a.address,a.source_time_known,
                a.physical_state,a.response_state,d.model AS device_model,'FIRE' AS event_kind,
                'ALARM' AS source_kind,a.event_type AS event_code
+        """;
+    private static final String FIRE_SCAN = """
         FROM alarms a JOIN devices d ON d.id=a.device_id AND d.tenant_id=a.tenant_id
         WHERE a.event_type='FIRE' AND a.is_simulated=FALSE AND a.occurred_at>?
           AND NOT EXISTS(SELECT 1 FROM real_notification_completions c
                          WHERE c.tenant_id=a.tenant_id AND c.source_kind='ALARM' AND c.source_id=a.id)
         """;
-    private static final String FAULT_SCAN = """
-        SELECT f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,
-               f.event_code,f.subscription_detail,f.occurred_at,f.source_kind,'FAULT' AS event_kind,
+    private static final String FAULT_ROWS = """
+        SELECT f.occurred_at,f.source_id AS id,f.tenant_id,f.device_id,d.name AS device_name,d.address,d.model AS device_model,
+               f.event_code,f.subscription_detail,f.source_kind,'FAULT' AS event_kind,
                NULL AS physical_state,NULL AS response_state
+        """;
+    private static final String FAULT_SCAN = """
         FROM (
             SELECT e.id AS source_id,e.tenant_id,e.device_id,e.business_code AS event_code,
                    CAST(NULL AS VARCHAR) AS subscription_detail,e.observed_at AS occurred_at,'LEGACY_FAULT' AS source_kind
@@ -70,14 +84,24 @@ public class RealNotificationService {
     /** First-scan lower bound captured when this worker instance starts, not when the first event happens to arrive. */
     private final OffsetDateTime activationBoundary;
     // Scheduled traversal only; never saved as the durable activation floor or used by targeted dispatch.
-    private ScanPosition fireAfter;
-    private ScanPosition faultAfter;
+    private ScanSweep fireSweep;
+    private ScanSweep faultSweep;
 
     private record ScanPosition(OffsetDateTime occurredAt,String sourceId,String sourceKind) {
-        static ScanPosition afterFullPage(List<Map<String,Object>> page) {
-            if (page.size() < SCAN_PAGE_SIZE) return null;
-            var last=page.getLast();
-            return new ScanPosition((OffsetDateTime)last.get("occurred_at"),(String)last.get("id"),(String)last.get("source_kind"));
+        static ScanPosition fromRow(Map<String,Object> row) {
+            return new ScanPosition((OffsetDateTime)row.get("occurred_at"),(String)row.get("id"),(String)row.get("source_kind"));
+        }
+
+        boolean sameKey(ScanPosition other) {
+            return occurredAt.isEqual(other.occurredAt) && sourceId.equals(other.sourceId) && sourceKind.equals(other.sourceKind);
+        }
+    }
+
+    private record ScanSweep(ScanPosition after,ScanPosition through) {
+        ScanSweep advance(List<Map<String,Object>> page) {
+            if (page.size()<SCAN_PAGE_SIZE) return null;
+            var last=ScanPosition.fromRow(page.getLast());
+            return last.sameKey(through) ? null : new ScanSweep(last,through);
         }
     }
     @Autowired
@@ -97,12 +121,8 @@ public class RealNotificationService {
     public void poll() {
         if (!requested || !workerRole()) return;
         OffsetDateTime floor = initializedCursor();
-        var fires=firePage(floor,fireAfter);
-        if (fires.isEmpty() && fireAfter!=null) fires=firePage(floor,null);
-        fireAfter=ScanPosition.afterFullPage(fires);
-        var faults=faultPage(floor,faultAfter);
-        if (faults.isEmpty() && faultAfter!=null) faults=faultPage(floor,null);
-        faultAfter=ScanPosition.afterFullPage(faults);
+        var fires=firePage(floor);
+        var faults=faultPage(floor);
         List<Map<String,Object>> events=new ArrayList<>(fires.size()+faults.size());
         events.addAll(fires);
         events.addAll(faults);
@@ -118,20 +138,52 @@ public class RealNotificationService {
         }
     }
 
-    private List<Map<String,Object>> firePage(OffsetDateTime floor,ScanPosition after) {
+    private List<Map<String,Object>> firePage(OffsetDateTime floor) {
         String order=" ORDER BY a.occurred_at,a.id LIMIT ?";
-        return after==null
-            ? jdbc.queryForList(FIRE_SCAN+order,floor,SCAN_PAGE_SIZE)
-            : jdbc.queryForList(FIRE_SCAN+" AND (a.occurred_at,a.id)>(?,?)"+order,
-                floor,after.occurredAt(),after.sourceId(),SCAN_PAGE_SIZE);
+        String seek=" AND (a.occurred_at,a.id)>(?,?)";
+        if (fireSweep!=null) {
+            var after=fireSweep.after();
+            var through=fireSweep.through();
+            var rows=jdbc.query(FIRE_ROWS+FIRE_SCAN+seek+" AND (a.occurred_at,a.id)<=(?,?)"+order,SCAN_ROW,
+                floor,after.occurredAt(),after.sourceId(),through.occurredAt(),through.sourceId(),SCAN_PAGE_SIZE);
+            fireSweep=fireSweep.advance(rows);
+            if (!rows.isEmpty()) return rows;
+        }
+
+        var rows=jdbc.query(FIRE_ROWS+FIRE_SCAN+order,SCAN_ROW,floor,SCAN_PAGE_SIZE);
+        if (rows.size()==SCAN_PAGE_SIZE) {
+            var after=ScanPosition.fromRow(rows.getLast());
+            var through=jdbc.query("SELECT a.occurred_at,a.id "+FIRE_SCAN+seek+" ORDER BY a.occurred_at DESC,a.id DESC LIMIT 1",
+                rs -> rs.next() ? new ScanPosition(rs.getObject(1,OffsetDateTime.class),rs.getString(2),"ALARM") : null,
+                floor,after.occurredAt(),after.sourceId());
+            if (through!=null) fireSweep=new ScanSweep(after,through);
+        }
+        return rows;
     }
 
-    private List<Map<String,Object>> faultPage(OffsetDateTime floor,ScanPosition after) {
+    private List<Map<String,Object>> faultPage(OffsetDateTime floor) {
         String order=" ORDER BY f.occurred_at,f.source_id,f.source_kind LIMIT ?";
-        return after==null
-            ? jdbc.queryForList(FAULT_SCAN+order,floor,floor,SCAN_PAGE_SIZE)
-            : jdbc.queryForList(FAULT_SCAN+" AND (f.occurred_at,f.source_id,f.source_kind)>(?,?,?)"+order,
-                floor,floor,after.occurredAt(),after.sourceId(),after.sourceKind(),SCAN_PAGE_SIZE);
+        String seek=" AND (f.occurred_at,f.source_id,f.source_kind)>(?,?,?)";
+        if (faultSweep!=null) {
+            var after=faultSweep.after();
+            var through=faultSweep.through();
+            var rows=jdbc.query(FAULT_ROWS+FAULT_SCAN+seek+" AND (f.occurred_at,f.source_id,f.source_kind)<=(?,?,?)"+order,SCAN_ROW,
+                floor,floor,after.occurredAt(),after.sourceId(),after.sourceKind(),
+                through.occurredAt(),through.sourceId(),through.sourceKind(),SCAN_PAGE_SIZE);
+            faultSweep=faultSweep.advance(rows);
+            if (!rows.isEmpty()) return rows;
+        }
+
+        var rows=jdbc.query(FAULT_ROWS+FAULT_SCAN+order,SCAN_ROW,floor,floor,SCAN_PAGE_SIZE);
+        if (rows.size()==SCAN_PAGE_SIZE) {
+            var after=ScanPosition.fromRow(rows.getLast());
+            var through=jdbc.query("SELECT f.occurred_at,f.source_id,f.source_kind "+FAULT_SCAN+seek+
+                    " ORDER BY f.occurred_at DESC,f.source_id DESC,f.source_kind DESC LIMIT 1",
+                rs -> rs.next() ? new ScanPosition(rs.getObject(1,OffsetDateTime.class),rs.getString(2),rs.getString(3)) : null,
+                floor,floor,after.occurredAt(),after.sourceId(),after.sourceKind());
+            if (through!=null) faultSweep=new ScanSweep(after,through);
+        }
+        return rows;
     }
 
     public void dispatchInitialAlarm(String tenantId,String alarmId) {

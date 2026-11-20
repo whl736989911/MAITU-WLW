@@ -179,7 +179,10 @@ class NotificationIntegrationTest {
         return new com.fireplatform.configuration.RuntimeConfig(environment);
     }
     String initialNotificationEvent(String kind,OffsetDateTime occurred){
-        String id=UUID.randomUUID().toString();
+        return initialNotificationEvent(kind,occurred,UUID.randomUUID().toString());
+    }
+
+    String initialNotificationEvent(String kind,OffsetDateTime occurred,String id) {
         if("FIRE".equals(kind))jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,device_name,address,event_type,occurred_at,physical_state,response_state,is_simulated,source_time_known,platform_recorded_at) VALUES (?,'tenant-a','device-a','Late device','Address','FIRE',?,'FIRE','UNHANDLED',FALSE,TRUE,CURRENT_TIMESTAMP)",id,occurred);
         else{
             jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at,business_code) VALUES (?,'tenant-a','device-a','FAULT','FAULT','{}',?,CURRENT_TIMESTAMP,'LOW_BATTERY')",id,occurred);
@@ -324,6 +327,61 @@ class NotificationIntegrationTest {
         } finally {
             jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"FIRE","FAULT"})
+    void periodicScanRevisitsHeldEntriesDespiteContinuallyRefilledTail(
+            String kind,@org.junit.jupiter.api.io.TempDir java.nio.file.Path spool) throws Exception {
+        var client=initialNotificationClient();
+        addReadyVoiceOnlyDevice();
+        org.mockito.Mockito.when(client.enabled()).thenReturn(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var floor=time.now().minusMinutes(10).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            var markers=new NotificationSpool(spool.toString());
+            markers.writeCursor(floor);
+            var eventTime=floor.plusSeconds(1);
+            for (int i=0;i<20;i++) initialNotificationEvent(kind,eventTime,"held-"+i);
+            seedReadyTail(kind,eventTime,0);
+            var worker=initialNotificationWorker(client,spool);
+            worker.poll();
+            assertThat(acceptedInitialChannels("held-0")).containsExactly("VOICE");
+            assertThat(acceptedInitialChannels("ready-0-0")).isEmpty();
+            seedReadyTail(kind,eventTime,1);
+            worker.poll();
+            assertThat(acceptedInitialChannels("ready-0-0")).containsExactly("VOICE");
+            assertThat(acceptedInitialChannels("held-0")).containsExactly("VOICE");
+
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            org.mockito.Mockito.when(client.enabled()).thenReturn(true);
+            seedReadyTail(kind,eventTime,2);
+            worker.poll();
+            assertThat(acceptedInitialChannels("held-0")).containsExactlyInAnyOrder("VOICE","SMS");
+            seedReadyTail(kind,eventTime,3);
+            worker.poll();
+            assertThat(acceptedInitialChannels("ready-1-0")).containsExactly("VOICE");
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(60);
+            assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(20);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE status='SENT'",Long.class)).isEqualTo(80);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME'",Long.class)).isEqualTo(80);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+            assertThat(markers.cursor()).isEqualTo(floor);
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    private void seedReadyTail(String kind,OffsetDateTime occurred,int batch) {
+        for (int i=0;i<20;i++) {
+            String id=initialNotificationEvent(kind,occurred,"ready-"+batch+"-"+i);
+            jdbc.update(kind.equals("FIRE") ? "UPDATE alarms SET device_id='device-ready' WHERE id=?"
+                : "UPDATE legacy_ingest_events SET device_id='device-ready' WHERE id=?",id);
+        }
+    }
+
+    private List<String> acceptedInitialChannels(String sourceId) {
+        return jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id=? AND status='SENT'",String.class,sourceId);
     }
 
     @Test void unlocatedFireAndFaultUseUnknownLocationInBothVendorTemplatesWithoutChangingFacts(

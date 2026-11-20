@@ -210,6 +210,58 @@ class ReminderRollbackRegressionTest {
         }
     }
 
+    @Test
+    void reminderScanRevisitsHeldCycleDespiteContinuallyRefilledTail() throws Exception {
+        var notifications=reminderFixtures();
+        notifications.addReadyVoiceOnlyDevice();
+        jdbc.update("UPDATE notification_resource_accounts SET sms_total=100,voice_total=300 WHERE tenant_id='tenant-a'");
+        when(client.enabled()).thenReturn(false);
+        jdbc.update("UPDATE notification_provider_config SET sms_enabled=TRUE,sms_template_variables=NULL WHERE id=1");
+        try {
+            var now=time.now();
+            var due=now.minusMinutes(1);
+            jdbc.update("INSERT INTO alarm_base_configurations(tenant_id,config_json,revision,updated_by,updated_at) "
+                + "VALUES ('tenant-a','{\"pushRules\":{\"periodHours\":1}}',1,'bootstrap-admin',?)",now);
+            for (int i=0;i<100;i++) {
+                String alarm=notifications.initialNotificationEvent("FIRE",now.minusHours(1),"held-"+i);
+                seedDueReminder(alarm,due,now);
+            }
+            seedReadyTail(notifications,now,due,0);
+            assertThat(scheduler.processDue()).isZero();
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(100);
+            seedReadyTail(notifications,now,due,1);
+            assertThat(scheduler.processDue()).isEqualTo(100);
+            assertThat(jdbc.queryForObject("SELECT cycle_number FROM alarm_reminder_schedule WHERE alarm_id='ready-0-0'",Long.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT cycle_number FROM alarm_reminder_schedule WHERE alarm_id='held-0'",Long.class)).isEqualTo(1);
+
+            jdbc.update("UPDATE notification_provider_config SET sms_template_variables='{}' WHERE id=1");
+            when(client.enabled()).thenReturn(true);
+            seedReadyTail(notifications,now,due,2);
+            scheduler.processDue();
+            assertThat(jdbc.queryForList("SELECT channel FROM notification_provider_attempts WHERE source_id='held-0' AND occurrence_key='REMINDER:1' AND status='SENT'",String.class))
+                .containsExactlyInAnyOrder("VOICE","SMS");
+            assertThat(jdbc.queryForObject("SELECT cycle_number FROM alarm_reminder_schedule WHERE alarm_id='held-0'",Long.class)).isEqualTo(2);
+            seedReadyTail(notifications,now,due,3);
+            assertThat(scheduler.processDue()).isEqualTo(100);
+            assertThat(jdbc.queryForObject("SELECT cycle_number FROM alarm_reminder_schedule WHERE alarm_id='ready-1-0'",Long.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT voice_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(300);
+            assertThat(jdbc.queryForObject("SELECT sms_used FROM notification_resource_accounts WHERE tenant_id='tenant-a'",Long.class)).isEqualTo(100);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_provider_attempts WHERE occurrence_key='REMINDER:1' AND status='SENT'",Long.class)).isEqualTo(400);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='CONSUME'",Long.class)).isEqualTo(400);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification_resource_ledger WHERE kind='REFUND'",Long.class)).isZero();
+        } finally {
+            jdbc.update("UPDATE notification_provider_config SET sms_enabled=FALSE,sms_template_variables=NULL WHERE id=1");
+        }
+    }
+
+    private void seedReadyTail(NotificationIntegrationTest notifications,OffsetDateTime now,OffsetDateTime due,int batch) {
+        for (int i=0;i<100;i++) {
+            String alarm=notifications.initialNotificationEvent("FIRE",now.minusHours(1),"ready-"+batch+"-"+i);
+            jdbc.update("UPDATE alarms SET device_id='device-ready' WHERE id=?",alarm);
+            seedDueReminder(alarm,due,now);
+        }
+    }
+
     private void seedDueReminder(String alarm,OffsetDateTime due,OffsetDateTime now) {
         jdbc.update("INSERT INTO alarm_reminder_schedule(tenant_id,alarm_id,cycle_number,period_hours,cycle_started_at,"
             + "next_due_at,last_accepted_at,status,revision,updated_at) VALUES ('tenant-a',?,1,1,?,?,NULL,'WAITING',1,?)",
