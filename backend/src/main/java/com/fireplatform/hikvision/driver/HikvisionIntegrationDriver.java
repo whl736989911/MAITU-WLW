@@ -29,6 +29,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
     public static final String PARAMETERS_WRITE = "parameters.write";
     public static final String CONTROL_OPERATE = "control.operate";
     public static final String HIK_V1_SILENCE = "hik.v1.silence";
+    public static final String RESET = "hik.v2.reset";
     public static final String CLOUD_DELETE = "cloud.delete";
     private static final int LOOKUP_PAGE_SIZE = 10;
     private static final int MAX_LOOKUP_PAGES = 100;
@@ -47,7 +48,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         this.configuration = configuration;
         this.secrets = secrets;
         this.json = json;
-        this.services = List.of(parametersRead(), parametersWrite(), controlOperate(), silenceV1Service(), cloudDelete());
+        this.services = List.of(parametersRead(), parametersWrite(), controlOperate(), silenceV1Service(), resetService(), cloudDelete());
     }
 
     @Override public String key() { return KEY; }
@@ -96,6 +97,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
                 case PARAMETERS_WRITE -> parametersWrite(call, external);
                 case CONTROL_OPERATE -> controlOperate(call, external);
                 case HIK_V1_SILENCE -> silenceV1(call, external);
+                case RESET -> sendControl(external, json.createObjectNode().put("operateType", 7), null, null);
                 case CLOUD_DELETE -> cloudDelete(call, external);
                 default -> DriverOutcome.blocked("OPERATION_NOT_IMPLEMENTED", "该操作没有实现的海康适配器，未发起外部请求");
             };
@@ -203,10 +205,12 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         ObjectNode operateParam = json.createObjectNode().put("operateType", type.asInt());
         JsonNode value = arguments.get("value");
         if (value != null && value.isTextual()) operateParam.put("value", value.asText());
-        ObjectNode body = json.createObjectNode().put("deviceID", external).put("operateParam", operateParam.toString());
-        JsonNode sensorId = arguments.get("sensorId");
-        if (sensorId != null && sensorId.isTextual() && !sensorId.asText().isBlank()) body.put("sensorID", sensorId.asText());
-        JsonNode channelAbility = arguments.get("channelAbility");
+        return sendControl(external, operateParam, arguments.path("sensorId").textValue(), arguments.path("channelAbility"));
+    }
+
+    private DriverOutcome sendControl(String external, ObjectNode operation, String sensorId, JsonNode channelAbility) {
+        ObjectNode body = json.createObjectNode().put("deviceID", external).put("operateParam", operation.toString());
+        if (sensorId != null && !sensorId.isBlank()) body.put("sensorID", sensorId);
         if (channelAbility != null && channelAbility.isBoolean()) body.put("channelAbility", channelAbility.booleanValue());
         HikvisionClient.VendorResult result = client.write("/api/device/v2/operate", body);
         if (!"0".equals(result.code())) return vendorRejection(result);
@@ -501,6 +505,13 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
             evidence("https://open.hikfirecloud.com/artemis-portal/document/85",
                 "V1 operate operateType=1；data true=指令下发接受，false=拒绝；无终端回执"),
             "UNVERIFIED", true);
+    }
+
+    private DriverServiceDescriptor resetService() {
+        return service(RESET, "设备复位", "CONTROL", "ENGINEERING", "COMMAND", schema(),
+            applicability("仅在当前型号已有复位能力证据时可下发"),
+            evidence("https://open.hikfirecloud.com/artemis-portal/document/65 与 /document/85",
+                "设备操作命令 7=复位；接受不是终端复位回执"), "UNVERIFIED");
     }
 
     private DriverServiceDescriptor cloudDelete() {

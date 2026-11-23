@@ -30,7 +30,7 @@ public class AlarmWorkbenchQueries {
         var p=Pagination.of(page,size,sizes.defaultPageSize()); var asOf=time.now().withOffsetSameInstant(ZoneOffset.UTC);
         var metrics=jdbc.queryForObject("SELECT COUNT(*),COALESCE(SUM(CASE WHEN response_state='UNHANDLED' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN response_state='HANDLED' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN physical_state='FIRE' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN physical_state='NORMAL' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN conclusion='TRUE_FIRE' THEN 1 ELSE 0 END),0) FROM alarms"+plan.where(),(rs,n)->new Metrics(rs.getLong(1),rs.getLong(2),rs.getLong(3),rs.getLong(4),rs.getLong(5),rs.getLong(6)),plan.bindings().toArray());
         var pageArgs=new ArrayList<>(plan.bindings()); pageArgs.add(p.size()); pageArgs.add(p.offset());
-        var items=jdbc.query("SELECT id,device_id,device_name,address,event_type,occurred_at,physical_state,response_state,conclusion,revision,is_simulated,tenant_id,source_time_known,platform_recorded_at FROM alarms"+plan.where()+" ORDER BY occurred_at DESC,id LIMIT ? OFFSET ?",(rs,n)->AlarmQueryService.row(rs),pageArgs.toArray());
+        var items=jdbc.query("SELECT id,device_id,device_name,address,event_type,occurred_at,last_event_at,physical_state,response_state,conclusion,revision,is_simulated,tenant_id,source_time_known,platform_recorded_at,"+AlarmQueryService.DEVICE_EUI_COLUMN+","+AlarmQueryService.RECOVERY_COLUMN+" FROM alarms"+plan.where()+" ORDER BY occurred_at DESC,id LIMIT ? OFFSET ?",(rs,n)->AlarmQueryService.row(rs),pageArgs.toArray());
         return new Result(items,metrics.alarmTotal(),p.page(),p.size(),asOf,"Asia/Shanghai",filter,metrics,DEFINITIONS);
     }
 }

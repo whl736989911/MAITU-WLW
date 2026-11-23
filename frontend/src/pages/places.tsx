@@ -83,6 +83,7 @@ function PlacesContent() {
   function saved() { setEditor(null); places.refresh(); session.refreshScopeTree(); publishObjectChange('organization'); setNotice('位置已保存，单位位置树已更新。') }
   const moving = move.intent?.preview.place ?? moveTarget
   const transferring = transfer.intent?.place ?? transferTarget
+  if (deviceDetail) return <Suspense fallback={<Loading/>}><DeviceDetail deviceId={deviceDetail.id} tenantId={deviceDetail.tenantId} close={() => setDeviceDetail(null)}/></Suspense>
   return <>
     <PageHeading eyebrow="PLACES · 位置" title="单位位置与设备">
       <PageHelp title="位置树与范围操作">位置树按真实父子关系展示；搜索保留可见上级。移动会影响整个子树，并要求选择同单位目标位置。位置或设备超出当前跨页授权范围时仍由服务端校验；设备身份和历史不会因移动改变。</PageHelp>
@@ -108,7 +109,6 @@ function PlacesContent() {
     <Sheet open={!!editor} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <PlaceEditor key={`${editor.place?.id ?? 'new'}:${editor.parentId ?? ''}`} place={editor.place} parentId={editor.parentId} initialTenantId={editor.tenantId ?? ''} units={units.data ?? []} close={() => setEditor(null)} saved={saved}/>}</SheetContent></Sheet>
     <Sheet open={!!moving} onOpenChange={open => { if (!open && move.edit()) setMoveTarget(null) }}><SheetContent className="review-sheet sm:max-w-2xl">{moving && <PlaceMoveEditor key={moving.id} place={moving}/>}</SheetContent></Sheet>
     <Sheet open={!!transferring && !transferHidden} onOpenChange={open => { if (!open && transfer.phase !== 'PENDING') { if (transfer.edit()) setTransferTarget(null); else setTransferHidden(true) } }}><SheetContent className="review-sheet sm:max-w-2xl">{transferring && <PlaceTransferEditor key={transferring.id} place={transferring} units={units.data ?? []}/>}</SheetContent></Sheet>
-    {deviceDetail && <Suspense fallback={<Loading/>}><DeviceDetail deviceId={deviceDetail.id} tenantId={deviceDetail.tenantId} close={() => setDeviceDetail(null)}/></Suspense>}
   </>
 }
 

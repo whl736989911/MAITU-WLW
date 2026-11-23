@@ -13,7 +13,7 @@ import { queryDeviceDetailFaultEvents } from '@/lib/duty-api'
 const time = '2026-10-25T04:20:00.123456Z', epochPolicy = { key: 'offline_threshold_minutes', value: 5, unit: '分钟', source_scope: 'GLOBAL', source_id: null, source_revision: 0, evaluated_at: time }
 const device = { id: 'd1', tenant_id: 'tenant-a', name: '当前详情名称', device_eui: 'synthetic-eui', model: '保存旧型号', address: '当前安装地址', connectivity: 'UNACTIVATED', physical_state: 'UNKNOWN', last_message_at: null, battery_percent: null, product_id: 'product-one', product_version_id: 'version-one', product_name: '保存旧产品名', version_number: 1, revision: 0, integration_state: 'PENDING_INTEGRATION', tenant_name: null, place_id: null, place_name: null, system_type: null, device_category: null, offline_policy: epochPolicy, battery_policy: { parameter_key: 'battery_low_threshold_percent', metric_key: 'battery_percent', unit: '%', status: 'NOT_CONFIGURED', comparator: null, threshold: null, source_scope: 'NONE', source_id: null, source_revision: 0, evaluated_at: time } }
 const detail = (change = {}) => ({ as_of: time, timezone: 'Asia/Shanghai', consumer: 'CONNECTIVITY_AND_OFFLINE_EVENTS', device: { ...device, status_display: { online_status: 'UNACTIVATED', customer_status: 'UNACTIVATED', business_statuses: [] }, ...change } })
-const alarm = { id: 'alarm-one', tenant_id: 'tenant-a', device_id: 'd1', device_name: '报警固有旧名称', address: '报警固有旧地址', event_type: 'FIRE', occurred_at: '2020-01-01T00:00:00.123456Z', physical_state: 'FIRE', response_state: 'UNHANDLED', conclusion: null, revision: 0 }
+const alarm = { id: 'alarm-one', tenant_id: 'tenant-a', device_id: 'd1', device_eui: 'related-alarm-serial', device_name: '报警固有旧名称', address: '报警固有旧地址', event_type: 'FIRE', occurred_at: '2020-01-01T00:00:00.123456Z', physical_state: 'FIRE', response_state: 'UNHANDLED', conclusion: null, revision: 0 }
 const workbench = (change = {}) => ({ device_id: 'd1', items: [alarm], total: 1, page: 1, size: 3, as_of: '2026-10-25T04:20:01Z', timezone: 'Asia/Shanghai', filters: { ...emptyAlarmFilters }, metrics: { alarm_total: 1, unhandled: 1, handled: 0, unrecovered: 1, recovered: 0, true_fire: 0 }, metric_definitions: expectedMetricDefinitions, ...change })
 const raw = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
 function DeviceDetail(props: ComponentProps<typeof DeviceDetailComponent>) { return <ConfigProvider locale={zhCN}><DeviceDetailComponent {...props} tenantId={props.tenantId ?? 'tenant-a'}/></ConfigProvider> }
@@ -25,6 +25,7 @@ function mock(override?: (url: string, init?: RequestInit) => Response | Promise
     
     if (/\/devices\/d[12]$/.test(url)) return raw(detail({ id: url.endsWith('d2') ? 'd2' : 'd1' }))
     if (/\/devices\/d[12]\/alarms\?/.test(url)) return response(workbench())
+    if (/\/devices\/d[12]\/telemetry$/.test(url)) return response({ items: [], total: 0, page: 1, size: 1 })
     throw new Error(`Unexpected device-detail endpoint ${url}`)
   }); vi.stubGlobal('fetch', fetcher); return fetcher
 }
@@ -32,10 +33,25 @@ const detailCalls = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.fi
 const alarmCalls = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.filter(call => /\/devices\/d[12]\/alarms\?/.test(call[0]))
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
 async function relatedAlarmButton() {
-  await userEvent.setup().click(await screen.findByRole('tab', { name: '关联报警' }))
+  await userEvent.setup().click(await screen.findByRole('tab', { name: '报警记录' }))
   return screen.findByRole('button', { name: '读取关联报警' })
 }
 beforeEach(() => { useSession.getState().clear(); localStorage.clear(); sessionStorage.clear() })
+
+it('以独立详情打开本设备，默认显示报警记录，返回原入口', async () => {
+  mock()
+  const close = vi.fn()
+  render(<DeviceDetail deviceId="d1" close={close}/>)
+  const detail = await screen.findByRole('region', { name: '设备详情' })
+  expect(within(detail).getByRole('heading', { name: '基本信息' })).toBeInTheDocument()
+  expect(within(detail).getByRole('heading', { name: '设备监测值' })).toBeInTheDocument()
+  expect(within(detail).getByRole('tab', { name: '报警记录', selected: true })).toBeInTheDocument()
+  for (const label of ['故障记录', '事件记录', '在离线记录', '远程参数配置', '生命周期']) {
+    expect(within(detail).getByRole('tab', { name: label })).toBeInTheDocument()
+  }
+  await userEvent.setup().click(within(detail).getByRole('button', { name: '返回来源页面' }))
+  expect(close).toHaveBeenCalledOnce()
+})
 
 describe('P8新lazy lossless设备/关联报警wire', () => {
   it('四字段/深层safe whitelist、requested id/offset/asof同策略瞬间与binding，不从最新产品取名', () => { const result = readDeviceDetail(JSON.stringify({ ...detail({ schema: { password: 'private-schema' }, actor_id: 'private-actor', offline_policy: { ...epochPolicy, reason: 'private-reason' } }), extra: 'private-root' }), 'd1', 'tenant-a'); expect(Object.keys(result)).toEqual(['as_of', 'timezone', 'consumer', 'device']); expect(JSON.stringify(result)).not.toContain('private'); expect(result.device.product_name).toBe('保存旧产品名'); expect(result.device.revision).toBe(0); expect(readDeviceDetail(JSON.stringify(detail({ offline_policy: { ...epochPolicy, evaluated_at: '2026-10-25T12:20:00.123456+08:00' } })), 'd1', 'tenant-a').device.offline_policy.value).toBe(5) })
@@ -54,6 +70,7 @@ describe('P8 record-owner device detail', () => {
     await screen.findByText('当前详情名称', { selector: 'h2' })
     await userEvent.setup().click(await relatedAlarmButton())
     await screen.findByText('报警固有旧名称')
+    expect(screen.getByRole('row', { name: /报警固有旧名称.*related-alarm-serial/ })).toBeInTheDocument()
     expect(detailCalls(fetcher)[0][1].headers.get('X-Tenant-Id')).toBe('tenant-a')
     expect(alarmCalls(fetcher)[0][1].headers.get('X-Tenant-Id')).toBe('tenant-a')
   })
@@ -61,10 +78,10 @@ describe('P8 record-owner device detail', () => {
 
 describe('P8双端设备当前详情与独立关联', () => {
   it('无有效上报显示未激活；未绑定型号与未知电量保持明确', async () => {
-    mock(() => raw(detail({ product_id: null, product_version_id: null, product_name: null, version_number: null })), ['device:read'])
+    mock(url => /\/devices\/d1$/.test(url) ? raw(detail({ product_id: null, product_version_id: null, product_name: null, version_number: null })) : undefined, ['device:read'])
     render(<DeviceDetail deviceId="d1" close={() => {}}/>)
     await screen.findByText(/未绑定模板，不冒充/)
-    const dialog = within(screen.getByRole('dialog'))
+    const dialog = within(screen.getByRole('region', { name: '基本信息' }))
     expect(dialog.getAllByText('未激活')).toHaveLength(2)
     expect(dialog.queryByText('0%', { exact: true })).not.toBeInTheDocument()
   })
@@ -73,7 +90,7 @@ describe('P8双端设备当前详情与独立关联', () => {
     render(<DeviceDetail deviceId="d1" close={() => {}}/>)
     await screen.findByText('0.10000000000000000001%')
     expect(screen.getByText(/保存旧产品名 \/ 保存旧型号/)).toBeInTheDocument()
-    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls.some(call => /\/products(?:\/|[?])/.test(call[0]))).toBe(false)
   })
   it('alarm权仍须显式读取，device当前名称/地址/NORMAL不覆盖报警固有旧快照FIRE', async () => { const fetcher = mock(url => /\/devices\/d1$/.test(url) ? raw(detail({ physical_state: 'NORMAL', connectivity: 'ONLINE', last_message_at: time })) : undefined); render(<DeviceDetail deviceId="d1" close={() => {}}/>); const user = userEvent.setup(); await screen.findByText('当前详情名称', { selector: 'h2' }); expect(alarmCalls(fetcher)).toHaveLength(0); expect(screen.getAllByText('当前安装地址', { selector: 'dd' })).toHaveLength(1); await user.click(await relatedAlarmButton()); await screen.findByText('报警固有旧名称'); expect(screen.getByText('报警固有旧地址')).toBeInTheDocument(); expect(document.querySelector('[data-device-alarm-metric="alarm_total"]')).toHaveTextContent('1'); expect(screen.queryByRole('button', { name: /复核|history|查看详情|排队|领取/ })).not.toBeInTheDocument(); expect(fetcher.mock.calls.every(call => !call[1].method || call[1].method === 'GET')).toBe(true) })
   it('关联真实分页/所有页统计/沿applied，keyword百分号字面不拿当前设备名过滤', async () => { let delayed = false, resolveLate!: (value: Response) => void; const fetcher = mock(url => { if (!url.includes('/alarms?')) return undefined; const q = new URL(url, 'http://local').searchParams, p = Number(q.get('page')); if (p === 2 && delayed) return new Promise<Response>(resolve => { resolveLate = resolve }); return response(workbench({ page: p, size: 1, total: 2, items: [{ ...alarm, id: `alarm-page-${p}` }], filters: { ...emptyAlarmFilters, keyword: q.get('keyword') ?? '' }, metrics: { ...workbench().metrics, alarm_total: 2, unhandled: 2, unrecovered: 2 } })) }); render(<DeviceDetail deviceId="d1" close={() => {}}/>); const user = userEvent.setup(); await user.click(await relatedAlarmButton()); await waitFor(() => expect(document.querySelector('[data-device-alarm-id="alarm-page-1"]')).not.toBeNull()); expect(document.querySelector('[data-device-alarm-metric="alarm_total"]')).toHaveTextContent('2'); change('关联报警关键字', '%_字面'); expect(alarmCalls(fetcher)).toHaveLength(1); await user.click(screen.getByRole('button', { name: '下一页' })); await waitFor(() => expect(document.querySelector('[data-device-alarm-id="alarm-page-2"]')).not.toBeNull()); expect(new URL(alarmCalls(fetcher).at(-1)![0], 'http://local').searchParams.get('keyword')).toBeNull(); await user.click(screen.getByRole('button', { name: '查询关联报警' })); await waitFor(() => expect(new URL(alarmCalls(fetcher).at(-1)![0], 'http://local').searchParams.get('keyword')).toBe('%_字面')); expect(new URL(alarmCalls(fetcher).at(-1)![0], 'http://local').searchParams.has('size')).toBe(false); await screen.findByRole('button', { name: '下一页' }); delayed = true; await user.click(screen.getByRole('button', { name: '下一页' })); await waitFor(() => expect(resolveLate).toBeTypeOf('function')); const old = alarmCalls(fetcher).at(-1)!; change('关联报警关键字', '新的已应用条件'); await user.click(screen.getByRole('button', { name: '查询关联报警' })); await waitFor(() => expect(document.querySelector('[data-device-alarm-id="alarm-page-1"]')).not.toBeNull()); expect(old[1].signal.aborted).toBe(true); await act(async () => resolveLate(response(workbench({ page: 2, size: 1, total: 2, filters: { ...emptyAlarmFilters, keyword: '%_字面' }, items: [{ ...alarm, id: 'late-page-2', device_name: '迟到页不出现' }], metrics: { ...workbench().metrics, alarm_total: 2, unhandled: 2, unrecovered: 2 } })))); expect(screen.queryByText('迟到页不出现')).not.toBeInTheDocument() })
@@ -107,7 +124,19 @@ describe('设备资料编辑入口的确认与授权边界', () => {
 
 describe('P8只读生命周期/坏响应，不复用旧行或扩权', () => {
   it('刷新当前详情销毁关联结果/草稿/请求，重新确认后须再次明确读取', async () => { const fetcher = mock(); render(<DeviceDetail deviceId="d1" close={() => {}}/>); const user = userEvent.setup(); await user.click(await relatedAlarmButton()); await screen.findByText('报警固有旧名称'); change('关联报警关键字', '不保留草稿'); await user.click(screen.getByRole('button', { name: '刷新设备详情' })); expect(screen.queryByLabelText('关联报警关键字')).not.toBeInTheDocument(); await user.click(await relatedAlarmButton()); expect(screen.getByLabelText('关联报警关键字')).toHaveValue(''); expect(detailCalls(fetcher)).toHaveLength(2); expect(alarmCalls(fetcher)).toHaveLength(2) })
-  it('撤alarm读立即清子树/统计、重新授予不恢复隐藏结果或请求', async () => { const fetcher = mock(); render(<DeviceDetail deviceId="d1" close={() => {}}/>); const user = userEvent.setup(); await user.click(await relatedAlarmButton()); await screen.findByText('报警固有旧名称'); act(() => useSession.setState({ permissions: ['device:read'] })); expect(screen.queryByText('报警固有旧名称')).not.toBeInTheDocument(); expect(document.querySelector('[data-device-alarm-metric]')).toBeNull(); await user.click(await screen.findByRole('tab', { name: '关联报警' })); await screen.findByText(/缺独立alarm:read/); act(() => useSession.setState({ permissions: ['device:read', 'alarm:read'] })); await relatedAlarmButton(); expect(alarmCalls(fetcher)).toHaveLength(1); expect(document.querySelector('[data-device-alarm-metric]')).toBeNull() })
+  it('撤alarm读立即清子树，重新授予不恢复隐藏结果或请求', async () => {
+    const fetcher = mock()
+    render(<DeviceDetail deviceId="d1" close={() => {}}/>)
+    await userEvent.setup().click(await relatedAlarmButton())
+    await screen.findByText('报警固有旧名称')
+    act(() => useSession.setState({ permissions: ['device:read'] }))
+    await screen.findByText(/缺独立alarm:read/)
+    expect(screen.queryByText('报警固有旧名称')).not.toBeInTheDocument()
+    act(() => useSession.setState({ permissions: ['device:read', 'alarm:read'] }))
+    await relatedAlarmButton()
+    expect(alarmCalls(fetcher)).toHaveLength(1)
+    expect(screen.queryByText('报警固有旧名称')).not.toBeInTheDocument()
+  })
   it('device-only缺alarm不读，只有alarm缺device连详情也不读', () => { const fetcher = mock(undefined, ['alarm:read']); render(<DeviceDetail deviceId="d1" close={() => {}}/>); expect(fetcher).not.toHaveBeenCalled(); expect(screen.queryByRole('dialog')).not.toBeInTheDocument() })
   it('对象A→B取消晚A，关闭清结果，晚GET不把A画进B', async () => { let resolve!: (value: Response) => void; const fetcher = mock(url => /\/devices\/d1$/.test(url) ? new Promise<Response>(r => { resolve = r }) : undefined); const view = render(<DeviceDetail deviceId="d1" close={() => {}}/>); await waitFor(() => expect(resolve).toBeTypeOf('function')); const old = detailCalls(fetcher)[0]; view.rerender(<DeviceDetail deviceId="d2" close={() => {}}/>); await waitFor(() => expect(document.querySelector('[data-device-detail-id="d2"]')).not.toBeNull()); expect(old[1].signal.aborted).toBe(true); await act(async () => resolve(raw(detail({ name: '迟到A不显示' })))); expect(screen.queryByText('迟到A不显示')).not.toBeInTheDocument(); view.rerender(<DeviceDetail deviceId={null} close={() => {}}/>); expect(document.querySelector('[data-device-detail-id]')).toBeNull() })
   it('切换单位筛选不改写已打开记录的归属；撤设备读才销毁当前与晚数据，不落浏览器cache', async () => { let resolve!: (value: Response) => void; const fetcher = mock(url => /\/devices\/d1$/.test(url) ? new Promise<Response>(r => { resolve = r }) : undefined); render(<DeviceDetail deviceId="d1" close={() => {}}/>); await waitFor(() => expect(resolve).toBeTypeOf('function')); const old = detailCalls(fetcher)[0]; act(() => useSession.getState().setScope(['tenant-b'], [], true)); expect(old[1].signal.aborted).toBe(false); expect((old[1].headers as Headers).get('X-Tenant-Id')).toBe('tenant-a'); expect(detailCalls(fetcher)).toHaveLength(1); act(() => useSession.setState({ permissions: [] })); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(old[1].signal.aborted).toBe(true); act(() => useSession.getState().clear()); await act(async () => resolve(raw(detail({ name: 'scope旧对象' })))); expect(screen.queryByText('scope旧对象')).not.toBeInTheDocument(); expect(localStorage.length + sessionStorage.length).toBe(0) })

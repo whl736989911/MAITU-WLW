@@ -18,8 +18,13 @@ function ReadingValue({ reading }: { reading: TelemetryReading }) {
   return <><strong>{reading.value}</strong> {reading.unit ?? (reading.value_type === 'STRING' ? '文本' : reading.value_type === 'BOOLEAN' ? '布尔' : '单位未知')}</>
 }
 
-export function DeviceTelemetry({ deviceId, tenantId }: { deviceId: string; tenantId: string }) {
+export function DeviceTelemetry({ deviceId, tenantId, cards = false }: { deviceId: string; tenantId: string; cards?: boolean }) {
   const [view, setView] = useState<'current' | 'history'>('current')
+  if (cards) return <>
+    <CurrentTelemetry deviceId={deviceId} tenantId={tenantId} cards/>
+    <Button type="button" variant="link" size="sm" aria-expanded={view === 'history'} onClick={() => setView(view === 'history' ? 'current' : 'history')}>{view === 'history' ? '收起历史记录' : '查看监测历史'}</Button>
+    {view === 'history' && <TelemetryHistory deviceId={deviceId} tenantId={tenantId}/>}
+  </>
   return <>
     <div className="version-actions" role="tablist" aria-label="本设备监测视图">
       <Button type="button" role="tab" aria-selected={view === 'current'} variant={view === 'current' ? 'default' : 'outline'} onClick={() => setView('current')}>当前读数</Button>
@@ -29,7 +34,11 @@ export function DeviceTelemetry({ deviceId, tenantId }: { deviceId: string; tena
   </>
 }
 
-function CurrentTelemetry({ deviceId, tenantId }: { deviceId: string; tenantId: string }) {
+const preferredMetrics = ['signal_level', 'battery', 'humidity', 'temperature', 'water_vapor', 'maze_pollution', 'smoke_value']
+const signalLevels: Record<string, string> = { '1': '弱', '2': '中', '3': '强' }
+function metricOrder(key: string) { const position = preferredMetrics.indexOf(key); return position < 0 ? preferredMetrics.length : position }
+
+function CurrentTelemetry({ deviceId, tenantId, cards = false }: { deviceId: string; tenantId: string; cards?: boolean }) {
   const data = useResource(`device-telemetry:${tenantId}:${deviceId}`, signal => queryDeviceTelemetry(deviceId, tenantId, signal))
   const revision = useObjectRevision('devices'), previousRevision = useRef(revision)
   useEffect(() => {
@@ -42,6 +51,18 @@ function CurrentTelemetry({ deviceId, tenantId }: { deviceId: string; tenantId: 
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisibility) }
   }, [revision, data.refresh])
   const readings = !data.loading && data.error == null ? data.data?.items[0]?.readings ?? [] : []
+  if (cards) {
+    const sorted = [...readings].sort((a, b) => metricOrder(a.metric) - metricOrder(b.metric))
+    return <>
+      <div className="device-detail-toolbar"><Button type="button" size="sm" variant="ghost" onClick={data.refresh}>刷新监测值</Button>{data.data?.items[0]?.observed_at && <small>最近上报 <SourceTime value={data.data.items[0].observed_at}/></small>}</div>
+      {data.loading ? <Loading/> : data.error != null ? <ErrorNotice error={data.error} retry={data.refresh}/> : !sorted.length ? <Empty title="暂无可展示的监测值"/> : <div className="device-monitor-cards">
+        {sorted.map(reading => <div className="device-monitor-card" key={reading.metric} title={`上报：${reading.observed_at ?? '未提供'}；接收：${reading.received_at ?? '未提供'}`}>
+          <strong>{reading.metric === 'signal_level' ? signalLevels[reading.value] ?? reading.value : reading.value}</strong>
+          <span>{reading.label ?? reading.metric}{reading.unit ? ` (${reading.unit})` : ''}</span>
+        </div>)}
+      </div>}
+    </>
+  }
   return <section aria-label="本设备监测数据">
     <div className="version-actions"><h3>当前监测值</h3><Button type="button" variant="outline" onClick={data.refresh}>刷新监测数据</Button></div>
     <p className="muted-note">各指标保留自身最新上报时间，不把其他指标的新报文时间套用到旧值；时间按北京时间展示。</p>

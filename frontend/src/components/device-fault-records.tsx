@@ -31,7 +31,8 @@ export function DeviceFaultRecords({ deviceId, tenantId }: { deviceId: string; t
   }
   function clear() { setDraft({ ...emptyFaultFilters }); setAppliedDraft({ ...emptyFaultFilters }); setApplied({ ...emptyFaultFilters }); setPage(1); setError(undefined); data.refresh() }
   return <section aria-label="本设备故障记录">
-    <div className="version-actions"><h3>故障记录</h3><Button type="button" variant="outline" onClick={data.refresh}>刷新本设备故障</Button>{!data.loading && data.error == null && data.data && <DataTransferActions kind="FAULTS" label="导出本设备故障记录" filters={{ unit_ids: tenantId, device_id: deviceId, from: applied.from, to: applied.to, handling_state: applied.handling_state }}/>}</div>
+    <div className="device-detail-toolbar"><Button type="button" variant="outline" size="sm" onClick={data.refresh}>刷新本设备故障</Button>{!data.loading && data.error == null && data.data && <DataTransferActions kind="FAULTS" label="导出本设备故障记录" filters={{ unit_ids: tenantId, device_id: deviceId, from: applied.from, to: applied.to, handling_state: applied.handling_state }}/>}</div>
+    <details className="device-detail-filter"><summary>筛选故障记录</summary>
     <form onSubmit={apply}>
       <div className="device-detail-grid">
         <div className="field"><Label htmlFor="device-fault-handling">故障本地处置状态</Label><select id="device-fault-handling" className="native-select" value={draft.handling_state} onChange={event => setDraft(old => ({ ...old, handling_state: event.target.value as FaultHandlingFilter }))}><option value="">全部状态</option><option value="UNRECORDED">尚未记录</option><option value="UNHANDLED">未处置</option><option value="HANDLED">已处置</option></select></div>
@@ -40,25 +41,29 @@ export function DeviceFaultRecords({ deviceId, tenantId }: { deviceId: string; t
       </div>
       <div className="version-actions"><Button type="submit">查询故障记录</Button><Button type="button" variant="outline" onClick={clear}>清空故障条件</Button></div>
     </form>
+    </details>
     {error != null && <ErrorNotice error={error}/>}
     {(draft.from !== appliedDraft.from || draft.to !== appliedDraft.to || draft.handling_state !== appliedDraft.handling_state) && <p className="muted-note">筛选条件尚未应用，翻页和导出仍沿用上次查询条件。</p>}
     <p className="muted-note">按来源观察时间查询，不用接收或入库时间补齐。来源恢复与人工处置分别显示，不把离线判定或人工处理当作设备恢复。</p>
     {data.loading ? <Loading/> : data.error != null ? <ErrorNotice error={data.error} retry={data.refresh}/> : !data.data ? <Empty title="本设备故障记录尚未确认"/> : <>
       {data.data.items.length === 0 ? <Empty title={data.data.total ? '当前页没有故障记录' : applied.from || applied.to || applied.handling_state ? '本设备暂无符合条件的故障记录' : '本设备暂无故障记录'}/> : <Table>
-        <TableHeader><TableRow><TableHead>故障类型</TableHead><TableHead>来源观察时间</TableHead><TableHead>平台接收时间</TableHead><TableHead>来源恢复</TableHead><TableHead>本地处置</TableHead></TableRow></TableHeader>
+        <TableHeader><TableRow><TableHead>故障时间</TableHead><TableHead>事件源</TableHead><TableHead>故障类型</TableHead><TableHead>来源恢复</TableHead><TableHead>恢复时间</TableHead><TableHead>人工处置</TableHead><TableHead>处置说明</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
         <TableBody>{data.data.items.map(event => <TableRow key={event.id} data-device-fault-id={event.id}>
-          <TableCell><strong>{event.fault_label || '类型待识别'}</strong><details><summary>记录详情</summary><dl className="detail-list">
+          <TableCell><FaultTime value={event.observed_at} missing="观察时间未知"/></TableCell>
+          <TableCell>{event.device_name ?? '未确认'}</TableCell>
+          <TableCell><strong>{event.fault_label || '类型待识别'}</strong></TableCell>
+          <TableCell>{sourceFaultRecoveryText(event, dateTime)}</TableCell>
+          <TableCell><FaultTime value={event.source_recovered_at} missing="—"/></TableCell>
+          <TableCell>{event.handling?.handled ? '已处置' : event.handling ? '未处置' : '尚未记录'}</TableCell>
+          <TableCell>{event.handling?.note || '—'}</TableCell>
+          <TableCell><details><summary>记录详情</summary><dl className="detail-list">
             <div><dt>故障编码</dt><dd>{event.fault_code ?? '来源未提供编码'}</dd></div>
             <div><dt>来源协议方法</dt><dd>{event.method ?? '来源未提供'}</dd></div>
             <div><dt>平台事件标识</dt><dd className="mono">{event.id}</dd></div>
             <div><dt>厂商故障标识</dt><dd className="mono">{event.source_fault_id ?? '来源未提供'}</dd></div>
+            <div><dt>平台接收时间</dt><dd><FaultTime value={event.received_at} missing="接收时间未知"/></dd></div>
             <div><dt>平台记录时间</dt><dd><FaultTime value={event.created_at} missing="未提供"/></dd></div>
-            {event.handling && <div><dt>处置说明</dt><dd>{event.handling.note || '未填写'}</dd></div>}
           </dl></details></TableCell>
-          <TableCell><FaultTime value={event.observed_at} missing="观察时间未知"/></TableCell>
-          <TableCell><FaultTime value={event.received_at} missing="接收时间未知"/></TableCell>
-          <TableCell>{sourceFaultRecoveryText(event, dateTime)}</TableCell>
-          <TableCell>{event.handling?.handled ? '已处置' : event.handling ? '未处置' : '尚未记录'}</TableCell>
         </TableRow>)}</TableBody>
       </Table>}
       <Pager page={data.data.page} size={data.data.size} total={data.data.total} onChange={setPage}/>

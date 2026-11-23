@@ -289,19 +289,13 @@ textarea { width: 100%; border: 1px solid var(--color-input); border-radius: 8px
 .device-workbench-metrics>div { display:flex; flex-direction:column; gap:9px; min-width:0; padding:16px; background:#f6f8f1; border:1px solid #e7ecdf; border-radius:10px; font-size:11px; }
 .device-workbench-metrics strong { color:#405d39; font-size:26px; min-width:0; overflow-wrap:anywhere; }
 @media(max-width:640px) { .device-workbench-grid { grid-template-columns:minmax(0,1fr); }.device-workbench-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.device-workbench .page-heading { flex-direction:column; }.device-workbench .heading-actions { flex-wrap:wrap; }.device-workbench .heading-actions button { width:auto; font-size:11px; padding:0 10px; } }
-[data-slot="sheet-content"].device-detail-sheet[data-side="right"] { width:min(100vw,900px)!important; max-width:min(100vw,900px)!important; box-sizing:border-box; }
-.device-detail-body,.device-detail-body section,.device-related-alarms { min-width:0; }
-.device-detail-body .alarm-detail-title>h2,.device-detail-body .device-snapshot>span { min-width:0; max-width:100%; overflow-wrap:anywhere; }
-.device-detail-body h3 { margin:24px 0 14px; font-size:14px; color:#6b8057; }
-.device-detail-body .detail-list { margin:20px 0; }
-.device-detail-body .detail-list dd,.device-detail-body .mono,.device-detail-body p { overflow-wrap:anywhere; }
+.device-related-alarms { min-width:0; }
 .device-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:15px; }
 .device-detail-grid .field,.device-detail-grid input,.device-detail-grid select { min-width:0; max-width:100%; }
 .device-alarm-filter { padding:16px; border:1px solid #e3e8db; border-radius:10px; margin:16px 0; }
 .device-detail-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin:16px 0; }
 .device-detail-metrics>div { display:flex; flex-direction:column; padding:12px; background:#f6f8f1; border-radius:8px; font-size:11px; }
 .device-detail-metrics strong { font-size:23px; color:#405d39; }
-.device-alarm-snapshot { white-space:normal; min-width:150px; max-width:300px; }
 @media(max-width:640px) { .device-detail-grid { grid-template-columns:minmax(0,1fr); }.device-detail-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .automation-capabilities,.automation-policy,.automation-intents { margin-top:22px; }
 .automation-capabilities h2,.automation-policy h2,.automation-intents h2 { font-size:15px; color:#6b8057; margin:0; }

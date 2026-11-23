@@ -17,7 +17,7 @@ import { Empty, ErrorNotice, Loading, Pager, RefreshButton } from './common'
 import { OperationConfirmation, useMutationAction } from './identity-common'
 import { PageHelp } from './page-tools'
 
-const stateLabel: Record<CommandState, string> = {
+export const stateLabel: Record<CommandState, string> = {
   QUEUED: '排队中（未外发）', IN_FLIGHT: '发送中', ACCEPTED: '厂商已接受（效果未证实）', REJECTED: '厂商拒绝',
   UNKNOWN: '结果未知（禁止自动重发）', SUCCEEDED: '文档回执成功', FAILED: '失败/未下发', CANCELLED: '已取消（未外发）',
 }
@@ -150,8 +150,8 @@ function ParameterSnapshotView({ read, loading, error, refresh }: { read: Parame
 }
 interface CommandPayload { service_key: string; arguments: Record<string, unknown>; expected_device_revision: number; capability_revision?: number; source_binding_id?: string; reason: string; risk_confirmed: boolean }
 
-function CommandForm({ service, deviceId, tenantId, deviceRevision, bindingId, onClose, onCreated }: { service: ServiceDefinition; deviceId: string; tenantId?: string; deviceRevision: number; bindingId?: string; onClose: () => void; onCreated: () => void }) {
-  const [values, setValues] = useState<Record<string, string | boolean>>(() => emptyArguments(service.input_schema.fields) as Record<string, string | boolean>)
+export function CommandForm({ service, deviceId, tenantId, deviceRevision, bindingId, initialValues, deviceName, onClose, onCreated }: { service: ServiceDefinition; deviceId: string; tenantId?: string; deviceRevision: number; bindingId?: string; initialValues?: Record<string, string | boolean>; deviceName?: string | null; onClose: () => void; onCreated: () => void }) {
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => ({ ...emptyArguments(service.input_schema.fields), ...initialValues }))
   const [reason, setReason] = useState('')
   const [riskConfirmed, setRiskConfirmed] = useState(false)
   const action = useMutationAction()
@@ -213,6 +213,7 @@ function CommandForm({ service, deviceId, tenantId, deviceRevision, bindingId, o
     <div className="review-body"><form className="form-stack" onSubmit={submit}>
       {!action.confirming ? <>
         <div className="identity-readonly mono">{service.service_key} · {service.risk_level} · revision {service.revision} · 设备revision {deviceRevision}</div>
+        {deviceName && <p>目标设备：{deviceName}</p>}
         {service.input_schema.fields.length === 0 ? <p className="muted-note">该操作没有输入参数。</p> : service.input_schema.fields.map(field => <div className="field" key={field.key}>
           <Label htmlFor={`svc-${field.key}`}>{field.label}{field.required ? '（必填）' : ''}{field.sensitive ? '（敏感，回显将掩码）' : ''}</Label>
           {field.type === 'boolean'
@@ -228,13 +229,13 @@ function CommandForm({ service, deviceId, tenantId, deviceRevision, bindingId, o
         {action.error != null && <><ErrorNotice error={action.error}/><p className="muted-note">{errorMessage(action.error)}</p></>}
         <Button type="submit">核对并继续</Button>
       </> : <OperationConfirmation action={action} title="二次确认 · 下发设备指令" submitLabel="确认入队" refresh={onClose} warning="命令入队后不能修改参数；仅未外发时可撤销。未知结果必须显式核对，禁止重复提交。">
-        <p>服务：{service.display_name} · {service.service_key}</p><p>设备：{deviceId} · revision {deviceRevision}</p><p>参数：{JSON.stringify(Object.fromEntries(service.input_schema.fields.filter(field => field.sensitive).map(field => [field.key, '******'])))}</p><p>原因：{reason}</p>
+        <p>服务：{service.display_name} · {service.service_key}</p><p>设备：{deviceName ?? deviceId} · revision {deviceRevision}</p><p>参数：{JSON.stringify(Object.fromEntries(service.input_schema.fields.filter(field => values[field.key] !== '' && values[field.key] !== undefined).map(field => [field.label, field.sensitive ? '******' : values[field.key]])))}</p><p>原因：{reason}</p>
       </OperationConfirmation>}
     </form></div>
   </>
 }
 
-function CommandDetailView({ commandId, tenantId, onClose }: { commandId: string; tenantId?: string; onClose: () => void }) {
+export function CommandDetailView({ commandId, tenantId, onClose }: { commandId: string; tenantId?: string; onClose: () => void }) {
   const detail = useResource(`service-command:${tenantId ?? 'none'}:${commandId}`, signal => deviceServicesApi.command(commandId, tenantId, signal))
   return <>
     <SheetHeader className="review-header"><SheetTitle>命令详情</SheetTitle><SheetDescription>快照与参数不可变；未知结果保留为未知，不替代为成功。</SheetDescription></SheetHeader>
@@ -246,6 +247,7 @@ function CommandDetailView({ commandId, tenantId, onClose }: { commandId: string
           <div><dt>模式/驱动</dt><dd>{modeLabel[detail.data.command.driver_mode] ?? detail.data.command.driver_mode} · {detail.data.command.driver_key}</dd></div>
           <div><dt>厂商结果</dt><dd className="mono">{detail.data.command.vendor_code ?? '未提供'}{detail.data.command.accepted_reference ? ` · 引用 ${detail.data.command.accepted_reference}` : ''}</dd></div>
           <div><dt>原因</dt><dd>{detail.data.reason}</dd></div>
+          <div><dt>操作人</dt><dd>{detail.data.actor_id ?? '未提供'}</dd></div>
         </dl>
         <h3>参数（敏感字段掩码）</h3><pre className="json-preview">{JSON.stringify(detail.data.arguments, null, 2)}</pre>
         <h3>不可变绑定快照</h3><pre className="json-preview">{JSON.stringify(detail.data.snapshot, null, 2)}</pre>
@@ -277,7 +279,7 @@ function CancelButton({ commandId, tenantId, onDone }: { commandId: string; tena
   </form>
 }
 
-function ReconcileButton({ commandId, tenantId, onDone }: { commandId: string; tenantId?: string; onDone: () => void }) {
+export function ReconcileButton({ commandId, tenantId, onDone }: { commandId: string; tenantId?: string; onDone: () => void }) {
   const [reason, setReason] = useState('')
   const action = useMutationAction()
   function submit(event: FormEvent) {

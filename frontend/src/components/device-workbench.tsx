@@ -41,6 +41,7 @@ function Content({ back }: { back: () => void }) {
   function refresh() { closeDetail(); devices.refresh() }
   function apply(event: FormEvent) { event.preventDefault(); closeDetail(); try { setApplied(compileDeviceDraft(draft)); setAppliedDraft({ ...draft }); setPage(1); setError(undefined); devices.refresh() } catch (error) { setError(error) } }
   function clear() { closeDetail(); setDraft({ ...emptyDeviceDraft }); setAppliedDraft({ ...emptyDeviceDraft }); setApplied({ ...emptyDeviceFilters }); setPage(1); setError(undefined); devices.refresh() }
+  if (selectedDetail) return <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail}/></Suspense>
   return <section className="device-workbench" data-device-workbench-as-of={data?.as_of}>
     <PageHeading eyebrow="DEVICES · 明确筛选" title="设备筛选工作台" description="按链路诊断、来源火情及登记属性筛选；列表另显示用户端状态。">
       <Button type="button" variant="outline" onClick={() => { closeDetail(); back() }}><SlidersHorizontal/>返回基础设备列表</Button>
@@ -69,6 +70,5 @@ function Content({ back }: { back: () => void }) {
       </>}
       <p className="muted-note">高级仅只读设备与独立详情；编辑、迁移、绑定历史和开户请返回基础设备列表按已有权限操作。退出高级清空本次条件。</p>
     </CardContent></Card>
-    {selectedDetail && <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail}/></Suspense>}
   </section>
 }

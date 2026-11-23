@@ -25,6 +25,7 @@ import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -303,13 +304,19 @@ public class DeviceServiceCommandService {
 
     // ---------------- read ----------------
 
-    public Page<DeviceServiceModels.CommandSummary> page(String actorId, String tenant, String deviceId, int page, Integer size) {
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Page<DeviceServiceModels.CommandSummary> page(String actorId, String tenant, String deviceId, int page, Integer size, String serviceKey) {
         var device = queries.device(actorId, tenant, deviceId);
         var pagination = Pagination.of(page, size, sizes.defaultPageSize());
-        long total = jdbc.queryForObject("SELECT COUNT(*) FROM device_service_commands WHERE tenant_id=? AND device_id=?",
-            Long.class, device.tenantId(), device.id());
-        var items = jdbc.query("SELECT * FROM device_service_commands WHERE tenant_id=? AND device_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (rs, n) -> summary(row(rs)), device.tenantId(), device.id(), pagination.size(), pagination.offset());
+        if (serviceKey != null && !serviceKey.matches("[A-Za-z0-9._-]{1,64}")) throw ApiError.bad("服务类型筛选无效");
+        var args = new ArrayList<Object>();
+        args.add(device.tenantId()); args.add(device.id());
+        String where = " WHERE tenant_id=? AND device_id=?";
+        if (serviceKey != null) { where += " AND service_key=?"; args.add(serviceKey); }
+        long total = jdbc.queryForObject("SELECT COUNT(*) FROM device_service_commands" + where, Long.class, args.toArray());
+        args.add(pagination.size()); args.add(pagination.offset());
+        var items = jdbc.query("SELECT * FROM device_service_commands" + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (rs, n) -> summary(row(rs)), args.toArray());
         return new Page<>(items, total, pagination.page(), pagination.size());
     }
 

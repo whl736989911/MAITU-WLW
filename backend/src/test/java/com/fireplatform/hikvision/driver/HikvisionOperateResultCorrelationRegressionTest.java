@@ -37,6 +37,20 @@ class HikvisionOperateResultCorrelationRegressionTest {
     }
 
     @Test
+    void resetUsesTheDocumentedOperationAndNeverClaimsTerminalExecution() {
+        var driver = driver();
+        var service = driver.services().stream().filter(s -> "hik.v2.reset".equals(s.key())).findFirst().orElseThrow();
+        assertThat(service.supportState()).isEqualTo("UNVERIFIED");
+        var call = new IntegrationDriver.DriverCall("fixture-command", "fixture-tenant", "fixture-device",
+            "fixture-eui", "bound-device", "bound-serial", "800235", null, null,
+            JSON.createObjectNode(), service, "fixture-account");
+        when(client.write(anyString(), any())).thenReturn(new HikvisionClient.VendorResult("0", "ok", JSON.createObjectNode()));
+        assertThat(driver.submit(call).outcome()).isEqualTo("ACCEPTED");
+        verify(client).write("/api/device/v2/operate", JSON.createObjectNode().put("deviceID", "bound-device").put("operateParam", "{\"operateType\":7}"));
+        assertThat(driver.query(call).outcome()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
     void deviceLevelStatusCannotBecomeTerminalCommandReceipt() {
         var driver = driver();
         IntegrationDriver.DriverServiceDescriptor operate = driver.services().stream()
