@@ -7,10 +7,20 @@ import type { PlaceNode, ScopeUnit } from '@/lib/types'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Card, CardContent } from './ui/card'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './ui/sheet'
 import { ErrorNotice, Loading, Pager } from './common'
 
 const PAGE_SIZE = 20
-export function HikvisionPendingDevices({ openDevice }: { openDevice: (device: { id: string; tenant_id?: string }) => void }) {
+type OpenDevice = (device: { id: string; tenant_id?: string }) => void
+
+export function HikvisionAssociationSheet({ onClose, openDevice }: { onClose: () => void; openDevice?: OpenDevice }) {
+  return <Sheet open onOpenChange={open => { if (!open) onClose() }}><SheetContent className="review-sheet sm:max-w-5xl">
+    <SheetHeader className="review-header"><SheetTitle>海康待关联设备</SheetTitle><SheetDescription>先选已发现的海康设备，再明确指定本地归属；不会在海康云重复开户。</SheetDescription></SheetHeader>
+    <div className="review-body"><HikvisionPendingDevices openDevice={openDevice}/></div>
+  </SheetContent></Sheet>
+}
+
+function HikvisionPendingDevices({ openDevice }: { openDevice?: OpenDevice }) {
   const permissions = useSession(state => state.permissions)
   const canRead = permissions.includes('integrations:read'), canWrite = permissions.includes('integrations:write')
   const status = useResource('hikvision-status', signal => hikvisionApi.status(signal), canRead)
@@ -27,7 +37,7 @@ export function HikvisionPendingDevices({ openDevice }: { openDevice: (device: {
   }
   if (!canRead) return null
   return <Card className="list-card"><CardContent>
-    <div className="list-toolbar"><div><h2>海康待分配设备</h2><p className="muted-note">仅显示真实海康开放 API 观察到的设备；同步不会创建本地单位，归属必须由有权限的操作者明确指定。</p></div>{canWrite && <div className="identity-row-actions"><Button type="button" disabled={refreshing || !status.data?.configured || !status.data?.enabled} onClick={() => void synchronize()}>{refreshing ? '同步中…' : '同步海康设备'}</Button></div>}</div>
+    <div className="list-toolbar"><p className="muted-note">仅显示海康开放 API 观测到的设备；同步不会自动分配归属。</p>{canWrite && <div className="identity-row-actions"><Button type="button" disabled={refreshing || !status.data?.configured || !status.data?.enabled} onClick={() => void synchronize()}>{refreshing ? '同步中…' : '同步海康设备'}</Button></div>}</div>
     {status.loading && !status.data ? <Loading/> : status.error != null ? <ErrorNotice error={status.error} retry={status.refresh}/> : status.data && <HikvisionStatusView status={status.data}/>}
     {error != null && <ErrorNotice error={error}/>}
     {devices.loading && !devices.data ? <Loading/> : devices.error != null ? <ErrorNotice error={devices.error} retry={devices.refresh}/> : devices.data ? <>
@@ -47,7 +57,7 @@ function HikvisionStatusView({ status }: { status: HikvisionStatus }) {
     {status.streams.map((stream, index) => <p key={`${stream.kind}:${index}`}>流 {stream.kind}：{stream.total} · 最近成功 {stream.last_success_at ?? '暂无记录'}{stream.last_error ? ` · 错误 ${stream.last_error}` : ''}</p>)}
   </div>
 }
-function HikvisionDeviceRow({ device, canWrite, onAssigned, onOpen }: { device: HikvisionDevice; canWrite: boolean; onAssigned: () => void; onOpen: (device: { id: string; tenant_id?: string }) => void }) {
+function HikvisionDeviceRow({ device, canWrite, onAssigned, onOpen }: { device: HikvisionDevice; canWrite: boolean; onAssigned: () => void; onOpen?: OpenDevice }) {
   const [tenantId, setTenantId] = useState(''), [placeId, setPlaceId] = useState(''), [existingDeviceId, setExistingDeviceId] = useState(''), [saving, setSaving] = useState(false), [error, setError] = useState<unknown>()
   const scope = useResource(`hikvision-assignment-scope:${device.external_id}`, signal => api.scopeTree(signal), canWrite && device.assignment_state === 'UNASSIGNED')
   const units: ScopeUnit[] = scope.data ?? [], places: PlaceNode[] = units.find(unit => unit.id === tenantId)?.places ?? []
@@ -59,5 +69,5 @@ function HikvisionDeviceRow({ device, canWrite, onAssigned, onOpen }: { device: 
     catch (cause) { setError(cause) }
     finally { setSaving(false) }
   }
-  return <tr><td>{device.name}<div className="table-sub mono">来源 ID：{device.external_id}</div><div className="table-sub">序列号：{device.serial ?? '未提供'} · 型号：{device.model ?? '未提供'}</div><div className="table-sub">类型：{device.source_device_type ?? '未提供'} · 来源更新时间：{device.source_updated_at ?? '未提供'}</div></td><td>{device.source_status ?? '未知'} · {device.online === null ? '在线状态未知' : device.online ? '在线' : '离线'}</td><td>{device.last_observed_at ?? '尚无观测'}</td><td>{device.sensor_count}</td><td>{device.assignment_state === 'LINKED' ? <><div>本地设备：{device.local_device_id ?? '未知'}</div><div className="table-sub">单位：{device.local_tenant_id ?? '未知'} · 位置：{device.local_place_id ?? '未指定'}</div></> : '待分配'}</td><td>{device.assignment_state === 'LINKED' ? device.local_device_id && <Button type="button" variant="outline" size="sm" onClick={() => onOpen({ id: device.local_device_id!, tenant_id: device.local_tenant_id ?? undefined })}>查看本地设备</Button> : canWrite ? <div className="form-stack"><label className="field">明确选择本地单位<select aria-label={`为${device.name}选择本地单位`} className="native-select" value={tenantId} onChange={event => { setTenantId(event.target.value); setPlaceId('') }}><option value="">请选择单位</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name}</option>)}</select></label>{scope.loading && <small>读取可管理单位与位置…</small>}{scope.error != null && <ErrorNotice error={scope.error} retry={scope.refresh}/>}<label className="field">位置（可选）<select aria-label={`为${device.name}选择位置`} className="native-select" value={placeId} onChange={event => setPlaceId(event.target.value)}><option value="">不指定位置</option>{places.map(place => <option key={place.id} value={place.id}>{place.name}</option>)}</select></label><label className="field">已存在本地设备 ID（可选；留空会创建真实设备）<Input aria-label={`为${device.name}填写已有设备 ID`} value={existingDeviceId} onChange={event => setExistingDeviceId(event.target.value)} /></label><Button type="button" disabled={!tenantId || saving || scope.loading || !units.length} onClick={() => void assign()}>{saving ? '分配中…' : '确认分配'}</Button>{error != null && <ErrorNotice error={error}/>}</div> : '无分配权限'}</td></tr>
+  return <tr><td>{device.name}<div className="table-sub mono">来源 ID：{device.external_id}</div><div className="table-sub">序列号：{device.serial ?? '未提供'} · 型号：{device.model ?? '未提供'}</div><div className="table-sub">类型：{device.source_device_type ?? '未提供'} · 来源更新时间：{device.source_updated_at ?? '未提供'}</div></td><td>{device.source_status ?? '未知'} · {device.online === null ? '在线状态未知' : device.online ? '在线' : '离线'}</td><td>{device.last_observed_at ?? '尚无观测'}</td><td>{device.sensor_count}</td><td>{device.assignment_state === 'LINKED' ? <><div>本地设备：{device.local_device_id ?? '未知'}</div><div className="table-sub">单位：{device.local_tenant_id ?? '未知'} · 位置：{device.local_place_id ?? '未指定'}</div></> : '待分配'}</td><td>{device.assignment_state === 'LINKED' ? device.local_device_id && onOpen && <Button type="button" variant="outline" size="sm" onClick={() => onOpen({ id: device.local_device_id!, tenant_id: device.local_tenant_id ?? undefined })}>查看本地设备</Button> : canWrite ? <div className="form-stack"><label className="field">明确选择本地单位<select aria-label={`为${device.name}选择本地单位`} className="native-select" value={tenantId} onChange={event => { setTenantId(event.target.value); setPlaceId('') }}><option value="">请选择单位</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name}</option>)}</select></label>{scope.loading && <small>读取可管理单位与位置…</small>}{scope.error != null && <ErrorNotice error={scope.error} retry={scope.refresh}/>}<label className="field">位置（可选）<select aria-label={`为${device.name}选择位置`} className="native-select" value={placeId} onChange={event => setPlaceId(event.target.value)}><option value="">不指定位置</option>{places.map(place => <option key={place.id} value={place.id}>{place.name}</option>)}</select></label><label className="field">已存在本地设备 ID（可选；留空会创建真实设备）<Input aria-label={`为${device.name}填写已有设备 ID`} value={existingDeviceId} onChange={event => setExistingDeviceId(event.target.value)} /></label><Button type="button" disabled={!tenantId || saving || scope.loading || !units.length} onClick={() => void assign()}>{saving ? '分配中…' : '确认分配'}</Button>{error != null && <ErrorNotice error={error}/>}</div> : '无分配权限'}</td></tr>
 }

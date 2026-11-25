@@ -22,16 +22,16 @@ const intField = (value: string, label: string): number | undefined => {
   return numeric
 }
 
-export function VendorDeviceCreator({ onCreated, onPending, onBatchCreated, initialMode = 'manual' }: {
+export function VendorDeviceCreator({ onCreated, onPending, onBatchCreated, entry }: {
   onCreated: (device: Device) => void
   onPending: (detail: RegistrationDetail) => void
   onBatchCreated: (devices: Device[]) => void
-  initialMode?: 'manual' | 'import'
+  entry: VendorDeviceSource | 'import'
 }) {
   const session = useSession()
   const scopeTenantIds = useSession(s => s.scopeTenantIds), scopePlaceIds = useSession(s => s.scopePlaceIds)
-  const [mode, setMode] = useState<'manual' | 'import'>(initialMode)
-  const [source, setSource] = useState<VendorDeviceSource>('LEGACY_REALTIME')
+  const importing = entry === 'import'
+  const source = importing ? 'LEGACY_REALTIME' : entry
   const [tenantId, setTenantId] = useState('')
   const [name, setName] = useState(''), [serial, setSerial] = useState(''), [address, setAddress] = useState('')
   const [placeId, setPlaceId] = useState(''), [profile, setProfile] = useState<LegacyRealtimeProfile | null>(null), [upstreamId, setUpstreamId] = useState('')
@@ -52,10 +52,6 @@ export function VendorDeviceCreator({ onCreated, onPending, onBatchCreated, init
     setTenantId(scopeTargetTenantId(units.data, initialScope.current.tenantIds, initialScope.current.placeIds) ?? '')
   }, [units.data])
 
-  function changeSource(next: VendorDeviceSource) {
-    if (next === source) return
-    setSource(next); setProfile(null); setUpstreamId(''); setVerificationCode(''); action.touch()
-  }
   function changeTenant(value: string) { setTenantId(value); setPlaceId(''); action.touch() }
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -109,29 +105,23 @@ export function VendorDeviceCreator({ onCreated, onPending, onBatchCreated, init
   }
 
   if (!writable) return <ErrorNotice error={new Error('此入口仅向具备 device:write 权限的管理账户开放')}/>
+  if (importing) return <>{units.error != null && <ErrorNotice error={units.error} retry={units.refresh}/>}<VendorDeviceImporter units={units.data ?? []} onImported={onBatchCreated}/></>
   const selectedPlace = unit?.places.find(place => place.id === placeId)
   const missingRequired = [
-    !tenantId && '归属单位', mode === 'manual' && !placeId && '实际位置', mode === 'manual' && !name.trim() && '设备名称', mode === 'manual' && !serial.trim() && '设备序列号 / EUI',
-    mode === 'manual' && source === 'LEGACY_REALTIME' && !profile && '设备型号',
-    mode === 'manual' && source === 'HIKVISION_FIRECLOUD' && !deviceModel.trim() && '海康设备型号',
-    mode === 'manual' && source === 'HIKVISION_FIRECLOUD' && !deviceType.trim() && '海康设备类型代码',
-    mode === 'manual' && source === 'HIKVISION_FIRECLOUD' && !communicationType.trim() && '通信方式代码',
-    mode === 'manual' && source === 'HIKVISION_FIRECLOUD' && !vendorUnitId.trim() && '海康云单位 / 组织标识',
+    !tenantId && '归属单位', !placeId && '实际位置', !name.trim() && '设备名称', !serial.trim() && '设备序列号 / EUI',
+    source === 'LEGACY_REALTIME' && !profile && '设备型号',
+    source === 'HIKVISION_FIRECLOUD' && !deviceModel.trim() && '海康设备型号',
+    source === 'HIKVISION_FIRECLOUD' && !deviceType.trim() && '海康设备类型代码',
+    source === 'HIKVISION_FIRECLOUD' && !communicationType.trim() && '通信方式代码',
+    source === 'HIKVISION_FIRECLOUD' && !vendorUnitId.trim() && '海康云单位 / 组织标识',
   ].filter(Boolean)
   return <>
-    <header className="review-header"><div className="eyebrow">DIRECT DEVICE CREATION · 设备直连新增</div><h2>新增设备</h2><p>{mode === 'import' ? '旧烟感 Excel 可在表内选单位、位置和型号。海康模板只关联已发现的设备。' : '本平台填写设备资料并确定单位、位置。旧烟感通过网关或运营商直接向本平台上报；海康烟感先在海康云新增，再保存本地资产。建档不表示设备已上线或完成现场验收。'}</p></header>
-    <div className="review-body">
-      {mode === 'manual' && <section className="form-stack" aria-label="本次目标单位与实际位置">
+      <section className="form-stack" aria-label="本次目标单位与实际位置">
         <div className="field"><Label htmlFor="vendor-device-tenant">归属单位</Label><select id="vendor-device-tenant" className="native-select" value={tenantId} onChange={event => changeTenant(event.target.value)} disabled={units.loading || units.error != null || action.busy || action.confirming}><option value="">请明确选择目标单位</option>{(units.data ?? []).map((item: ScopeUnit) => <option key={item.id} value={item.id}>{item.name} · {item.id}</option>)}</select>{units.error != null && <ErrorNotice error={units.error} retry={units.refresh}/>}<p className="muted-note">左侧单位/位置筛选不会自动成为写入目标；本次新增以此处选择为准。</p></div>
         <div className="field"><Label htmlFor="vendor-device-place">实际位置</Label><select id="vendor-device-place" className="native-select" value={placeId} onChange={event => { setPlaceId(event.target.value); action.touch() }} disabled={!unit || units.loading || units.error != null || action.busy || action.confirming}><option value="">{unit ? '请选择目标单位中的实际位置' : '请先选择归属单位'}</option>{(unit?.places ?? []).map(place => <option key={place.id} value={place.id}>{placePath(place, unit!.places)}</option>)}</select>{unit && !unit.places.length && <p className="muted-note">该单位暂无可选位置，请先维护真实位置。</p>}</div>
-      </section>}
-      <div className="identity-row-actions" role="group" aria-label="设备资料录入方式">
-        <Button type="button" variant={mode === 'manual' ? 'default' : 'outline'} disabled={action.busy || action.confirming} onClick={() => { action.setError(undefined); setMode('manual') }}>单台新增</Button>
-        <Button type="button" variant={mode === 'import' ? 'default' : 'outline'} disabled={action.busy || action.confirming} onClick={() => { action.setError(undefined); setMode('import') }}>批量导入 / 已有设备关联</Button>
-      </div>
-      {mode === 'import' ? <>{units.error != null && <ErrorNotice error={units.error} retry={units.refresh}/>}<VendorDeviceImporter units={units.data ?? []} onImported={onBatchCreated}/></> : <form className="form-stack" onSubmit={submit}>
+      </section>
+      <form className="form-stack" onSubmit={submit}>
         {!action.confirming ? <fieldset className="form-stack" disabled={action.busy}>
-          <div className="field"><Label htmlFor="vendor-device-source">新增方式</Label><select id="vendor-device-source" className="native-select" value={source} onChange={event => changeSource(event.target.value as VendorDeviceSource)}><option value="LEGACY_REALTIME">旧烟感直连本平台</option><option value="HIKVISION_FIRECLOUD" disabled={!session.permissions.includes('integrations:write')}>海康云烟感新增（调用海康云）</option></select></div>
           <div className="field"><Label htmlFor="vendor-device-name">设备名称</Label><Input id="vendor-device-name" required maxLength={200} value={name} onChange={event => { setName(event.target.value); action.touch() }}/></div>
           <div className="field"><Label htmlFor="vendor-device-serial">设备序列号 / EUI</Label><Input id="vendor-device-serial" required maxLength={64} autoComplete="off" value={serial} onChange={event => { setSerial(event.target.value); action.touch() }}/><p className="muted-note">按设备真实EUI或序列号填写；不会推测或自动生成云端标识。</p></div>
           <div className="field"><Label htmlFor="vendor-device-address">安装地址（可选）</Label><Input id="vendor-device-address" maxLength={500} value={address} onChange={event => { setAddress(event.target.value); action.touch() }}/></div>
@@ -158,7 +148,6 @@ export function VendorDeviceCreator({ onCreated, onPending, onBatchCreated, init
         </fieldset> : <OperationConfirmation action={action} title="确认调用海康云新增并保存本地登记" submitLabel="确认新增" refresh={() => action.setConfirming(false)} warning="本次确认授权海康云新增及本地资产/登记保存，不代表设备已激活或现场已验收。未知结果请进入待完成接入核对，不要再次提交。">
           <p>方式：海康云开户并保存本地资产</p><p>设备：{name.trim()} · {serial.trim()}</p><p>归属单位：{unit?.name ?? tenantId} · 位置：{selectedPlace ? placePath(selectedPlace, unit!.places) : placeId}</p><p>地址：{address.trim() || '未填写'}</p><p>海康设备型号：{deviceModel.trim()} · 官方设备类型/通信代码：{deviceType || '未填写'} / {communicationType || '未填写'} · 云单位：{vendorUnitId || '未填写'}</p>
         </OperationConfirmation>}
-      </form>}
-    </div>
+      </form>
   </>
 }

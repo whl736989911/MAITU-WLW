@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type FormEvent } from 'react'
-import { Search, SlidersHorizontal, Plus, Pencil, History, GitCompareArrows, Building2, ListChecks, MoveRight, Ellipsis } from 'lucide-react'
+import { Dropdown } from 'antd'
+import { Search, SlidersHorizontal, Plus, ChevronDown, Pencil, History, GitCompareArrows, Building2, ListChecks, MoveRight, Ellipsis } from 'lucide-react'
 import { api } from '@/lib/api'
 import { deviceBatchApi, type DeviceBatchTarget } from '@/lib/device-batch'
 import { customerAssetsApi, customerDeviceBatchMoveMutation } from '@/lib/customer-assets'
@@ -7,6 +8,7 @@ import { placePath } from '@/lib/place-tree'
 import { useResource } from '@/lib/use-resource'
 import { useSession } from '@/lib/store'
 import { allowedPage, type Device, type PlaceNode, type ScopeUnit } from '@/lib/types'
+import type { VendorDeviceSource } from '@/lib/vendor-devices'
 import { VendorDeviceCreator } from '@/components/vendor-device-creator'
 import type { DeviceEditorState } from '@/components/device-editor'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -30,31 +32,38 @@ import { publishObjectChange, useObjectRevision } from '@/lib/object-events'
 const DeviceEditor = lazy(() => import('@/components/device-editor').then(m => ({ default: m.DeviceEditor })))
 const DeviceDetail = lazy(() => import('@/components/device-detail').then(m => ({ default: m.DeviceDetail })))
 const DeviceWorkbench = lazy(() => import('@/components/device-workbench').then(m => ({ default: m.DeviceWorkbench })))
-const HikvisionPendingDevices = lazy(() => import('@/components/hikvision-pending-devices').then(m => ({ default: m.HikvisionPendingDevices })))
-export function DevicesPage() {
+const HikvisionAssociationSheet = lazy(() => import('@/components/hikvision-pending-devices').then(m => ({ default: m.HikvisionAssociationSheet })))
+type DeviceIntake = VendorDeviceSource | 'import' | 'advanced'
+const intakeCopy = {
+  LEGACY_REALTIME: { title: '旧烟感建档', description: '创建本地资产。设备通过网关或运营商直连本平台；建档不代表设备已上线。' },
+  HIKVISION_FIRECLOUD: { title: '海康云新增', description: '确认后在海康云新增，再保存本地资产或接入登记。结果未知时从「待完成接入」继续核对。' },
+  import: { title: '导入设备来源', description: '旧烟感表格可选单位、位置和型号；海康表格只关联已发现的设备。' },
+} satisfies Record<Exclude<DeviceIntake, 'advanced'>, { title: string; description: string }>
+export function DevicesPage({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: () => void } = {}) {
   const { user, permissions, audience, generation } = useSession()
   if (!user || user.must_change_password || !allowedPage('devices', audience, permissions)) return <Empty title="当前账户无设备查看权限"/>
-  return <DevicesContent key={generation}/>
+  return <DevicesContent key={generation} onHikvisionEntryOpened={onHikvisionEntryOpened}/>
 }
-function DevicesContent() {
+function DevicesContent({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: () => void }) {
   const session = useSession(), { audience, permissions } = session
   const [advanced, setAdvanced] = useState(false)
   const [notice, setNotice] = useState('')
   const [newDeviceOpen, setNewDeviceOpen] = useState(false)
-  const [newDeviceMode, setNewDeviceMode] = useState<'manual' | 'import'>('manual')
-  const [sourceCreatorOpen, setSourceCreatorOpen] = useState(false)
-  const [registrationOpen, setRegistrationOpen] = useState(false)
+  const [intake, setIntake] = useState<DeviceIntake | null>(null)
   const [registrationId, setRegistrationId] = useState<string | null>(null)
   const [queueOpen, setQueueOpen] = useState(false)
   function openDetail(device: { id: string; tenant_id?: string }) { setSelectedDetail({ id: device.id, tenantId: device.tenant_id }) }
   function closeDetail() { setSelectedDetail(null) }
   const management = audience === 'management'
   const canWrite = permissions.includes('device:write')
+  const canReadHikvision = management && permissions.includes('integrations:read')
+  const canWriteHikvision = permissions.includes('integrations:write')
   const canMigrate = management && permissions.includes('device:migrate')
   const [editor, setEditor] = useState<DeviceEditorState | null>(null), [selectedDetail, setSelectedDetail] = useState<{ id: string; tenantId?: string } | null>(null)
   const [movingDevice, setMovingDevice] = useState<Device | null>(null)
   const [selectedDevices, setSelectedDevices] = useState<Map<string, Device>>(new Map())
-  const [pendingOpen, setPendingOpen] = useState(false)
+  const [pendingOpen, setPendingOpen] = useState(() => canReadHikvision && !!onHikvisionEntryOpened)
+  useEffect(() => { onHikvisionEntryOpened?.() }, [onHikvisionEntryOpened])
   const [serviceDevice, setServiceDevice] = useState<{ id: string; tenantId?: string; name?: string | null } | null>(null)
   const close = () => setEditor(null)
   const [page, setPage] = useState(1)
@@ -101,31 +110,55 @@ function DevicesContent() {
     <div className="page-heading device-ledger-heading">
       <div><h1 id="device-ledger-title">设备资产台账</h1></div>
       <div className="heading-actions">
-      {canWrite && <Button onClick={() => { setNewDeviceMode('manual'); setNewDeviceOpen(true); setSourceCreatorOpen(management); setRegistrationOpen(false) }}><Plus/>新增设备</Button>}
-      {management && canWrite && <Button type="button" variant="outline" onClick={() => { setNewDeviceMode('import'); setNewDeviceOpen(true); setSourceCreatorOpen(true); setRegistrationOpen(false) }}>批量导入设备</Button>}
+      {!management && canWrite && <Button type="button" onClick={() => setNewDeviceOpen(true)}><Plus/>新增设备</Button>}
+      {management && (canWrite || canReadHikvision && canWriteHikvision) && <Dropdown trigger={['click']} menu={{ items: [
+        ...(canWrite ? [{ key: 'LEGACY_REALTIME', label: intakeCopy.LEGACY_REALTIME.title, onClick: () => setIntake('LEGACY_REALTIME') }] : []),
+        ...(canWrite && canWriteHikvision ? [{ key: 'HIKVISION_FIRECLOUD', label: intakeCopy.HIKVISION_FIRECLOUD.title, onClick: () => setIntake('HIKVISION_FIRECLOUD') }] : []),
+        ...(canReadHikvision && canWriteHikvision ? [{ key: 'association', label: '关联已有海康设备', onClick: () => setPendingOpen(true) }] : []),
+        ...(canWrite ? [{ key: 'advanced', label: '高级接入登记', onClick: () => setIntake('advanced') }] : []),
+      ] }}><Button type="button"><Plus/>添加设备<ChevronDown size={14}/></Button></Dropdown>}
+      {management && canWrite && <Button type="button" variant="outline" onClick={() => setQueueOpen(true)}><ListChecks/>待完成接入</Button>}
+      {management && canWrite && <Button type="button" variant="outline" onClick={() => setIntake('import')}>批量导入设备</Button>}
+      {canReadHikvision && !canWriteHikvision && <Button type="button" variant="outline" onClick={() => setPendingOpen(true)}><Building2/>查看海康待关联设备</Button>}
       <RefreshButton onClick={devices.refresh}/>
       <RowActions label="设备列表工具" text="设备工具" closeOnClick={false}>
-        {management && canWrite && <Button type="button" variant="outline" onClick={() => setQueueOpen(value => !value)}>待完成接入</Button>}
         <PageHelp title="设备资产台账说明">资产台账展示真实设备记录，与实时监测、报警处理分开。未知字段显示「未上报」；电量未上报不会显示为 0%。无归属位置的历史设备保留原状态，需显式选择真实位置才能修复或迁移。</PageHelp>
         {session.scopeInitialized && <DataTransferActions kind="DEVICES" filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(','), keyword, field, place_id: placeId, tenant_id: tenantFilter, connectivity, physical_state: physicalState, system_type: systemType, device_category: deviceCategory }} selectedIds={[...selectedDevices.keys()]} onCompleted={result => { if ('plan_id' in result) { devices.refresh(); setSelectedDevices(new Map()); setNotice('设备导入已提交；请查看逐行结果，提交不代表全部成功。') } }}/>}
-        {management && permissions.includes('integrations:read') && <Button type="button" variant="outline" onClick={() => setPendingOpen(true)}><Building2/>接入与待分配</Button>}
-        {management && canWrite && <Button type="button" variant="outline" onClick={() => { setNewDeviceOpen(true); setSourceCreatorOpen(false); setRegistrationOpen(true) }}>高级接入登记</Button>}
         <Button type="button" variant="outline" onClick={() => switchMode(true)}><SlidersHorizontal/>打开设备筛选工作台</Button>
       </RowActions>
       </div>
     </div>
-    {queueOpen && management && canWrite && <DeviceRegistrationQueue onCompleted={() => { devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices') }}/>}
-    <Sheet open={newDeviceOpen} onOpenChange={open => { setNewDeviceOpen(open); if (!open) { setSourceCreatorOpen(false); setRegistrationOpen(false) } }}><SheetContent className="review-sheet sm:max-w-2xl">
-      {!sourceCreatorOpen && !registrationOpen && <><SheetHeader className="review-header"><SheetTitle>新增设备</SheetTitle><SheetDescription>确认真实来源身份、实际所属单位和位置。已有本地资产请使用接入关联，不重复新建。</SheetDescription></SheetHeader><div className="review-body">
-        {management ? <><h3>新增设备</h3><p>直接在本平台建档：旧烟感由网关/运营方直接上报；海康云烟感新增会调用海康云并保存本地资产。</p><Button type="button" onClick={() => setSourceCreatorOpen(true)}>旧烟感直连 / 海康云烟感新增</Button>
-          <details className="form-stack"><summary>高级接入（需要设备管理权限）</summary><p>仅在需要时使用产品模型本地登记或厂商开户；默认建档流程不会混入多种接入路径。</p><Button type="button" variant="outline" onClick={() => setRegistrationOpen(true)}>产品模型 / 厂商开户登记</Button></details>
-        </> : <CustomerDeviceRegistrationWorkspace onCreated={() => { setNewDeviceOpen(false); devices.refresh(); publishObjectChange('devices') }}/>}
-      </div></>}
-      {sourceCreatorOpen && <><SheetHeader className="review-header"><SheetTitle>旧烟感直连 / 海康云烟感新增</SheetTitle><SheetDescription>本地直连创建与海康云新增分开执行；已有海康设备通过存量关联处理。</SheetDescription></SheetHeader><div className="review-body"><VendorDeviceCreator initialMode={newDeviceMode} onCreated={device => { setNewDeviceOpen(false); setSourceCreatorOpen(false); setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices'); setNotice(`设备 ${device.name ?? device.device_eui ?? device.id} 已在平台建档。服务端初始状态：连接 ${device.connectivity ?? '未返回'} · 物理 ${device.physical_state ?? '未返回'} · 接入 ${device.integration_state ?? '未返回'} · 最近上报 ${device.last_message_at ?? '暂无真实上报'}；建档不代表设备已激活或验收。`) }} onPending={detail => { setNewDeviceOpen(false); setSourceCreatorOpen(false); setRegistrationId(detail.registration.id); setQueueOpen(true); devices.refresh(); publishObjectChange('devices') }} onBatchCreated={items => { setNewDeviceOpen(false); setSourceCreatorOpen(false); setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices'); setNotice(`已完成 ${items.length} 台设备的本地批量新增或已有海康设备关联；不会调用旧平台新增或海康云批量开户。`) }} /></div></>}
-      {registrationOpen && <RegistrationCreator onCreated={detail => { setNewDeviceOpen(false); setRegistrationOpen(false); setRegistrationId(detail.registration.id); setQueueOpen(true); devices.refresh(); publishObjectChange('devices') }}/>}
+    {management && canWrite && <Sheet open={queueOpen && !registrationId} onOpenChange={setQueueOpen}><SheetContent className="review-sheet sm:max-w-5xl">
+      <SheetHeader className="review-header"><SheetTitle>待完成接入</SheetTitle><SheetDescription>继续核对来源或完成本地验收。</SheetDescription></SheetHeader>
+      <div className="review-body">{queueOpen && !registrationId && <DeviceRegistrationQueue onCompleted={() => { devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices') }}/>}</div>
+    </SheetContent></Sheet>}
+    {!management && <Sheet open={newDeviceOpen} onOpenChange={setNewDeviceOpen}><SheetContent className="review-sheet sm:max-w-2xl">
+      <SheetHeader className="review-header"><SheetTitle>新增设备</SheetTitle><SheetDescription>确认真实来源身份、实际所属单位和位置。已有本地资产请使用接入关联，不重复新建。</SheetDescription></SheetHeader>
+      <div className="review-body">{newDeviceOpen && <CustomerDeviceRegistrationWorkspace onCreated={() => { setNewDeviceOpen(false); devices.refresh(); publishObjectChange('devices') }}/>}</div>
+    </SheetContent></Sheet>}
+    <Sheet open={intake !== null} onOpenChange={open => { if (!open) setIntake(null) }}><SheetContent className="review-sheet sm:max-w-2xl">
+      {intake === 'advanced' ? <RegistrationCreator onCreated={detail => {
+        setIntake(null); setRegistrationId(detail.registration.id); setQueueOpen(true); devices.refresh(); publishObjectChange('devices')
+      }}/> : intake && <>
+        <SheetHeader className="review-header"><SheetTitle>{intakeCopy[intake].title}</SheetTitle><SheetDescription>{intakeCopy[intake].description}</SheetDescription></SheetHeader>
+        <div className="review-body"><VendorDeviceCreator entry={intake}
+          onCreated={device => {
+            setIntake(null); setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices')
+            setNotice(`设备 ${device.name ?? device.device_eui ?? device.id} 已在平台建档。服务端初始状态：连接 ${device.connectivity ?? '未返回'} · 物理 ${device.physical_state ?? '未返回'} · 接入 ${device.integration_state ?? '未返回'} · 最近上报 ${device.last_message_at ?? '暂无真实上报'}；建档不代表设备已激活或验收。`)
+          }}
+          onPending={detail => {
+            setIntake(null); setRegistrationId(detail.registration.id); setQueueOpen(true); devices.refresh(); publishObjectChange('devices')
+          }}
+          onBatchCreated={items => {
+            setIntake(null); setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices')
+            setNotice(`已完成 ${items.length} 台设备的本地批量新增或已有海康设备关联；不会调用旧平台新增或海康云批量开户。`)
+          }}/></div>
+      </>}
     </SheetContent></Sheet>
     {registrationId && <Sheet open={!!registrationId} onOpenChange={open => { if (!open) setRegistrationId(null) }}><SheetContent className="review-sheet sm:max-w-2xl"><SheetHeader className="review-header"><SheetTitle>登记处理</SheetTitle><SheetDescription>云端与本地步骤分离；未知结果按精确序列号或台账dId只读核对。</SheetDescription></SheetHeader><RegistrationDetailView registrationId={registrationId} onChanged={() => { devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices') }}/></SheetContent></Sheet>}
-    <Sheet open={pendingOpen} onOpenChange={setPendingOpen}><SheetContent className="review-sheet sm:max-w-5xl"><SheetHeader className="review-header"><SheetTitle>接入与待分配设备</SheetTitle><SheetDescription>仅展示真实接入记录。只有明确关联已存在设备后才会完成关联，不自动创建或猜测设备。</SheetDescription></SheetHeader><div className="review-body">{pendingOpen && <Suspense fallback={<Loading/>}><HikvisionPendingDevices openDevice={device => { setPendingOpen(false); openDetail(device) }}/></Suspense>}</div></SheetContent></Sheet>
+    {canReadHikvision && pendingOpen && <Suspense fallback={<Loading/>}>
+      <HikvisionAssociationSheet onClose={() => setPendingOpen(false)} openDevice={device => { setPendingOpen(false); openDetail(device) }}/>
+    </Suspense>}
     {notice && <div role="status" className="notice">{notice}</div>}
     <Card className="list-card device-ledger-panel"><CardContent>
       <div className="list-toolbar">

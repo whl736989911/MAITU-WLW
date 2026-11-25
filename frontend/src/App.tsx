@@ -161,6 +161,13 @@ export default function App() {
 function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Health; healthError?: unknown; onSelfPasswordChange: () => void }) {
   const { user, audience, permissions, page, navigate, generation } = useSession()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [openHikvisionOnAssets, setOpenHikvisionOnAssets] = useState(false)
+  const consumeHikvisionEntry = useCallback(() => setOpenHikvisionOnAssets(false), [])
+  useEffect(() => { if (page !== 'devices') consumeHikvisionEntry() }, [page, consumeHikvisionEntry])
+  function openAssetAssociations() {
+    setOpenHikvisionOnAssets(true)
+    navigate('devices')
+  }
   const [scopeCollapsed, setScopeCollapsed] = useState(() => window.matchMedia('(max-width: 960px)').matches)
   useEffect(() => {
     const narrowScreen = window.matchMedia('(max-width: 960px)')
@@ -292,7 +299,7 @@ function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Hea
           case 'alarm-base-config': return <AlarmBaseConfigurationPage/>
           case 'resource-linkage': return <ResourceLinkagePage/>
           case 'summary': return management ? <ManagementHome onNavigate={choosePage} overview={<Dashboard/>}/> : <CustomerHome/>
-          case 'devices': return management ? <DevicesPage/> : <CustomerDevicesWorkspace><DevicesPage/></CustomerDevicesWorkspace>
+          case 'devices': return management ? <DevicesPage onHikvisionEntryOpened={openHikvisionOnAssets ? consumeHikvisionEntry : undefined}/> : <CustomerDevicesWorkspace><DevicesPage/></CustomerDevicesWorkspace>
           case 'alarms': return management ? <DutyWorkbenchPage/> : <CustomerAlarmsWorkspace><DutyWorkbenchPage/></CustomerAlarmsWorkspace>
           case 'settings': return <SettingsPage/>
           case 'units': return <UnitsPage/>
@@ -303,7 +310,7 @@ function Workspace({ health, healthError, onSelfPasswordChange }: { health?: Hea
           case 'roles': return <RolesPage/>
           case 'products': return <ProductsPage/>
           case 'sources': return <SourcesPage health={health}/>
-          case 'hikvision': return <HikvisionPage/>
+          case 'hikvision': return <HikvisionPage openAssetAssociations={pageAllowed('devices') ? openAssetAssociations : undefined}/>
           case 'unit-settings': return <UnitSettingsPage notifications={<CustomerNotificationSettings/>}/>
           case 'my-profile': return <MyProfilePage onPasswordChange={onSelfPasswordChange} onLogout={() => void logout()}/>
           case 'messages': return <MessagesPage health={health}/>

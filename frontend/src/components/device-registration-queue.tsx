@@ -19,7 +19,7 @@ export function DeviceRegistrationQueue({ onCompleted }: { onCompleted: () => vo
   const list = useResource(`device-registrations:queue:${page}`, signal => deviceRegistrationsApi.list(page, undefined, signal))
   const completed = () => { list.refresh(); onCompleted() }
   return <>
-    <div className="version-actions"><div><h2>待完成接入</h2><p className="muted-note">登记、云端步骤与本地验收分开记录。云端已成功但本地失败时可继续本地验收；UNKNOWN 只允许核对，不能重新开户。</p></div><RefreshButton onClick={list.refresh}/></div>
+    <div className="version-actions"><p className="muted-note">登记、云端步骤与本地验收分开记录。云端已成功但本地失败时可继续本地验收；UNKNOWN 只允许核对，不能重新开户。</p><RefreshButton onClick={list.refresh}/></div>
     <Card className="list-card"><CardContent>
       {list.loading ? <Loading/> : list.error != null ? <ErrorNotice error={list.error} retry={list.refresh}/> : list.data && (list.data.items.length ? <>
         <Table><TableHeader><TableRow><TableHead>序列号 / 名称</TableHead><TableHead>方式</TableHead><TableHead>云端状态</TableHead><TableHead>本地状态</TableHead><TableHead>单位/版本</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>
