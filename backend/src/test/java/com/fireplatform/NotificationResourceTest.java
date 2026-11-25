@@ -269,6 +269,35 @@ class NotificationResourceTest {
         call(HttpMethod.POST,"/api/customer/notification-recharge/orders",other,null,UUID.randomUUID().toString(),orderInput).andExpect(status().isForbidden());
         call(HttpMethod.POST,"/api/customer/notification-recharge/orders",owner,null,UUID.randomUUID().toString(),orderInput).andExpect(status().isOk());
     }
+    @Test void customersCanCloseOnlyTheirOwnOrdersWithRechargeWritePermission() throws Exception {
+        grantsMode();
+        String place="notify-close-place";
+        String ownerId=jdbc.queryForObject("SELECT id FROM app_users WHERE username='customer-a'",String.class);
+        seedGrant(place,ownerId);
+        String owner=customerA(),other=otherCustomer();
+        var created=body(call(HttpMethod.POST,"/api/customer/notification-recharge/orders",owner,null,UUID.randomUUID().toString(),
+            Map.of("owner_type","PLACE","owner_id",place,"channel","SMS","quantity",1)).andExpect(status().isOk()));
+        String id=created.get("id").asText(), path="/api/customer/notification-recharge/orders/"+id+"/close";
+        call(HttpMethod.POST,path,other,null,null,null).andExpect(status().isNotFound());
+        call(HttpMethod.POST,path,owner,null,null,null).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ORDER_NOT_SUBMITTED"));
+        jdbc.update("DELETE FROM user_permissions WHERE user_id=? AND permission='notification-recharge:write'",ownerId);
+        call(HttpMethod.POST,path,owner,null,null,null).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT status FROM notification_resource_orders WHERE id=?",String.class,id)).isEqualTo("PENDING");
+    }
+
+    @Test void replayingCustomerCheckoutDoesNotReturnAnObsoleteOrderAfterCancellation() throws Exception {
+        grantsMode();
+        String ownerId=jdbc.queryForObject("SELECT id FROM app_users WHERE username='customer-a'",String.class);
+        String place="notify-close-replay";
+        seedGrant(place,ownerId);
+        String auth=customerA(), key=UUID.randomUUID().toString(), path="/api/customer/notification-recharge/orders";
+        var input=Map.of("owner_type","PLACE","owner_id",place,"channel","SMS","quantity",1);
+        var created=body(call(HttpMethod.POST,path,auth,null,key,input).andExpect(status().isOk()));
+        String id=created.get("id").asText();
+        jdbc.update("UPDATE notification_resource_orders SET status='CANCELLED',payment_state='CLOSED',close_state='CLOSED' WHERE id=?",id);
+        call(HttpMethod.POST,path,auth,null,key,input).andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(id)).andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
     @Test void stalePlaceGrantIsNotAnOrderDestination() throws Exception {
         grantsMode(); String placeId="notify-gone-"+UUID.randomUUID(); String customerId=jdbc.queryForObject("SELECT id FROM app_users WHERE username='customer-a'",String.class);
         seedGrant(placeId,customerId); jdbc.update("DELETE FROM places WHERE id=?",placeId);

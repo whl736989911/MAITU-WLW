@@ -13,7 +13,11 @@ public class NotificationRechargeCustomerController {
     private final RequestSecurity security;
     private final NotificationResourceService service;
     private final CustomerNotificationResourceQueries balances;
-    public NotificationRechargeCustomerController(RequestSecurity security,NotificationResourceService service,CustomerNotificationResourceQueries balances) { this.security=security; this.service=service; this.balances=balances; }
+    private final PaymentOrderService payments;
+    public NotificationRechargeCustomerController(RequestSecurity security,NotificationResourceService service,
+                                                   CustomerNotificationResourceQueries balances,PaymentOrderService payments) {
+        this.security=security; this.service=service; this.balances=balances; this.payments=payments;
+    }
 
     @GetMapping("/options") public NotificationResourceService.CustomerOptions options(HttpServletRequest request) {
         var actor=security.require(request,"notification-recharge:read","customer"); return service.customerOptions(security.tenant(request),actor.user().id());
@@ -32,5 +36,13 @@ public class NotificationRechargeCustomerController {
     }
     @PostMapping("/orders") public NotificationResourceService.CustomerOrder create(@RequestHeader(value="Idempotency-Key",required=false)String key,@RequestBody NotificationRechargeInputs.CustomerOrder body,HttpServletRequest request) {
         var actor=security.require(request,"notification-recharge:write","customer"); String ip=request.getHeader("X-Real-IP"); if(ip==null||ip.isBlank())ip=request.getRemoteAddr(); return service.createCustomerOrder(actor,security.tenant(request),key,body,ip,RequestContext.requestId(request));
+    }
+    @PostMapping("/orders/{id}/close")
+    public NotificationResourceService.CustomerOrder close(@PathVariable String id,
+            @RequestParam(name="verify_only",defaultValue="false") boolean verifyOnly,HttpServletRequest request) {
+        var actor=security.require(request,"notification-recharge:write","customer");
+        String tenant=security.tenant(request);
+        payments.closeCustomer(actor,tenant,id,verifyOnly,RequestContext.requestId(request));
+        return service.customerOrder(tenant,id,actor.user().id());
     }
 }

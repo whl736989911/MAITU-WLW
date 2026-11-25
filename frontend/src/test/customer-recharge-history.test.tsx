@@ -9,10 +9,13 @@ import type { NotificationCustomerAccount, NotificationCustomerOrder } from '@/l
 const order: NotificationCustomerOrder = { id: 'history-order', channel: 'VOICE', quantity: 5, amount_cents: 125, status: 'PENDING', payment_state: 'ACCEPTED', code_url: 'weixin://qa-only-no-live-payment', expires_at: null, created_at: '2026-11-12T01:00:00Z', paid_at: null }
 beforeEach(() => { useSession.getState().clear();localStorage.clear();sessionStorage.clear();useSession.getState().login({ ...customer, permissions: ['notification-recharge:read'] }, 'customer') })
 afterEach(() => { vi.useRealTimers() })
-function setup(accounts: NotificationCustomerAccount[] = []) {
+function setup(accounts: NotificationCustomerAccount[] = [], close?: (order: NotificationCustomerOrder) => Response) {
   const state = { current: { ...order }, fail: false, hold: false, resolve: undefined as ((reply: Response) => void) | undefined }
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
-    if (init?.method === 'POST') throw new Error('History viewing must never create an order or a payment request')
+    if (init?.method === 'POST') {
+      if (close && new URL(url, 'http://local').pathname.endsWith('/orders/history-order/close')) return close(state.current)
+      throw new Error('History viewing must never create an order or a payment request')
+    }
     const path = new URL(url, 'http://local').pathname
     if (path.endsWith('/options')) return response({ policy: { mode: 'ORGANIZATION', revision: 0, updated_at: null }, destinations: accounts.map(account => ({ owner_type: account.owner_type, owner_id: account.owner_id, owner_name: account.owner_name })), pricing: { sms_price_cents: 10, voice_price_cents: 25, revision: 0, updated_at: null } })
     if (path.endsWith('/accounts')) return response(accounts)
@@ -42,6 +45,25 @@ describe('客户端已有充值订单', () => {
     expect(await screen.findByRole('img', { name: '微信支付二维码' })).toBeInTheDocument()
     expect(screen.getByText(/订单号 history-order/)).toHaveTextContent('语音 5 次')
     expect(fetcher.mock.calls.some(([,init]) => init?.method === 'POST')).toBe(false)
+  })
+  it('有权客户可取消旧订单；微信确认前不把订单显示为已取消', async () => {
+    useSession.getState().login({ ...customer, permissions: ['notification-recharge:read', 'notification-recharge:write'] }, 'customer')
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
+    vi.stubGlobal('confirm', confirm)
+    const close = vi.fn().mockImplementationOnce((current: NotificationCustomerOrder) =>
+      response({ ...current, close_state: 'UNKNOWN', code_url: null }))
+      .mockImplementation((current: NotificationCustomerOrder) => response({ ...current, status: 'CANCELLED', payment_state: 'CLOSED', close_state: 'CLOSED', code_url: null }))
+    setup([], close)
+    await open()
+    const cancel = await screen.findByRole('button', { name: '取消支付' })
+    await userEvent.click(cancel)
+    expect(close).not.toHaveBeenCalled()
+    await userEvent.click(cancel)
+    await screen.findByText(/取消结果未确认/)
+    expect(screen.getByText(/订单号 history-order/)).toHaveTextContent('状态 PENDING')
+    expect(screen.queryByRole('img', { name: '微信支付二维码' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '核对取消结果' }))
+    await waitFor(() => expect(screen.getByText(/订单号 history-order/)).toHaveTextContent('状态 CANCELLED'))
   })
   it('列表仍待支付但详情已经支付时不再给出付款二维码', async () => {
     const { state } = setup();state.current = { ...order, status: 'PAID', payment_state: 'PAID' };await open()
