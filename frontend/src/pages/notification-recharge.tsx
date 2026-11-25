@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Coins, ListChecks, QrCode, RefreshCw } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { api, errorMessage } from '@/lib/api'
+import { api, ApiError, errorMessage } from '@/lib/api'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
 import type { NotificationCustomerLedger, NotificationCustomerOrder, Paginated } from '@/lib/types'
@@ -30,6 +30,8 @@ function payable(order: NotificationCustomerOrder) {
   return order.status === 'PENDING' && !!order.code_url && ['CREATED', 'ACCEPTED'].includes(order.payment_state) &&
     (!order.expires_at || Date.parse(order.expires_at) > Date.now())
 }
+const closeNeedsVerification = (order: NotificationCustomerOrder) =>
+  order.status === 'PENDING' && ['IN_FLIGHT', 'UNKNOWN', 'PAID_UNCONFIRMED'].includes(order.close_state ?? '')
 function pendingPaymentMessage(order: NotificationCustomerOrder) {
   const state = paymentStateNames[order.payment_state] ?? order.payment_state
   if (order.payment_state === 'UNKNOWN') return `支付结果未确认（${state}），请稍后刷新订单核对，不要重复支付。`
@@ -55,11 +57,15 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const [owner, setOwner] = useState(''), [channel, setChannel] = useState<'SMS'|'VOICE'>('SMS'), [quantity, setQuantity] = useState('100')
   const [notice, setNotice] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [created, setCreated] = useState<NotificationCustomerOrder | null>(null), [reviewing, setReviewing] = useState(false)
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null), [orderReadError, setOrderReadError] = useState<unknown>()
+  const closingOrder = useRef<string | null>(null)
+  const [closing, setClosing] = useState(false), [verifyId, setVerifyId] = useState<string | null>(null)
+  const checkingClose = created?.status === 'PENDING' && (verifyId === created.id || closeNeedsVerification(created))
   const selectedOrder = useResource(`customer-recharge-order:${selectedOrderId}`, async signal => confirmedOrder(await api.customerRechargeOrder(selectedOrderId!, signal), selectedOrderId!), !!selectedOrderId)
   useEffect(() => {
     if (!selectedOrder.data) return
     setCreated(selectedOrder.data); setSelectedOrderId(null); setOrderReadError(undefined)
-    if (selectedOrder.data.status === 'PAID') { orders.refresh(); options.refresh(); balances.refresh() }
+    if (selectedOrder.data.status !== 'PENDING') orders.refresh()
+    if (selectedOrder.data.status === 'PAID') { options.refresh(); balances.refresh() }
   }, [selectedOrder.data, orders.refresh, options.refresh, balances.refresh])
   useEffect(() => {
     if (selectedOrderId || created) document.getElementById('customer-recharge-order')?.scrollIntoView?.({ block: 'start' })
@@ -79,14 +85,14 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const amount = unit == null ? null : unit * (Number(quantity) || 0)
   useEffect(() => {
     const id = created?.id, status = created?.status
-    if (!id || status !== 'PENDING') return
+    if (!id || status !== 'PENDING' || closing) return
     const controller = new AbortController()
     let inFlight = false
     const timer = setInterval(() => {
       if (inFlight) return
       inFlight = true
       void api.customerRechargeOrder(id, controller.signal).then(result => {
-        if (controller.signal.aborted) return
+        if (controller.signal.aborted || closingOrder.current) return
         const order = confirmedOrder(result, id)
         setCreated(order); setOrderReadError(undefined)
         if (order.status !== status) {
@@ -96,13 +102,38 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       }).catch(error => { if (!controller.signal.aborted) setOrderReadError(error) }).finally(() => { inFlight = false })
     }, 3000)
     return () => { clearInterval(timer); controller.abort() }
-  }, [created?.id, created?.status, orders.refresh, options.refresh, balances.refresh])
-  function viewOrder(id: string) { setCreated(null); setOrderReadError(undefined); setSelectedOrderId(id) }
-  function closeOrder() { setCreated(null); setSelectedOrderId(null); setOrderReadError(undefined) }
+  }, [created?.id, created?.status, closing, orders.refresh, options.refresh, balances.refresh])
+  function viewOrder(id: string) { if (closingOrder.current) return; setCreated(null); setOrderReadError(undefined); setSelectedOrderId(id) }
+  function closeOrder() { if (closingOrder.current) return; setCreated(null); setSelectedOrderId(null); setOrderReadError(undefined) }
+  async function cancelPayment(order: NotificationCustomerOrder) {
+    const { authGeneration, user } = useSession.getState()
+    if (!canWrite || !user?.tenant_id || closingOrder.current || busy || order.status !== 'PENDING') return
+    const verify = verifyId === order.id || closeNeedsVerification(order)
+    if (!verify && !window.confirm(`确认取消订单 ${order.id}（${(order.amount_cents / 100).toFixed(2)} 元）的支付？已支付的订单不能取消。`)) return
+    closingOrder.current = order.id
+    setClosing(true); setNotice(''); setError('')
+    try {
+      const result = confirmedOrder(await api.closeCustomerRechargeOrder(order.id, user.tenant_id, verify), order.id)
+      if (useSession.getState().authGeneration !== authGeneration) return
+      setCreated(result); setOrderReadError(undefined); orders.refresh()
+      if (result.status === 'PAID') { setNotice('微信已确认支付，资源已到账。'); options.refresh(); balances.refresh() }
+      if (result.status !== 'PENDING') setVerifyId(null)
+      else if (result.close_state !== 'REJECTED') setVerifyId(order.id)
+      else setError('微信未关闭订单，请刷新订单核对。')
+    } catch (e) {
+      if (useSession.getState().authGeneration !== authGeneration) return
+      if (!(e instanceof ApiError) || e.status < 400 || e.status >= 500 || e.code === 'ORDER_ALREADY_PAID') setVerifyId(order.id)
+      setError(errorMessage(e))
+    } finally {
+      closingOrder.current = null
+      setClosing(false)
+    }
+  }
   function refresh() { setReviewing(false); options.refresh(); orders.refresh(); balances.refresh(); if (created) viewOrder(created.id); else if (selectedOrderId) selectedOrder.refresh() }
   function showLedger(key: string) { setLedgerOwner(key); setLedgerPage(1) }
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (busy || closingOrder.current) return
     setError('')
     setNotice('')
     if (!destination) { setError(owner ? '所选充值账户已不可用，请重新选择账户' : '请明确选择充值账户'); return }
@@ -161,11 +192,22 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       </form>}</CardContent></Card>
     </>}</> : null}
     {(selectedOrderId || created) && <section id="customer-recharge-order" style={{ scrollMarginTop: 80 }}><Card><CardContent>
-      <div className="demo-side-head"><h2 className="section-heading"><QrCode size={18}/>{created?.status === 'PENDING' ? '待支付订单' : '充值订单'}</h2><div className="notification-actions">{created && <Button type="button" variant="outline" onClick={() => viewOrder(created.id)}>刷新订单</Button>}<Button type="button" variant="outline" title="只关闭当前详情，不取消订单或支付" onClick={closeOrder}>关闭详情</Button></div></div>
+      <div className="demo-side-head"><h2 className="section-heading"><QrCode size={18}/>{created?.status === 'PENDING' ? '待支付订单' : '充值订单'}</h2><div className="notification-actions">
+        {created && <Button type="button" variant="outline" disabled={closing} onClick={() => viewOrder(created.id)}>刷新订单</Button>}
+        {created?.status === 'PENDING' && canWrite && (checkingClose || ['ACCEPTED', 'UNKNOWN'].includes(created.payment_state)) &&
+          <Button type="button" variant="outline" disabled={busy || closing} onClick={() => void cancelPayment(created)}>
+            {checkingClose ? '核对取消结果' : '取消支付'}
+          </Button>}
+        <Button type="button" variant="outline" disabled={closing} title="只关闭当前详情，不取消订单或支付" onClick={closeOrder}>关闭详情</Button>
+      </div></div>
       {selectedOrderId ? selectedOrder.loading ? <Loading/> : selectedOrder.error != null ? <ErrorNotice error={selectedOrder.error} retry={selectedOrder.refresh}/> : null : created && <>
         <p>订单号 {created.id} · {created.channel === 'SMS' ? `短信 ${created.quantity} 条` : `语音 ${created.quantity} 次`} · 金额 {(created.amount_cents / 100).toFixed(2)} 元 · 状态 {created.status}</p>
         <p className="muted-note">支付：{paymentStateNames[created.payment_state] ?? created.payment_state}{created.expires_at ? ` · 有效至 ${created.expires_at}` : ''}</p>
-        {orderReadError != null ? <ErrorNotice error={orderReadError} retry={() => viewOrder(created.id)}/> : payable(created) ? <div className="payment-qr"><QRCodeSVG value={created.code_url!} size={220} role="img" aria-label="微信支付二维码"/><p>请使用微信扫码支付，支付成功后会自动刷新。</p></div> : <div className="notice">{created.status === 'PENDING' ? pendingPaymentMessage(created) : '此订单已结束，不能继续支付。'}</div>}
+        {closing ? <p role="status">正在核对原订单，请勿支付。</p> :
+          checkingClose ? <p role="status">取消结果未确认，请核对原订单，勿重复付款。</p> :
+          orderReadError != null ? <ErrorNotice error={orderReadError} retry={() => viewOrder(created.id)}/> :
+          payable(created) ? <div className="payment-qr"><QRCodeSVG value={created.code_url!} size={220} role="img" aria-label="微信支付二维码"/><p>请使用微信扫码支付，支付成功后会自动刷新。</p></div> :
+          <div className="notice">{created.status === 'PENDING' ? pendingPaymentMessage(created) : created.status === 'CANCELLED' ? '支付已取消，此订单不能继续支付。' : '此订单已结束，不能继续支付。'}</div>}
       </>}
     </CardContent></Card></section>}
     <Card><CardContent><div className="demo-side-head"><h2 className="section-heading" style={{ margin: 0 }}>我的充值订单</h2><span className="muted">仅显示本人订单；查看原订单不会重复下单</span></div>{orders.loading ? <Loading/> : orders.error != null ? <ErrorNotice error={orders.error} retry={orders.refresh}/> : orders.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>订单 / 操作</TableHead><TableHead>状态</TableHead><TableHead>支付</TableHead></TableRow></TableHeader><TableBody>{orders.data.items.map(order => <TableRow key={order.id}><TableCell><strong>{order.channel === 'SMS' ? '短信' : '语音'} {order.quantity} {order.channel === 'SMS' ? '条' : '次'} · {(order.amount_cents / 100).toFixed(2)} 元</strong><div className="table-sub">{order.created_at}</div><Button type="button" variant="outline" size="sm" aria-label={`查看订单 ${order.id}`} onClick={() => viewOrder(order.id)}>{order.status === 'PENDING' ? '查看 / 继续支付' : '查看订单'}</Button></TableCell><TableCell>{order.status}</TableCell><TableCell>{paymentStateNames[order.payment_state] ?? order.payment_state}{order.status === 'PENDING' && order.expires_at && <div className="table-sub">有效至 {order.expires_at}</div>}</TableCell></TableRow>)}</TableBody></Table><Pager page={orders.data.page} size={orders.data.size} total={orders.data.total} onChange={setPage}/></> : <Empty title="暂无充值订单"/>}</CardContent></Card>

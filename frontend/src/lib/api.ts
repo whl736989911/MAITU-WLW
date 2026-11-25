@@ -150,6 +150,7 @@ export const api = {
   customerRechargeOptions: (signal?: AbortSignal) => request<NotificationRechargeOptions>('/customer/notification-recharge/options', { tenantScoped: true, signal }),
   customerRechargeOrders: (page: number, signal?: AbortSignal) => request<Paginated<NotificationCustomerOrder>>(`/customer/notification-recharge/orders?page=${page}`, { tenantScoped: true, signal }),
   customerRechargeOrder: (id: string, signal?: AbortSignal) => request<NotificationCustomerOrder>(`/customer/notification-recharge/orders/${encodeURIComponent(id)}`, { tenantScoped: true, signal }),
+  closeCustomerRechargeOrder: (id: string, tenantId: string, verify: boolean) => request<NotificationCustomerOrder>(`/customer/notification-recharge/orders/${encodeURIComponent(id)}/close${verify ? '?verify_only=true' : ''}`, { tenantId, tenantScoped: true, method: 'POST' }),
   customerRechargeAccounts: (signal?: AbortSignal) => request<NotificationCustomerAccount[]>('/customer/notification-recharge/accounts', { tenantScoped: true, signal, decode: customerAccountsResponse }),
   customerRechargeLedger: (accountId: string, page: number, signal?: AbortSignal) => request<Paginated<NotificationCustomerLedger>>(`/customer/notification-recharge/accounts/${encodeURIComponent(accountId)}/ledger?page=${page}`, { tenantScoped: true, signal, decode: text => customerLedgerResponse(text, page) }),
   notificationChannelPolicy: (scopeType: 'UNIT' | 'PLACE', placeId: string | null, signal?: AbortSignal, tenantId?: string) => {

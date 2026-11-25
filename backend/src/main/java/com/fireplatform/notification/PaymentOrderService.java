@@ -148,6 +148,30 @@ public class PaymentOrderService {
         return closeOrder(actor, order, request);
     }
 
+    public void closeCustomer(AuthService.Identity actor, String tenant, String orderId, boolean verifyOnly, String request) {
+        var order = transactions.execute(status -> {
+            authorizeCustomerPayment(actor, tenant);
+            return loadCustomer(orderId, tenant, actor.user().id());
+        });
+        if (order == null) throw ApiError.missing();
+        if (!"PENDING".equals(order.status())) return;
+        if (verifyOnly || closeUnconfirmed(order.closeState())) compensate(actor, order, request);
+        else closeOrder(actor, order, request);
+    }
+
+    static boolean closeUnconfirmed(String state) {
+        return "IN_FLIGHT".equals(state) || "UNKNOWN".equals(state) || "PAID_UNCONFIRMED".equals(state);
+    }
+
+    private void authorizeCustomerPayment(AuthService.Identity actor, String tenant) {
+        guard.begin(actor, "notification-recharge:write", tenant, "customer");
+        guard.requireCurrent(actor, "notification-recharge:read", tenant, "customer");
+    }
+
+    private static boolean customer(AuthService.Identity actor) {
+        return actor != null && "customer".equals(actor.audience());
+    }
+
     // ------------------------------------------------------------------ worker entry points
 
     public void systemQuery(String orderId) {
@@ -166,9 +190,17 @@ public class PaymentOrderService {
         var credentials = config.credentialsForSnapshot(order.merchantRevision(), order.merchantMchId(), order.merchantAppId());
         if (credentials == null || order.outTradeNo() == null)
             return result(order, "query", "UNKNOWN", "商户凭据或订单快照不可用，未发起查单");
-        Boolean claimed = transactions.execute(status -> jdbc.update(
-            "UPDATE notification_resource_orders SET query_state='IN_FLIGHT',query_attempts=query_attempts+1,last_query_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND status<>'FAILED'",
-            order.id(), order.tenantId()) == 1);
+        Boolean claimed = transactions.execute(status -> {
+            if (customer(actor)) authorizeCustomerPayment(actor, order.tenantId());
+            String eligible = customer(actor)
+                ? " AND created_by=? AND (query_state IS NULL OR query_state<>'IN_FLIGHT' OR last_query_at<=?)"
+                : "";
+            Object[] args = customer(actor)
+                ? new Object[]{order.id(), order.tenantId(), actor.user().id(), time.now().minusSeconds(30)}
+                : new Object[]{order.id(), order.tenantId()};
+            return jdbc.update("UPDATE notification_resource_orders SET query_state='IN_FLIGHT',query_attempts=query_attempts+1,"
+                + "last_query_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND status<>'FAILED'" + eligible, args) == 1;
+        });
         if (!Boolean.TRUE.equals(claimed)) return result(order, "query", "UNKNOWN", "查单已被其他操作占用");
         var query = client.queryOrder(credentials, order.outTradeNo());
         var applied = transactions.execute(status -> applyQuery(order.id(), query));
@@ -189,9 +221,16 @@ public class PaymentOrderService {
         OffsetDateTime earliest = order.createdAt() == null ? null : order.createdAt().plusMinutes(5);
         if (earliest != null && time.now().isBefore(earliest))
             throw ApiError.conflict("CLOSE_TOO_EARLY", "微信官方要求订单生成 5 分钟后才能关单，请稍后再试");
-        Boolean claimed = transactions.execute(status -> jdbc.update(
-            "UPDATE notification_resource_orders SET close_state='IN_FLIGHT',close_attempts=close_attempts+1,last_close_attempt_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND status='PENDING'",
-            order.id(), order.tenantId()) == 1);
+        Boolean claimed = transactions.execute(status -> {
+            if (customer(actor)) authorizeCustomerPayment(actor, order.tenantId());
+            String eligible = customer(actor)
+                ? " AND created_by=? AND (close_state IS NULL OR close_state='REJECTED')"
+                : " AND (close_state IS NULL OR close_state<>'IN_FLIGHT' OR last_close_attempt_at<=?)";
+            Object target = customer(actor) ? actor.user().id() : time.now().minusSeconds(30);
+            return jdbc.update("UPDATE notification_resource_orders SET close_state='IN_FLIGHT',close_attempts=close_attempts+1,"
+                + "last_close_attempt_at=CURRENT_TIMESTAMP WHERE id=? AND tenant_id=? AND status='PENDING'"
+                + " AND payment_state IN ('ACCEPTED','UNKNOWN')" + eligible, order.id(), order.tenantId(), target) == 1;
+        });
         if (!Boolean.TRUE.equals(claimed)) return result(order, "close", "UNKNOWN", "关单已被其他操作占用");
         var close = client.closeOrder(credentials, order.outTradeNo());
         var applied = transactions.execute(status -> applyClose(order.id(), close));
@@ -318,6 +357,12 @@ public class PaymentOrderService {
     private OrderRow load(String orderId, String tenant) {
         var rows = jdbc.query("SELECT " + ORDER_COLUMNS + " FROM notification_resource_orders WHERE id=?" + (tenant == null ? "" : " AND tenant_id=?"),
             (rs, n) -> row(rs), tenant == null ? new Object[]{orderId} : new Object[]{orderId, tenant});
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
+
+    private OrderRow loadCustomer(String orderId, String tenant, String actor) {
+        var rows = jdbc.query("SELECT " + ORDER_COLUMNS + " FROM notification_resource_orders WHERE id=? AND tenant_id=? AND created_by=?",
+            (rs, n) -> row(rs), orderId, tenant, actor);
         return rows.isEmpty() ? null : rows.getFirst();
     }
 

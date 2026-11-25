@@ -215,6 +215,30 @@ class PaymentLifecycleIntegrationTest {
     }
 
     @Test
+    void customerChecksUnknownLegacyOrderWithoutSubmittingAnotherClose() {
+        configure(KEY1, 0L);
+        var order = newOrder("customer-close-old-order");
+        jdbc.update("UPDATE notification_resource_orders SET created_at=? WHERE id=?",
+            OffsetDateTime.now(BEIJING).minusDays(3), order.id());
+        var customer = new AuthService.Identity(new AuthService.UserView(ACTOR_ID, ACTOR_ID, "fixture", "CUSTOMER", TENANT, false),
+            List.of("notification-recharge:read", "notification-recharge:write"), "customer", "fixture");
+        RESPONSES.put("/pay/closeorder", Map.of("return_code", "SUCCESS", "result_code", "FAIL",
+            "appid", APP_ID, "mch_id", MCH, "err_code", "SYSTEMERROR"));
+        payments.closeCustomer(customer, TENANT, order.id(), false, "first-close");
+        var pending = resources.customerOrder(TENANT, order.id(), ACTOR_ID);
+        assertThat(pending.status()).isEqualTo("PENDING");
+        assertThat(pending.closeState()).isEqualTo("UNKNOWN");
+        assertThat(pending.codeUrl()).isNull();
+
+        RESPONSES.put("/pay/orderquery", Map.of("return_code", "SUCCESS", "result_code", "SUCCESS",
+            "appid", APP_ID, "mch_id", MCH, "out_trade_no", order.outTradeNo(), "trade_state", "CLOSED"));
+        payments.closeCustomer(customer, TENANT, order.id(), false, "check-close");
+        assertThat(resources.customerOrder(TENANT, order.id(), ACTOR_ID).status()).isEqualTo("CANCELLED");
+        assertThat(resources.order(TENANT, order.id()).closeAttempts()).isEqualTo(1);
+        assertThat(smsTotal(order.accountId())).isZero();
+    }
+
+    @Test
     void reconciliationRecordsDifferencesWithoutCrediting() {
         configure(KEY1, 0L);
         var order = newOrder("order-key-3");

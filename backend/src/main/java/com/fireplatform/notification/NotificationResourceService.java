@@ -24,7 +24,7 @@ public class NotificationResourceService {
     public record Grant(String userId,String userName,String username,String ownerType,String ownerId,String ownerName,OffsetDateTime createdAt) { }
     public record Destination(String ownerType,String ownerId,String ownerName) { }
     public record CustomerOptions(Policy policy,List<Destination> destinations,NotificationResourcePricing pricing) { }
-    public record CustomerOrder(String id,String channel,long quantity,long amountCents,String status,String paymentState,String codeUrl,OffsetDateTime createdAt,OffsetDateTime paidAt,OffsetDateTime expiresAt) { }
+    public record CustomerOrder(String id,String channel,long quantity,long amountCents,String status,String paymentState,String codeUrl,OffsetDateTime createdAt,OffsetDateTime paidAt,OffsetDateTime expiresAt,String closeState) { }
     private final JdbcTemplate jdbc;
     private final ManagementGuard guard;
     private final IdempotencyStore idem;
@@ -335,7 +335,7 @@ public class NotificationResourceService {
             String accountId=ensureAccount(tenant,ownerType,ownerId,ownerName);
             String hash=idem.fingerprint(List.of(tenant,ownerType,ownerId,channel,quantity,amount,"CUSTOMER"));
             var replay=idem.replay(actor.user().id(),"notification-recharge-order",key,hash,CustomerOrder.class);
-            if(replay!=null) return new Phase(null,null,null,replay);
+            if(replay!=null) return new Phase(null,null,null,customerOrder(tenant,replay.id(),actor.user().id()));
             String id=UUID.randomUUID().toString(),token=UUID.randomUUID().toString().replace("-","");
             String outTradeNo="NEW"+UUID.randomUUID().toString().replace("-","").substring(0,29);
             var merchant=paymentConfig.newOrderMerchant();
@@ -377,7 +377,10 @@ public class NotificationResourceService {
 
 
     private static CustomerOrder customerOrder(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new CustomerOrder(rs.getString("id"),rs.getString("channel"),rs.getLong("quantity"),rs.getLong("amount_cents"),rs.getString("status"),paymentState(rs),rs.getString("code_url"),rs.getObject("created_at",OffsetDateTime.class),rs.getObject("paid_at",OffsetDateTime.class),rs.getObject("expires_at",OffsetDateTime.class));
+        String status=rs.getString("status"), closeState=rs.getString("close_state");
+        return new CustomerOrder(rs.getString("id"),rs.getString("channel"),rs.getLong("quantity"),rs.getLong("amount_cents"),
+            status,paymentState(rs),"PENDING".equals(status) && !PaymentOrderService.closeUnconfirmed(closeState) ? rs.getString("code_url") : null,
+            rs.getObject("created_at",OffsetDateTime.class),rs.getObject("paid_at",OffsetDateTime.class),rs.getObject("expires_at",OffsetDateTime.class),closeState);
     }
 
     private String ensureAccount(String tenant,String ownerType,String ownerId,String ownerName) {
