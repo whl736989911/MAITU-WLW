@@ -6,6 +6,7 @@ import com.fireplatform.N04TestScopes;
 import com.fireplatform.shared.ScopeFilter;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,7 +27,10 @@ class DutyTelemetryGenericObservationTest {
 
     @BeforeEach void setup(){
         tenant=UUID.randomUUID().toString();device=UUID.randomUUID().toString();actor=UUID.randomUUID().toString();
-        now=OffsetDateTime.now().withNano(0);
+        jdbc.execute("SET TIME ZONE '+08:00'");
+        // 15:30Z and 16:30Z yesterday share a UTC day but straddle midnight at +08:00.
+        now=OffsetDateTime.now(ZoneOffset.UTC).minusDays(1).withHour(17).withMinute(30)
+            .withSecond(0).withNano(0).withOffsetSameInstant(ZoneOffset.ofHours(8));
         jdbc.update("INSERT INTO tenants(id,name) VALUES(?,?)",tenant,"Generic telemetry fixture");
         jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated) VALUES(?,?,?,?,?,?,'UNKNOWN',FALSE)",device,tenant,"Generic detector",device,"generic","Fixture address");
         jdbc.update("INSERT INTO app_users(id,username,display_name,user_type,password_hash,must_change_password,enabled) VALUES(?,?,?,'PLATFORM',?,FALSE,TRUE)",actor,actor,"Projection fixture","unused-projection-fixture");
@@ -66,7 +70,9 @@ class DutyTelemetryGenericObservationTest {
             assertThat(series.unit()).isEqualTo("%");
             assertThat(series.unitStatus()).isEqualTo("DECLARED");
             assertThat(series.sourceVersion()).isNull();
-            var day=series.points().stream().filter(point->point.sampleCount()==2).findFirst().orElseThrow();
+            var expectedDay=now.withOffsetSameInstant(ZoneOffset.UTC).toLocalDate().toString();
+            var day=series.points().stream().filter(point->point.date().equals(expectedDay)).findFirst().orElseThrow();
+            assertThat(day.sampleCount()).isEqualTo(2);
             assertThat(day.average()).isEqualTo("17.5");
             assertThat(day.minimum()).isEqualTo("0");
             assertThat(day.maximum()).isEqualTo("35");
