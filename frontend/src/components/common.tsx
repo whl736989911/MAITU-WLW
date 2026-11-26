@@ -16,9 +16,11 @@ export function ErrorNotice({ error, retry }: { error: unknown; retry?: () => vo
 export function Loading() { return <div role="status" className="empty-state"><Spin/><p>正在读取服务端数据…</p></div> }
 export function Empty({ title = '暂无记录', children }: { title?: string; children?: ReactNode }) { return <AntEmpty className="empty-state" image={AntEmpty.PRESENTED_IMAGE_SIMPLE} description={<><strong>{title}</strong><p>{children ?? '服务端尚无可显示的记录。'}</p></>}/> }
 export function PageHeading({ eyebrow, title, description, children }: { eyebrow: string; title: string; description?: string; children?: ReactNode }) {
-  return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1>{description && <p>{description}</p>}</div><div className="heading-actions">{children}</div></div>
+  return <header className="page-heading"><div className="page-heading-copy"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1>{description && <p className="page-description">{description}</p>}</div>
+    {children && <div className="heading-actions">{children}</div>}
+  </header>
 }
 export function Pager({ page, size, total, onChange }: { page: number; size: number; total: number; onChange: (page: number) => void }) {
-  return <div className="pager"><span>共 {reported(total)} 条 · 第 {page} 页</span><Pagination current={page} pageSize={size} total={total} showSizeChanger={false} responsive onChange={onChange}/></div>
+  return <nav className="pager" aria-label="结果分页"><span>共 {reported(total)} 条 · 第 {page} 页</span><Pagination current={page} pageSize={size} total={total} showSizeChanger={false} responsive onChange={onChange}/></nav>
 }
 export function RefreshButton({ onClick }: { onClick: () => void }) { return <Button variant="outline" onClick={onClick}><RefreshCw/>刷新数据</Button> }

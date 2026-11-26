@@ -107,13 +107,11 @@ async function explicitScope(page, tenant, expected = 200, expectsDeviceList = t
   return result
 }
 async function login(page, principal, customer = false) {
-  await page.goto(ctx.url)
-  await page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
-  if (customer) await page.getByRole('button', { name: '客户端', exact: true }).click()
+  await page.goto(new URL(customer ? '/customer/login' : '/management/login', ctx.url).href)
   await page.getByLabel('账户', { exact: true }).fill(principal.username)
   await page.getByLabel('密码', { exact: true }).fill(principal.password)
   const authenticated = next(page, '/api/auth/login', {}, undefined, 'POST')
-  await page.getByRole('button', { name: customer ? '登录客户端' : '登录管理端', exact: true }).click()
+  await page.getByRole('button', { name: '登录', exact: true }).click()
   assert.equal((await authenticated).status(), 200)
   // No first-login password change: Python supplies already-initialized principals.
   await page.getByRole('button', { name: '退出登录', exact: true }).waitFor()

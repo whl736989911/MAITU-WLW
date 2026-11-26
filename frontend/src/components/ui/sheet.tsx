@@ -32,7 +32,7 @@ type ContentProps = ComponentProps<'div'> & { side?: 'top' | 'right' | 'bottom' 
 export function SheetContent({ className, children, side = 'right', showCloseButton = true, ...props }: ContentProps) {
   const sheet = useSheet()
   const horizontal = side === 'left' || side === 'right'
-  const width = className?.includes('mobile-sidebar') ? 'min(320px, 100vw)' : className?.includes('device-detail-sheet') ? 'min(960px, 100vw)' : 'min(760px, 100vw)'
+  const width = className?.includes('mobile-sidebar') ? 'min(320px, 100vw)' : 'min(760px, 100vw)'
   const titleId = `${sheet.descriptionId}-title`
   return <Drawer open={sheet.open} onClose={() => sheet.change(false)} placement={side} size={horizontal ? width : 'min(85vh, 760px)'} title={<span id={titleId}>{sheet.title ?? '详情与编辑'}</span>} aria-labelledby={titleId} closable={showCloseButton ? { placement: 'end' } : false} closeIcon={<span aria-label="关闭">×</span>} destroyOnHidden keyboard focusable={{ trap: true, focusTriggerAfterClose: true }} classNames={{ root: 'platform-drawer', body: 'platform-drawer-body' }} styles={{ body: { padding: 0 } }}>
     <div {...props} data-slot="sheet-content" data-side={side} className={cn('platform-sheet-content', className)}>{children}</div>

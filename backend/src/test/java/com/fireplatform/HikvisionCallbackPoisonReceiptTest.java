@@ -65,7 +65,7 @@ class HikvisionCallbackPoisonReceiptTest {
         String id=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO app_users(id,username,display_name,user_type,password_hash,must_change_password,enabled) VALUES(?,?,?,'PLATFORM',?,FALSE,TRUE)",id,id,"Poison fixture owner","unused-poison-fixture");
         actor=new AuthService.Identity(new AuthService.UserView(id,id,"Poison fixture owner","PLATFORM",null,false),List.of("integrations:write","integrations:read"),"management","fixture-token");
-        configuration.update(actor,"poison-hikvision-"+id,new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235"),"request-poison-config");
+        configuration.update(actor,"poison-hikvision-"+id,new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235",null),"request-poison-config");
         credential="a".repeat(64);
         callbacks.update(actor,"poison-enable-"+id,
             new HikvisionCallbackService.Write(0L,true,"https://receiver.example.com",credential,List.of("980004","980016")),"request-poison-enable");

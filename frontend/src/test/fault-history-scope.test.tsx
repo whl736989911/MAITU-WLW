@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FaultHistoryPage } from '@/pages/fault-history'
 import * as duty from '@/lib/duty-api'
@@ -69,4 +69,35 @@ describe('故障历史选择上下文隔离', () => {
     expect(await screen.findByRole('button', { name: /下一页设备/ })).toBeInTheDocument()
     expect(detail()).not.toBeInTheDocument()
   })
+})
+
+it('值守按故障事件而不是设备展开，来源恢复与人工处置独立', async () => {
+  const recovered = { ...fault, id: 'recovered', fault_label: '低电量', source_recovered: true }
+  vi.spyOn(duty, 'queryFaults').mockResolvedValue(page([recovered, fault]))
+  render(<FaultHistoryPage workbench />)
+  const table = await screen.findByRole('table', { name: '故障事件列表' })
+  const rows = within(table).getAllByRole('row').slice(1)
+  expect(rows).toHaveLength(2)
+  expect(rows[0]).toHaveTextContent('低电量')
+  expect(rows[0]).toHaveTextContent('来源已修复')
+  expect(rows[0]).toHaveTextContent('尚未记录')
+  expect(rows[1]).toHaveTextContent('防拆报警')
+  expect(rows[1]).toHaveTextContent('来源未提供恢复状态')
+})
+
+it('故障历史在同一入口按事件或按设备切换查询', async () => {
+  const events = vi.spyOn(duty, 'queryFaults').mockResolvedValue(page([fault]))
+  const devices = vi.spyOn(duty, 'queryDeviceFaults').mockResolvedValue({
+    page: 1, size: 20, total: 1, items: [{
+      tenant_id: 'tenant-a', device_id: 'device-a', device_name: '故障汇总设备', device_address: '验收地址', place_id: 'place-a',
+      fault_types: [], event_count: 2, latest_observed_at: null, latest_received_at: null,
+    }],
+  })
+  render(<FaultHistoryPage />)
+  await screen.findByText('防拆报警 (1002003)')
+  expect(devices).not.toHaveBeenCalled()
+  await userEvent.click(screen.getByRole('tab', { name: '按设备' }))
+  expect(await screen.findByText('故障汇总设备')).toBeVisible()
+  expect(screen.queryByText('防拆报警 (1002003)')).not.toBeInTheDocument()
+  expect(events).toHaveBeenCalledTimes(1)
 })

@@ -4,8 +4,6 @@ import com.fireplatform.alarm.AlarmLifecycle;
 import com.fireplatform.identity.AuthService;
 import com.fireplatform.identity.CoordinationFence;
 import com.fireplatform.identity.TenantFence;
-import com.fireplatform.integration.BusinessFactPublisher;
-import com.fireplatform.integration.NormalizedBusinessFact;
 import com.fireplatform.product.PublishedMessageNormalizer;
 import com.fireplatform.shared.*;
 import java.math.BigDecimal;
@@ -20,8 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class MessageApplyCommands {
     private static final Set<String> APPLICABLE=Set.of("FIRE","FAULT","RECOVERY","HEARTBEAT","PARAM","OTHER");
     private final JdbcTemplate jdbc; private final CoordinationFence coordination; private final IngestionGuard guard; private final TenantFence tenants; private final PublishedMessageNormalizer normalizer; private final DeviceAccessScope scopes;
-    private final AlarmLifecycle alarms; private final IdempotencyStore idem; private final AuditService audit; private final Clock clock; private final GenericFactBridge bridge; private final BusinessFactPublisher facts;
-    public MessageApplyCommands(JdbcTemplate jdbc,CoordinationFence coordination,IngestionGuard guard,TenantFence tenants,PublishedMessageNormalizer normalizer,DeviceAccessScope scopes,AlarmLifecycle alarms,IdempotencyStore idem,AuditService audit,Clock clock,GenericFactBridge bridge,BusinessFactPublisher facts) { this.jdbc=jdbc;this.coordination=coordination;this.guard=guard;this.tenants=tenants;this.normalizer=normalizer;this.scopes=scopes;this.alarms=alarms;this.idem=idem;this.audit=audit;this.clock=clock;this.bridge=bridge;this.facts=facts; }
+    private final AlarmLifecycle alarms; private final IdempotencyStore idem; private final AuditService audit; private final Clock clock; private final GenericFactBridge bridge;
+    public MessageApplyCommands(JdbcTemplate jdbc,CoordinationFence coordination,IngestionGuard guard,TenantFence tenants,PublishedMessageNormalizer normalizer,DeviceAccessScope scopes,AlarmLifecycle alarms,IdempotencyStore idem,AuditService audit,Clock clock,GenericFactBridge bridge) { this.jdbc=jdbc;this.coordination=coordination;this.guard=guard;this.tenants=tenants;this.normalizer=normalizer;this.scopes=scopes;this.alarms=alarms;this.idem=idem;this.audit=audit;this.clock=clock;this.bridge=bridge; }
 
     private record Row(String id,String tenant,String sourceId,String deviceId,String deviceName,String address,String version,String state,String bindingId,String vendorDeviceId,byte[] payload,OffsetDateTime receivedAt,long revision,Long sequence,OffsetDateTime occurredAt,String applicationState,String provenance,String occurredAtRaw,String sourceMessageId) { }
 
@@ -106,7 +104,6 @@ public class MessageApplyCommands {
             if(updated!=1)throw ApiError.missing();
         }
         bridge.record(raw.tenant(),raw.deviceId(),raw.id(),protocol,raw.occurredAt(),normalized.eventType(),normalized.sourceEventValue(),normalized.readings(),true);
-        if(automatic) facts.publish(fact(raw,protocol,normalized,alarmId));
         var now=OffsetDateTime.now(clock);
         var result=new IngestionModels.ApplyResult(raw.id(),"APPLIED",normalized.eventType(),alarmId,physical,battery,normalized.readings(),raw.sequence(),raw.occurredAt(),"MESSAGE_APPLIED");
         jdbc.update("UPDATE raw_messages SET application_state='APPLIED',applied_at=?,apply_reason=?,apply_error=NULL,revision=revision+1 WHERE id=? AND tenant_id=?",now,reason,raw.id(),tenant);
@@ -118,16 +115,6 @@ public class MessageApplyCommands {
         var active=jdbc.query("SELECT id FROM alarms WHERE tenant_id=? AND device_id=? AND is_simulated=FALSE AND physical_state='FIRE' AND source_time_known=TRUE AND occurred_at<=? AND (last_event_at IS NULL OR last_event_at<=?) ORDER BY occurred_at,id FOR UPDATE",
             (rs,n)->rs.getString(1),tenant,deviceId,occurredAt,occurredAt);
         for(String alarmId:active) alarms.recoverAlarm(tenant,deviceId,alarmId,occurredAt);
-    }
-    private NormalizedBusinessFact fact(Row raw,String protocol,PublishedMessageNormalizer.Normalized normalized,String alarmId) {
-        var document=new LinkedHashMap<String,Object>();
-        document.put("event_type",normalized.eventType());
-        if(normalized.sourceEventValue()!=null) document.put("source_event_value",normalized.sourceEventValue());
-        document.put("readings",normalized.readings());
-        document.put("diagnostics",normalized.diagnostics());
-        return new NormalizedBusinessFact("GENERIC:"+raw.id(),raw.tenant(),raw.deviceId(),raw.version(),null,protocol,null,null,null,null,
-            raw.sourceMessageId(),normalized.eventType(),raw.occurredAt(),raw.receivedAt(),alarmId,idem.json(document),
-            Base64.getEncoder().encodeToString(raw.payload()),"application/json",true,true);
     }
     private IngestionModels.ApplyResult reject(Row raw,String error,PublishedMessageNormalizer.Normalized normalized,String reason,String request,String actorId){return finish(raw,reason,"REJECTED",error,normalized,"MESSAGE_REJECTED",request,actorId);}
     private IngestionModels.ApplyResult current(Row raw){return new IngestionModels.ApplyResult(raw.id(),raw.applicationState(),null,null,null,null,List.of(),raw.sequence(),raw.occurredAt(),null);}

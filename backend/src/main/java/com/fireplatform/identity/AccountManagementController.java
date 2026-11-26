@@ -12,7 +12,7 @@ public class AccountManagementController {
     public AccountManagementController(RequestSecurity security,IdentityQueries queries,AccountManagementService commands) { this.security=security; this.queries=queries; this.commands=commands; }
     @GetMapping("/api/{audience:management|customer}/users") public Page<IdentityQueries.ManagedUser> customers(@PathVariable String audience,@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(defaultValue="") String keyword,HttpServletRequest request) {
         var actor=security.require(request,"users:read",audience);
-        if("management".equals(audience)) return queries.authorizedCustomers(actor.user().id(),security.optionalTenant(request),security.readSelection(request),page,size,keyword);
+        if("PLATFORM".equals(actor.user().userType())) return queries.authorizedCustomers(actor.user().id(),security.optionalTenant(request),security.readSelection(request),page,size,keyword);
         return queries.users("CUSTOMER",security.tenant(request),page,size,keyword);
     }
     @PostMapping("/api/{audience:management|customer}/users") public IdentityQueries.ManagedUser createCustomer(@PathVariable String audience,@RequestHeader(value="Idempotency-Key",required=false) String key,@Valid @RequestBody ManagementInputs.CreateCustomer body,HttpServletRequest request) {
@@ -29,6 +29,13 @@ public class AccountManagementController {
     }
     @PostMapping("/api/management/platform-users") public IdentityQueries.ManagedUser createPlatform(@RequestHeader(value="Idempotency-Key",required=false) String key,@Valid @RequestBody ManagementInputs.CreatePlatform body,HttpServletRequest request) {
         var actor=security.require(request,"platform-users:write","management"); return commands.createPlatform(actor,key,body,RequestContext.requestId(request));
+    }
+    @PostMapping("/api/management/client-platform-operator")
+    public IdentityQueries.ManagedUser createClientPlatformOperator(
+            @RequestHeader(value="Idempotency-Key",required=false) String key,
+            @Valid @RequestBody ManagementInputs.CreateClientPlatformOperator body,HttpServletRequest request) {
+        var actor=security.require(request,"platform-users:write","management");
+        return commands.createClientPlatformOperator(actor,key,body,RequestContext.requestId(request));
     }
     @PutMapping("/api/management/platform-users/{id}") public IdentityQueries.ManagedUser updatePlatform(@PathVariable String id,@RequestHeader(value="Idempotency-Key",required=false) String key,@Valid @RequestBody ManagementInputs.UpdatePlatform body,HttpServletRequest request) {
         var actor=security.require(request,"platform-users:write","management"); return commands.updatePlatform(actor,id,key,body,RequestContext.requestId(request));

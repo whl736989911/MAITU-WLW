@@ -9,7 +9,7 @@ class LegacyPlaceHierarchyTest {
     @Test void mapsExactPlaceAndParentIdsFromOrgExport() {
         var source=LegacyPlaceHierarchy.parse("type,id,name,parent_id,company_id,address\r\n"
                 +"company,294,唯亭街道,0,,江苏省苏州市\r\n"
-                +"place,323,新镇社区,0,294,新镇社区\r\n"
+                +"place,323,新镇社区,\\N,294,新镇社区\r\n"
                 +"place,369,青灯新村东区,323,294,\"江苏省苏州市,园区\"\r\n"
                 +"place,370,楼栋,369,294,楼栋\r\n");
 

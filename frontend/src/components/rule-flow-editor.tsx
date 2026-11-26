@@ -420,7 +420,7 @@ function NodeForm({ node, catalog, canWrite, nodes, edges, types, onConfig, onOu
     {(node.type === 'sms' || node.type === 'voice' || node.type === 'wechat') && <NotificationForm node={node} catalog={catalog} canWrite={canWrite} onConfig={onConfig}/>}
     {node.type === 'merge' && <MergeForm node={node} canWrite={canWrite} onConfig={onConfig}/>}
     {node.type === 'linkage' && <LinkageForm node={node} catalog={catalog} canWrite={canWrite} onConfig={onConfig}/>}
-    {node.type === 'mqtt' && <OutputForm node={node} catalog={catalog} canWrite={canWrite} onConfig={onConfig}/>}
+    {node.type === 'mqtt' && <p className="notice">第三方输出已退役。历史应用编号：{text(node.config.applicationId) || '未记录'}。重新发布前请删除此节点。</p>}
     {(node.type === 'persist' || node.type === 'createalarm') && <div className="notice"><strong>原生阶段</strong><p>该阶段由既有接入与报警链路固定执行，规则流不能关闭、重排或改写。</p></div>}
     {canWrite && !definitionOf?.fixed && !(definitionOf && nodes.filter(item => item.type === node.type).length <= definitionOf.minCount) &&
       <Button type="button" variant="outline" onClick={() => onRemove(node.id)}><Trash2 size={14}/> 删除节点</Button>}
@@ -566,23 +566,6 @@ function LinkageForm({ node, catalog, canWrite, onConfig }: { node: RuleFlowNode
         {catalog.linkageRules.filter(item => item.kind === 'CUSTOM').map(item => <option key={item.id} value={item.id}>{item.name}{item.hasControllers ? ' · 已配置控制器' : ''}{item.enabled ? ' · 已启用' : ' · 未启用'}</option>)}
       </select>
       <p className="muted-note">规则流只登记并核对引用，不会改写或启停联动规则；硬件动作仍由有权人员在资源联动页面单独维护。</p>
-    </div>
-  </>
-}
-
-function OutputForm({ node, catalog, canWrite, onConfig }: { node: RuleFlowNode; catalog: RuleFlowCatalog; canWrite: boolean; onConfig: NodeFormProps['onConfig'] }) {
-  const selected = text(node.config.applicationId)
-  return <>
-    <div className="field"><Label htmlFor="rule-flow-application">已发布数据输出应用</Label>
-      <select id="rule-flow-application" className="native-select" disabled={!canWrite} value={selected} onChange={event => onConfig(node.id, 'applicationId', event.target.value)}>
-        <option value="">选择应用</option>
-        {catalog.applications.map(item => {
-          const unavailable = item.mqttEnabledOutputs === 0
-          return <option key={item.id} value={item.id} disabled={unavailable}>{item.name} · MQTT已启用 {item.mqttEnabledOutputs} · 全部已启用 {item.enabledOutputs}{unavailable ? ' · 无已启用MQTT输出，不可引用' : ''}</option>
-        })}
-      </select>
-      {catalog.applications.some(item => item.mqttEnabledOutputs === 0) && <p className="muted-note" role="note">未启用任何 MQTT 输出的应用不能作为引用；规则流不会代建或代发外发。</p>}
-      <p className="muted-note">只做引用核对：选择的开放应用必须已有启用的MQTT输出；外发由该应用的数据输出链路承载，规则流不新建端点、不代发、不启停外发。</p>
     </div>
   </>
 }

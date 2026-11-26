@@ -346,6 +346,7 @@ class HikvisionIngestionTest {
             assertThat(event.sourceRecovered()).isTrue();
             assertThat(event.sourceRecoveredAt()).isNull();
         });
+        assertThat(duty.faults(actor,tenant,ScopeFilter.Selection.all(),null,null,null,"ACTIVE",1,20).items()).isEmpty();
         push(Stream.FAULT,fault("fault-push-1",observed.plusMinutes(2),null,null,"0"));
         assertThat(jdbc.queryForObject("SELECT source_recovered FROM hikvision_fault_state WHERE source_fault_id='fault-push-1'",Boolean.class)).isTrue();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_events WHERE kind='FAULT' AND device_id=?",Long.class,device)).isEqualTo(1L);

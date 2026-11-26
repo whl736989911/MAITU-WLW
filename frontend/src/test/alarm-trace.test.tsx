@@ -10,10 +10,11 @@ import type { Alarm, AlarmCoverage, AlarmHistory, AlarmTraceEntry } from '@/lib/
 import { AlarmDetail as OwnerAlarmDetail } from '@/components/alarm-detail'
 import { CoverageView, TraceState, validCoverage } from '@/components/alarm-trace'
 import { AlarmsPage } from '@/pages/alarms'
-import { Dashboard } from '@/pages/dashboard'
+import { CustomerOverviewPage } from '@/pages/customer-overview'
 import { alarm, customer, management, response } from './fixtures'
 const grants = ['alarm:read', 'alarm:review', 'alarm:history']
 const current: Alarm & { tenant_id: string } = { ...alarm, tenant_id: 'tenant-a', id: 'alarm-trace-one', device_id: 'device-frozen', device_name: '报警时名称快照', address: '报警时地址快照', revision: 0, physical_state: 'FIRE', response_state: 'UNHANDLED', conclusion: null }
+const reportedEui = 'fixture-alarm-device-eui'
 function AlarmDetail(props: { alarmId: string | null; tenantId?: string; onClose: () => void; onChanged: () => void }) { return <OwnerAlarmDetail {...props} tenantId={props.tenantId ?? current.tenant_id}/> }
 const physical = { physical_state: 'FIRE' as const, response_state: 'UNHANDLED' as const, conclusion: null }
 const created: AlarmTraceEntry = { id: 'trace-created', alarm_id: current.id, action: 'FIRE_CREATED', revision_before: null, revision_after: 0, before: null, after: physical, occurred_at: '2026-10-23T04:00:00Z', recorded_at: '2026-10-23T04:00:01Z', actor_kind: 'SYSTEM', actor_label: '系统处理', is_self: false, remark: null, origin: 'APPLICATION', actor_id: null, actor_name: null }
@@ -23,7 +24,17 @@ const coverage: AlarmCoverage = { kind: 'FROM_CREATION', first_revision: 0, jour
 const history = (items: AlarmTraceEntry[] = [created], extra: Partial<AlarmHistory> = {}): AlarmHistory => ({ items, total: items.length, page: 1, size: 20, coverage: { ...coverage, entry_total: items.length, current_revision: items.length - 1, journal_through_revision: items.length - 1 }, ...extra })
 function login(permissions = grants, audience: 'management' | 'customer' = 'management') { useSession.getState().login({ ...(audience === 'management' ? management : customer), permissions }, audience); if (audience === 'management') useSession.getState().setScope(['tenant-a'], [], true) }
 const page = (items: unknown[]) => ({ items, total: items.length, page: 1, size: 20 })
-function baseFetch(url: string): Response { if (url.includes('/alarm-workbench?')) return response({ items: [current], total: 1, page: 1, size: 20, as_of: created.recorded_at, timezone: 'Asia/Shanghai', filters: { ...emptyAlarmFilters }, metrics: { alarm_total: 1, unhandled: 1, handled: 0, unrecovered: 1, recovered: 0, true_fire: 0 }, metric_definitions: { ...expectedMetricDefinitions } }); if (url.includes('/history?')) return response(history()); if (url.includes('/alarms?')) return response(page([current])); if (url.includes('/summary')) return response({ device_total: 0, online: 0, offline: 0, unactivated: 0, today_alarms: 1, unhandled_alarms: 1 }); if (url.includes('/ops-overview')) return response({ computed_at: created.recorded_at, alarms: { unhandled: 1, fire: 1, oldest_unhandled_at: null }, channel: { head: null, pending: 0, last_recorded_at: null }, tasks: { raw_message_pending: 0, reparse_pending: 0 }, sources: { enabled: 0, last_received_at: null }, semantics: 'fixture' }); if (url.endsWith(`/alarms/${current.id}`)) return response(current); throw new Error(`Unexpected synthetic alarm endpoint: ${url}`) }
+function baseFetch(url: string): Response {
+  if (url.includes('/alarm-workbench?')) {
+    const requestedSize = new URL(url, 'http://local').searchParams.get('size')
+    return response({ items: [current], total: 1, page: 1, size: requestedSize ? Number(requestedSize) : 20, as_of: created.recorded_at, timezone: 'Asia/Shanghai', filters: { ...emptyAlarmFilters }, metrics: { alarm_total: 1, unhandled: 1, handled: 0, unrecovered: 1, recovered: 0, true_fire: 0 }, metric_definitions: { ...expectedMetricDefinitions } })
+  }
+  if (url.includes('/history?')) return response(history())
+  if (url.includes('/alarms?')) return response(page([current]))
+  if (url.includes('/summary')) return response({ device_total: 0, online: 0, offline: 0, unactivated: 0, today_alarms: 1, unhandled_alarms: 1 })
+  if (url.endsWith(`/alarms/${current.id}`)) return response(current)
+  throw new Error(`Unexpected synthetic alarm endpoint: ${url}`)
+}
 async function openHistory(user: ReturnType<typeof userEvent.setup>) { await user.click(await screen.findByRole('button', { name: '查看业务轨迹' })); await within(screen.getByRole('dialog')).findByRole('button', { name: '刷新业务轨迹' }) }
 async function beginReview(user: ReturnType<typeof userEvent.setup>, remark = '明确现场复核') { await user.click(await screen.findByRole('button', { name: '开始人工复核' })); expect(screen.getByLabelText('复核结论')).toHaveValue(''); await user.selectOptions(screen.getByLabelText('复核结论'), 'TEST'); fireEvent.change(screen.getByLabelText('现场情况 / 处置备注'), { target: { value: remark } }) }
 function stateOfCurrent() { return within(screen.getByRole('dialog')) }
@@ -34,8 +45,8 @@ beforeEach(() => { useSession.getState().clear(); localStorage.clear(); sessionS
 describe('P6a1当前与历史安全DTO/独立权限', () => {
   it('AlarmRow安全投影保留record owner；history管理快照保留、客户两管理key和nested秘密彻底不保留', () => {
     const poisoned = { ...reviewed, payload: 'forbidden-payload', raw_event: 'forbidden-event', request_id: 'forbidden-audit', before: { ...physical, actor_id: 'forbidden-nested' }, after: { ...reviewed.after, raw_event: 'forbidden-after' } }
-    const safeCurrent = current
-    const row = alarmResponse(JSON.stringify({ ...current, remark: 'forbidden-remark', actor_name: 'forbidden-name', payload: 'forbidden' })); expect(row).toEqual(safeCurrent)
+    const row = alarmResponse(JSON.stringify({ ...current, device_eui: reportedEui, remark: 'forbidden-remark', actor_name: 'forbidden-name', payload: 'forbidden' }))
+    expect(row).toEqual({ ...current, device_eui: reportedEui })
     const manager = alarmHistoryResponse(JSON.stringify(history([poisoned])), 'management'); expect(manager.items[0].actor_name).toBe('当时平台快照名'); expect(manager.items[0].actor_id).toBe('manager-id-private'); expect(JSON.stringify(manager)).not.toContain('forbidden')
     const client = alarmHistoryResponse(JSON.stringify(history([{ ...poisoned, actor_label: '平台人员' }])), 'customer'); expect(Object.hasOwn(client.items[0], 'actor_id')).toBe(false); expect(Object.hasOwn(client.items[0], 'actor_name')).toBe(false); expect(JSON.stringify(client)).not.toMatch(/当时平台快照名|manager-id-private|forbidden/); expect(client.items[0].actor_label).toBe('平台人员')
   })
@@ -61,7 +72,24 @@ describe('P6a1当前与历史安全DTO/独立权限', () => {
     login(); const fetcher = vi.fn().mockImplementation(baseFetch); vi.stubGlobal('fetch', fetcher); render(<AlarmsPage/>); const user = userEvent.setup(); const button = await screen.findByRole('button', { name: '查看详情' }); await user.click(button); const dialog = await screen.findByRole('dialog'); expect(await within(dialog).findByRole('heading', { name: current.device_name!, level: 2 })).toBeInTheDocument(); expect(fetcher.mock.calls.some(call => call[0] === `/api/management/alarms/${current.id}`)).toBe(true); expect(fetcher.mock.calls.some(call => call[0].includes('/alarm-workbench?'))).toBe(true)
   })
   it('客户报警页只读详情与总览的实际报警行保持当前/轨迹权限边界', async () => {
-    login(['alarm:read'], 'customer'); const fetcher = vi.fn<(url: string, init?: RequestInit) => Response>(baseFetch); vi.stubGlobal('fetch', fetcher); const user = userEvent.setup(); const first = render(<AlarmsPage/>); await user.click(await screen.findByRole('button', { name: '查看详情' })); expect(await screen.findByRole('heading', { name: current.device_name!, level: 2 })).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '开始人工复核' })).not.toBeInTheDocument(); first.unmount(); login(['alarm:read', 'summary:read'], 'customer'); render(<Dashboard/>); await user.click(await screen.findByRole('button', { name: /报警时名称快照.*报警时地址快照/ })); expect(await screen.findByRole('heading', { name: current.device_name!, level: 2 })).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '开始人工复核' })).not.toBeInTheDocument(); expect(fetcher.mock.calls.some(call => call[1]?.method === 'POST')).toBe(false); expect(fetcher.mock.calls.some(call => call[0].includes('/history'))).toBe(false)
+    login(['alarm:read'], 'customer')
+    useSession.getState().setScope(['tenant-a'], [], true)
+    const fetcher = vi.fn<(url: string, init?: RequestInit) => Response>(baseFetch)
+    vi.stubGlobal('fetch', fetcher)
+    const user = userEvent.setup()
+    const first = render(<AlarmsPage/>)
+    await user.click(await screen.findByRole('button', { name: '查看详情' }))
+    expect(await screen.findByRole('heading', { name: current.device_name!, level: 2 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '开始人工复核' })).not.toBeInTheDocument()
+    first.unmount()
+    login(['alarm:read', 'summary:read'], 'customer')
+    useSession.getState().setScope(['tenant-a'], [], true)
+    render(<CustomerOverviewPage/>)
+    await user.click(await screen.findByRole('button', { name: /报警时名称快照.*未复核/ }))
+    expect(await screen.findByRole('heading', { name: current.device_name!, level: 2 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '开始人工复核' })).not.toBeInTheDocument()
+    expect(fetcher.mock.calls.some(call => call[1]?.method === 'POST')).toBe(false)
+    expect(fetcher.mock.calls.some(call => call[0].includes('/history'))).toBe(false)
   })
 })
 

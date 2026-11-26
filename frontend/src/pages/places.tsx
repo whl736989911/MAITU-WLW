@@ -24,13 +24,13 @@ import { PlaceMoveEditor } from '@/components/place-move-editor'
 import { PlaceTransferEditor } from '@/components/place-transfer-editor'
 const DeviceDetail = lazy(() => import('@/components/device-detail').then(module => ({ default: module.DeviceDetail })))
 
-export function PlacesPage() {
+export function PlacesPage({ unitId }: { unitId?: string } = {}) {
   const { audience, permissions, user, generation } = useSession()
-  if (!user || !allowedPage('places', audience, permissions)) return <Empty title="当前账户无单位位置权限"/>
-  return <PlacesContent key={generation}/>
+  if (!user || audience !== 'management' || !permissions.includes('units:read')) return <Empty title="当前账户无单位位置权限"/>
+  return <PlacesContent key={`${generation}:${unitId ?? ''}`} unitId={unitId}/>
 }
 
-function PlacesContent() {
+function PlacesContent({ unitId }: { unitId?: string }) {
   const session = useSession(), move = usePlaceMove()
   const transfer = usePlaceTransfer()
   const [transferTarget, setTransferTarget] = useState<PlaceNode | null>(null), [transferHidden, setTransferHidden] = useState(false)
@@ -42,8 +42,12 @@ function PlacesContent() {
   const [notice, setNotice] = useState(''), [placePage, setPlacePage] = useState(1)
   const [deviceDetail, setDeviceDetail] = useState<{ id: string; tenantId: string } | null>(null)
   const handledMove = useRef(move.completion?.serial ?? 0)
-  const places = useResource(`places:${JSON.stringify(session.scopeTenantIds)}:${JSON.stringify(session.scopePlaceIds)}:${session.scopeTreeRevision}`, signal => api.places(signal, session.scopeTenantIds, session.scopePlaceIds, true))
-  const units = useResource('place-write-units', signal => api.scopeTree(signal), canWrite)
+  const units = useResource(`place-scope-units:${session.scopeTreeRevision}`, signal => api.scopeTree(signal), canWrite || !!unitId)
+  const selectedUnits = unitId ? session.scopeTenantIds.filter(id => id === unitId) : session.scopeTenantIds
+  const unitPlaces = unitId ? new Set(units.data?.find(unit => unit.id === unitId)?.places.map(place => place.id)) : null
+  const selectedPlaces = unitPlaces ? session.scopePlaceIds.filter(id => unitPlaces.has(id)) : session.scopePlaceIds
+  const places = useResource(`places:${JSON.stringify([unitId,selectedUnits,selectedPlaces,session.scopeTreeRevision])}`,
+    signal => api.places(signal, selectedUnits, selectedPlaces, true), session.scopeInitialized && (!unitId || !!units.data))
   const selected = places.data?.find(place => place.id === selectedId)
   const placeDevices = useResource(`place-devices:${selected?.id ?? ''}:${placePage}:${session.scopeTreeRevision}`, signal => api.devices(placePage, '', 20, signal, '', undefined, selected?.tenant_id, [], selected ? [selected.id] : []), !!selected && session.permissions.includes('device:read'))
   const byId = useMemo(() => new Map((places.data ?? []).map(place => [place.id, place])), [places.data])
@@ -83,32 +87,53 @@ function PlacesContent() {
   function saved() { setEditor(null); places.refresh(); session.refreshScopeTree(); publishObjectChange('organization'); setNotice('位置已保存，单位位置树已更新。') }
   const moving = move.intent?.preview.place ?? moveTarget
   const transferring = transfer.intent?.place ?? transferTarget
+  if (deviceDetail) return <Suspense fallback={<Loading/>}><DeviceDetail deviceId={deviceDetail.id} tenantId={deviceDetail.tenantId} close={() => setDeviceDetail(null)}/></Suspense>
   return <>
-    <PageHeading eyebrow="PLACES · 位置" title="单位位置与设备">
-      <PageHelp title="位置树与范围操作">位置树按真实父子关系展示；搜索保留可见上级。移动会影响整个子树，并要求选择同单位目标位置。位置或设备超出当前跨页授权范围时仍由服务端校验；设备身份和历史不会因移动改变。</PageHelp>
-      {session.audience === 'management' && session.scopeInitialized && <DataTransferActions kind="PLACES" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword }} onCompleted={result => { if ('plan_id' in result) { places.refresh(); session.refreshScopeTree() } }}/>}
-      <RefreshButton onClick={() => { places.refresh(); placeDevices.refresh() }}/>{canWrite && <Button type="button" onClick={() => setEditor({})}><Plus/>新增位置</Button>}
-    </PageHeading>
+    {!unitId && <PageHeading eyebrow="PLACES · 位置" title="单位位置与设备">
+      <PageHelp title="位置树与范围操作">位置树按真实父子关系展示；搜索保留可见上级。上级不在当前范围时会明确标注，不改成一级位置。移动会影响整个子树，并要求选择同单位目标位置。位置或设备超出当前跨页授权范围时仍由服务端校验；设备身份和历史不会因移动改变。</PageHelp>
+    </PageHeading>}
     {notice && <div className="notice" role="status">{notice}</div>}
     {transfer.intent && transferHidden && <div className="notice" role="status">有一笔保留的整体移交操作，状态：{transfer.phase === 'UNCERTAIN' ? '结果未确认' : transfer.phase === 'CONFLICT' ? '范围已变化' : '等待确认'}。<Button type="button" variant="outline" onClick={() => setTransferHidden(false)}>继续原移交操作</Button></div>}
-    <div className="places-workspace">
-      <Card className="list-card"><CardContent><h2 className="section-heading"><Building2 size={18}/>真实位置树 <Badge variant="outline">{places.data?.length ?? '—'} 个</Badge></h2>
-        <IdentitySearch aria-label="搜索位置" placeholder="位置名称或旧平台位置 ID" onSearch={setKeyword}/>
-        {places.loading ? <Loading/> : places.error != null ? <ErrorNotice error={places.error} retry={places.refresh}/> : trees.length ? <Tree key={keyword} aria-label="单位位置树" blockNode showLine defaultExpandAll treeData={trees} selectedKeys={selectedId ? [selectedId] : []} onSelect={keys => { if (keys.length) { setSelectedId(String(keys[0])); setPlacePage(1) } }}/>: <Empty title={keyword ? '没有匹配的位置' : '当前范围暂无真实位置'}/>}
-        <p className="muted-note">按真实父子关系展示；搜索保留可见上级。上级不在当前范围时明确标注，不改成一级位置。</p>
-      </CardContent></Card>
-      <Card className="list-card"><CardContent>{selected ? <>
-        <div className="list-toolbar"><div><h2 className="section-heading"><MapPin size={18}/>{selected.name}</h2><p className="muted-note">{selected.tenant_name} · {placePath(selected, places.data ?? [])}</p></div>{canWrite && <div className="identity-row-actions"><Button variant="outline" size="sm" onClick={() => setEditor({ place: selected, tenantId: selected.tenant_id })}><Pencil/>编辑位置</Button><Button variant="outline" size="sm" onClick={() => setEditor({ parentId: selected.id, tenantId: selected.tenant_id })}><Plus/>新增下级</Button><Button variant="outline" size="sm" disabled={!!move.intent || !!transfer.intent} onClick={() => setMoveTarget(selected)}><MoveRight/>同单位整体移动</Button>{session.permissions.includes('device:write') && <Button variant="outline" size="sm" disabled={!!move.intent || !!transfer.intent} onClick={() => { setTransferTarget(selected); setTransferHidden(false) }}>跨单位整批移交</Button>}</div>}</div>
-        <div className="notice">第 {selected.level} 级 · 直接挂载 {selected.device_count} 台设备。下方查询包含全部子位置中的有权设备；位置/设备授权仍由后端判断。</div>
-        {!session.permissions.includes('device:read') ? <Empty title="无设备读取权限，位置维护不自动授予设备权限"/> : placeDevices.loading ? <Loading/> : placeDevices.error != null ? <ErrorNotice error={placeDevices.error} retry={placeDevices.refresh}/> : placeDevices.data?.items.length ? <>
-          <Table><TableHeader><TableRow><TableHead>设备</TableHead><TableHead>序列号</TableHead><TableHead>挂载位置</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{placeDevices.data.items.map(device => <TableRow key={device.id}><TableCell>{device.name ?? '未命名设备'}</TableCell><TableCell className="mono">{device.device_eui ?? '未提供'}</TableCell><TableCell>{device.place_name ?? '未登记'}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => setDeviceDetail({ id: device.id, tenantId: selected.tenant_id })}>查看详情</Button></TableCell></TableRow>)}</TableBody></Table><Pager page={placeDevices.data.page} size={placeDevices.data.size} total={placeDevices.data.total} onChange={setPlacePage}/>
-        </> : <Empty title="该位置及子位置暂无可见设备"/>}
-      </> : <Empty title="选择左侧位置开始操作">查看设备、编辑资料、新增下级或移动整个位置。</Empty>}</CardContent></Card>
-    </div>
-    <Sheet open={!!editor} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <PlaceEditor key={`${editor.place?.id ?? 'new'}:${editor.parentId ?? ''}`} place={editor.place} parentId={editor.parentId} initialTenantId={editor.tenantId ?? ''} units={units.data ?? []} close={() => setEditor(null)} saved={saved}/>}</SheetContent></Sheet>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2 className="section-heading"><Building2 size={16}/>位置目录 <Badge variant="outline">{places.data?.length ?? '—'} 个</Badge></h2>
+        <div className="list-toolbar management-list-actions">
+          {session.scopeInitialized && (!unitId || !!units.data) && <DataTransferActions kind="PLACES" tenantId={unitId} filters={{ unit_ids: selectedUnits.join(','), place_ids: selectedPlaces.join(','), keyword }} onCompleted={result => { if ('plan_id' in result) { places.refresh(); session.refreshScopeTree() } }}/>}
+          <RefreshButton onClick={() => { places.refresh(); placeDevices.refresh() }}/>
+          {canWrite && <Button type="button" onClick={() => setEditor({ tenantId: unitId })}><Plus/>新增位置</Button>}
+        </div>
+      </div>
+      <div className="places-workspace">
+        <section className="places-browser" aria-label="位置目录">
+          <IdentitySearch aria-label="搜索位置" placeholder="位置名称或旧平台位置 ID" onSearch={setKeyword}/>
+          {places.loading ? <Loading/> : places.error != null ? <ErrorNotice error={places.error} retry={places.refresh}/> : trees.length ? <Tree key={keyword} aria-label="单位位置树" blockNode showLine defaultExpandAll treeData={trees} selectedKeys={selectedId ? [selectedId] : []} onSelect={keys => { if (keys.length) { setSelectedId(String(keys[0])); setPlacePage(1) } }}/> : <Empty title={keyword ? '没有匹配的位置' : '当前范围暂无真实位置'}/>}
+        </section>
+        <section aria-label="所选位置与设备">
+          {selected ? <>
+            <div className="management-list-bar">
+              <div className="place-selection">
+                <h2 className="section-heading"><MapPin size={16}/>{selected.name}</h2>
+                <p className="muted-note">{selected.tenant_name} · {placePath(selected, places.data ?? [])}</p>
+              </div>
+              {canWrite && <div className="list-toolbar management-list-actions">
+                <Button variant="outline" size="sm" onClick={() => setEditor({ place: selected, tenantId: selected.tenant_id })}><Pencil/>编辑位置</Button>
+                <Button variant="outline" size="sm" onClick={() => setEditor({ parentId: selected.id, tenantId: selected.tenant_id })}><Plus/>新增下级</Button>
+                <Button variant="outline" size="sm" disabled={!!move.intent || !!transfer.intent} onClick={() => setMoveTarget(selected)}><MoveRight/>同单位整体移动</Button>
+                {session.permissions.includes('device:write') && <Button variant="outline" size="sm" disabled={!!move.intent || !!transfer.intent} onClick={() => { setTransferTarget(selected); setTransferHidden(false) }}>跨单位整批移交</Button>}
+              </div>}
+            </div>
+            <p className="management-list-context">第 {selected.level} 级 · 直接挂载 {selected.device_count} 台设备。下表包含子位置中的有权设备。</p>
+            {!session.permissions.includes('device:read') ? <Empty title="无设备读取权限，位置维护不自动授予设备权限"/> : placeDevices.loading ? <Loading/> : placeDevices.error != null ? <ErrorNotice error={placeDevices.error} retry={placeDevices.refresh}/> : placeDevices.data?.items.length ? <>
+              <Table><TableHeader><TableRow><TableHead>设备</TableHead><TableHead>序列号</TableHead><TableHead>挂载位置</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{placeDevices.data.items.map(device => <TableRow key={device.id}><TableCell>{device.name ?? '未命名设备'}</TableCell><TableCell className="mono">{device.device_eui ?? '未提供'}</TableCell><TableCell>{device.place_name ?? '未登记'}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => setDeviceDetail({ id: device.id, tenantId: selected.tenant_id })}>查看详情</Button></TableCell></TableRow>)}</TableBody></Table>
+              <Pager page={placeDevices.data.page} size={placeDevices.data.size} total={placeDevices.data.total} onChange={setPlacePage}/>
+            </> : <Empty title="该位置及子位置暂无可见设备"/>}
+          </> : <Empty title="选择左侧位置开始操作">查看设备、编辑资料、新增下级或移动整个位置。</Empty>}
+        </section>
+      </div>
+    </CardContent></Card>
+    <Sheet open={!!editor} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <PlaceEditor key={`${editor.place?.id ?? 'new'}:${editor.parentId ?? ''}`} place={editor.place} parentId={editor.parentId} initialTenantId={editor.tenantId ?? ''} units={unitId ? (units.data ?? []).filter(unit => unit.id === unitId) : units.data ?? []} close={() => setEditor(null)} saved={saved}/>}</SheetContent></Sheet>
     <Sheet open={!!moving} onOpenChange={open => { if (!open && move.edit()) setMoveTarget(null) }}><SheetContent className="review-sheet sm:max-w-2xl">{moving && <PlaceMoveEditor key={moving.id} place={moving}/>}</SheetContent></Sheet>
     <Sheet open={!!transferring && !transferHidden} onOpenChange={open => { if (!open && transfer.phase !== 'PENDING') { if (transfer.edit()) setTransferTarget(null); else setTransferHidden(true) } }}><SheetContent className="review-sheet sm:max-w-2xl">{transferring && <PlaceTransferEditor key={transferring.id} place={transferring} units={units.data ?? []}/>}</SheetContent></Sheet>
-    {deviceDetail && <Suspense fallback={<Loading/>}><DeviceDetail deviceId={deviceDetail.id} tenantId={deviceDetail.tenantId} close={() => setDeviceDetail(null)}/></Suspense>}
   </>
 }
 

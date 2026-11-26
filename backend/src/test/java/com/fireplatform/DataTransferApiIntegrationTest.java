@@ -7,6 +7,7 @@ import com.fireplatform.product.JsonPointerParser;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -79,6 +80,46 @@ class DataTransferApiIntegrationTest {
         outside.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","place_ids","")));outside.set("selected_ids",json.valueToTree(List.of("tenant-b")));
         call(HttpMethod.POST,"/api/management/data-transfer/exports",root,null,"unit-outside-"+UUID.randomUUID(),outside).andExpect(status().isForbidden());
     }
+
+    @Test void deviceHistoryFiltersBeforePaginationAndDownloadsSelectedSnapshot() throws Exception {
+        var selected = json.createObjectNode().put("kind","DEVICES").put("format","CSV").put("reason","Selected device fixture").putNull("tenant_id");
+        selected.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","customer_status","UNACTIVATED")));
+        jdbc.update("UPDATE devices SET last_message_at=NULL,physical_state='NORMAL' WHERE id='device-a'");
+        selected.putArray("selected_ids").add("device-a");
+        String endpoint="/api/management/data-transfer/exports";
+        JsonNode device=body(call(HttpMethod.POST,endpoint,root,null,"device-history-"+UUID.randomUUID(),selected).andExpect(status().isOk()));
+        assertThat(device.path("row_count").asInt()).isEqualTo(1);
+        selected.putArray("selected_ids").add("device-b");
+        call(HttpMethod.POST,endpoint,root,null,"outside-device-"+UUID.randomUUID(),selected).andExpect(status().isForbidden());
+        var other=Map.of("kind","UNITS","format","CSV","reason","Unrelated snapshot");
+        JsonNode unit=body(call(HttpMethod.POST,endpoint,root,null,"unit-history-"+UUID.randomUUID(),other).andExpect(status().isOk()));
+        JsonNode history=body(call(HttpMethod.GET,endpoint+"?kind=DEVICES&size=1",root,null,null,null).andExpect(status().isOk()));
+        assertThat(history.path("total").asInt()).isEqualTo(1);
+        assertThat(history.path("items").get(0).path("id").asText()).isEqualTo(device.path("id").asText());
+        call(HttpMethod.GET,endpoint+"?size=2",root,null,null,null).andExpect(status().isOk()).andExpect(jsonPath("$.total").value(2));
+        JsonNode file=body(call(HttpMethod.GET,endpoint+"/"+history.path("items").get(0).path("id").asText()+"/download",root,null,null,null).andExpect(status().isOk()));
+        assertThat(new String(Base64.getDecoder().decode(file.path("content_base64").asText()),StandardCharsets.UTF_8))
+            .contains("fixture-a").doesNotContain("fixture-b","device-a",unit.path("id").asText());
+    }
+
+    @Test void oversizedDeviceExportNeverSilentlyTruncatesAndSelectionCanReachLaterRows() throws Exception {
+        jdbc.update("""
+            INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,integration_state)
+            SELECT 'asset-limit-'||"X",'tenant-a','Bulk asset fixture','asset-limit-'||"X",'fixture','Fixture','NORMAL',FALSE,'LEGACY_UNVERIFIED'
+            FROM SYSTEM_RANGE(1,10001)
+            """);
+        jdbc.update("UPDATE devices SET name='Bulk asset fixture' WHERE id='device-a'");
+        var scoped=json.createObjectNode().put("kind","DEVICES").put("format","CSV").put("reason","Export limit fixture").putNull("tenant_id");
+        scoped.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","keyword","Bulk asset fixture")));
+        String endpoint="/api/management/data-transfer/exports";
+        call(HttpMethod.POST,endpoint,root,null,"device-oversize-"+UUID.randomUUID(),scoped)
+            .andExpect(status().isBadRequest());
+        call(HttpMethod.GET,endpoint+"?kind=DEVICES",root,null,null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(0));
+        scoped.putArray("selected_ids").add("device-a");
+        call(HttpMethod.POST,endpoint,root,null,"device-later-row-"+UUID.randomUUID(),scoped)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.row_count").value(1));
+    }
     @Test void disabledUnitCannotLeakIntoAggregateEventExports() throws Exception {
         insertCapturedEvent("disabled-export-source", "tenant-b", "disabled-export-event", "disabled-export-message", "device-b");
         long revision=jdbc.queryForObject("SELECT revision FROM tenants WHERE id='tenant-b'",Long.class);
@@ -124,6 +165,27 @@ class DataTransferApiIntegrationTest {
         jdbc.update("INSERT INTO raw_messages(id,tenant_id,source_id,source_name,source_message_id,vendor_device_id,device_id,device_name,device_address,received_at,payload_utf8,payload_bytes,payload_sha256,binding_state,capture_provenance) VALUES (?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?,?,'BOUND','AUTHENTICATED_SOURCE')",
             rawId,tenant,sourceId,"disabled export source",sourceMessageId,"vendor-"+deviceId,deviceId,"device","address",payload,(long)payload.length,"0".repeat(64));
     }
+    @Test void deviceStatusFilterUsesTheSameScopedProjectionForListAndExport() throws Exception {
+        jdbc.update("UPDATE devices SET last_message_at=DATEADD('DAY',-7,CURRENT_TIMESTAMP) WHERE id='device-a'");
+        var unconfirmed=body(call(HttpMethod.GET,"/api/management/devices?size=10&customer_status=UNKNOWN",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(unconfirmed.path("total").asInt()).isEqualTo(1);
+        assertThat(unconfirmed.at("/items/0/id").asText()).isEqualTo("device-a");
+        assertThat(unconfirmed.at("/items/0/status_display/customer_status").asText()).isEqualTo("UNKNOWN");
+        var excluded=body(call(HttpMethod.GET,"/api/management/devices?size=10&customer_status=OFFLINE,UNACTIVATED,FIRE",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(excluded.path("total").asInt()).isZero();
+        call(HttpMethod.GET,"/api/management/devices?customer_status=OFFLINE,OFFLINE",root,"tenant-a",null,null).andExpect(status().isBadRequest());
+
+        var export=json.createObjectNode().put("kind","DEVICES").put("format","CSV").put("reason","Device status filter").putNull("tenant_id");
+        export.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","customer_status","UNKNOWN")));
+        var result=body(call(HttpMethod.POST,"/api/management/data-transfer/exports",root,null,"status-export-"+UUID.randomUUID(),export).andExpect(status().isOk()));
+        assertThat(result.get("row_count").asInt()).isEqualTo(1);
+        var file=body(call(HttpMethod.GET,"/api/management/data-transfer/exports/"+result.get("id").asText()+"/download",root,null,null,null).andExpect(status().isOk()));
+        assertThat(new String(Base64.getDecoder().decode(file.path("content_base64").asText()),StandardCharsets.UTF_8)).contains("fixture-a","状态未确认").doesNotContain("fixture-b","device-a");
+        export.set("filters",json.valueToTree(Map.of("unit_ids","tenant-a","customer_status","OFFLINE")));
+        var excludedExport=body(call(HttpMethod.POST,"/api/management/data-transfer/exports",root,null,"offline-export-"+UUID.randomUUID(),export).andExpect(status().isOk()));
+        assertThat(excludedExport.path("row_count").asInt()).isZero();
+    }
+
     @Test void managementDeviceExportsUseAuthorizedAggregateScopeAndEncryptedArtifacts() throws Exception {
         var selectedRequest=json.createObjectNode().put("kind","DEVICES").put("format","CSV").put("reason","Selected device export fixture").putNull("tenant_id");
         selectedRequest.set("filters",json.valueToTree(Map.of("tenant_id","tenant-a")));selectedRequest.set("selected_ids",json.valueToTree(List.of("device-a")));
@@ -134,7 +196,7 @@ class DataTransferApiIntegrationTest {
         JsonNode artifact=body(call(HttpMethod.GET,"/api/management/data-transfer/exports/"+selected.get("id").asText()+"/download",root,null,null,null).andExpect(status().isOk()));
         byte[] bytes=Base64.getDecoder().decode(artifact.get("content_base64").asText());
         String csv=new String(bytes,StandardCharsets.UTF_8);
-        assertThat(csv).contains("device-a").doesNotContain("device-b");
+        assertThat(csv).contains("设备编号","设备型号","园区A烟感01","fixture-a").doesNotContain("device-a","device-b","fixture-b","product_version_id");
         assertThat(artifact.get("content_sha256").asText()).isEqualTo(selected.get("content_sha256").asText());
         var emptyRequest=json.createObjectNode().put("kind","DEVICES").put("format","CSV").put("reason","Empty device export fixture").putNull("tenant_id");
         emptyRequest.set("filters",json.valueToTree(Map.of("tenant_id","")));emptyRequest.set("selected_ids",json.valueToTree(List.of()));
@@ -156,7 +218,45 @@ class DataTransferApiIntegrationTest {
         assertThat(export.get("row_count").asInt()).isEqualTo(1);
         JsonNode artifact=body(call(HttpMethod.GET,"/api/customer/data-transfer/exports/"+export.get("id").asText()+"/download",customer,null,null,null).andExpect(status().isOk()));
         String csv=new String(Base64.getDecoder().decode(artifact.get("content_base64").asText()),StandardCharsets.UTF_8);
-        assertThat(csv).contains("device-a").doesNotContain("device-b");
+        assertThat(csv).contains("园区A烟感01","fixture-a").doesNotContain("device-a","device-b","fixture-b");
+    }
+
+    @Test void assetWorkbookUsesBusinessNamesAndPreservesTheEntireDeviceNumber() throws Exception {
+        String productId=fixture.product().get("id").asText();
+        String version=fixture.published(productId,"1").get("id").asText();
+        String deviceNumber="00123456789012345678";
+        OffsetDateTime reportTime=OffsetDateTime.parse("2025-01-01T19:08:09Z");
+        jdbc.update("UPDATE places SET name='一号楼二层' WHERE id=?",fixture.placeId);
+        jdbc.update("""
+            UPDATE devices SET device_eui=?,place_id=?,model='800235',product_id=?,product_version_id=?,
+                product_name='感烟探测器',version_number=1,physical_state='FIRE',last_message_at=?,
+                battery_percent=37.5,system_type='消防系统',device_category='烟感'
+            WHERE id='device-a'
+            """,deviceNumber,fixture.placeId,productId,version,reportTime);
+        jdbc.update("""
+            INSERT INTO device_source_bindings(id,tenant_id,device_id,driver_key,source_external_id,generation,state,bound_at)
+            VALUES ('export-hik-model','tenant-a','device-a','HIKVISION_FIRECLOUD','export-hik-source-id',1,'ACTIVE',?)
+            """,reportTime);
+        var input=json.createObjectNode().put("kind","DEVICES").put("format","XLSX").put("reason","可读设备台账").putNull("tenant_id");
+        input.set("filters",json.valueToTree(Map.of("field","model","keyword","HF-FY500-G")));
+        JsonNode exported=body(call(HttpMethod.POST,"/api/management/data-transfer/exports",root,null,UUID.randomUUID().toString(),input).andExpect(status().isOk()));
+        assertThat(exported.get("row_count").asInt()).isEqualTo(1);
+        JsonNode file=body(call(HttpMethod.GET,"/api/management/data-transfer/exports/"+exported.get("id").asText()+"/download",root,null,null,null).andExpect(status().isOk()));
+        try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(Base64.getDecoder().decode(file.get("content_base64").asText())))){
+            var sheet=workbook.getSheetAt(0);
+            var header=sheet.getRow(0);
+            var row=sheet.getRow(1);
+            var cells=new java.util.LinkedHashMap<String,String>();
+            for(int c=0;c<header.getLastCellNum();c++)cells.put(header.getCell(c).getStringCellValue(),row.getCell(c).getStringCellValue());
+            assertThat(cells).containsEntry("设备编号",deviceNumber).containsEntry("设备型号","HF-FY500-G")
+                .containsEntry("产品名称","感烟探测器").containsEntry("产品版本","v1")
+                .containsEntry("归属单位","Ingestion test tenant A").containsEntry("归属位置","一号楼二层")
+                .containsEntry("链路诊断","状态未确认").containsEntry("来源火情","火警")
+                .containsEntry("电池电量","37.5%").containsEntry("所属系统","消防系统").containsEntry("设备类别","烟感")
+                .containsEntry("最后上报时间（北京时间）","2025-01-02 03:08:09")
+                .doesNotContainKeys("id","product_version_id","revision");
+            assertThat(cells.values()).doesNotContain("device-a",version,"800235","FIRE","UNKNOWN","export-hik-source-id");
+        }
     }
 
     @Test void customerImportsOwnPlacesAndDevicesWithRowFailuresAndScopedDownloads() throws Exception {

@@ -101,8 +101,9 @@ export const videoApi = {
       tenantScoped: true, tenantId, signal, decode: raw => object(JSON.parse(raw)) as unknown as CaptureJob,
     })
   },
-  list(tenantId: string, page: number, options: { keyword?: string; include_archived?: boolean } = {}, signal?: AbortSignal) {
+  list(tenantId: string, page: number, options: { keyword?: string; include_archived?: boolean; size?: number } = {}, signal?: AbortSignal) {
     const params = new URLSearchParams({ page: String(page) })
+    if (options.size !== undefined) params.set('size', String(options.size))
     if (options.keyword) params.set('keyword', options.keyword)
     if (options.include_archived) params.set('include_archived', 'true')
     return request<Paginated<VideoResource>>(`/${useSession.getState().audience}/video-resources?${params}`, {

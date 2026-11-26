@@ -70,9 +70,42 @@ class HikvisionDirectCreateIntegrationTest {
         server.start();
         String endpoint="http://127.0.0.1:"+server.getAddress().getPort();
         client.configure(endpoint,"fixture-key","fixture-secret");
-        doReturn(new HikvisionConfigService.Runtime(endpoint,"fixture-key","fixture-secret",true,86400,"800235",true,1,client.session())).when(configuration).refreshRuntime();
+        useRegistrationUnit("unit-a");
+    }
+
+    private void useRegistrationUnit(String unit) {
+        String endpoint="http://127.0.0.1:"+server.getAddress().getPort();
+        doReturn(new HikvisionConfigService.Runtime(endpoint,"fixture-key","fixture-secret",true,86400,"800235",true,1,client.session(),unit)).when(configuration).refreshRuntime();
     }
     @AfterEach void stopServer() { if(server!=null)server.stop(0); }
+
+    @Test void missingConfiguredUnitCannotWriteAndSameDraftCanResumeAfterConfiguration() throws Exception {
+        useRegistrationUnit(null);
+        String key="missing-registration-unit-"+UUID.randomUUID();
+        Map<String,Object> input=payload(serial);
+        String path="/api/management/vendor-devices/hikvision-create";
+        JsonNode blocked=fixture.body(fixture.call(org.springframework.http.HttpMethod.POST,path,fixture.root,
+            "tenant-a",key,input).andExpect(status().isOk()));
+        assertThat(blocked.path("registration").path("status").asText()).isEqualTo("DRAFT");
+        assertThat(blocked.path("cloud_result").path("vendor_code").asText()).isEqualTo("HIKVISION_REGISTRATION_UNIT_REQUIRED");
+        assertThat(adds.get()).isZero();
+
+        useRegistrationUnit("configured-after-draft");
+        JsonNode created=fixture.body(fixture.call(org.springframework.http.HttpMethod.POST,path,fixture.root,
+            "tenant-a",key,input).andExpect(status().isOk()));
+        assertThat(created.path("registration").path("id").asText()).isEqualTo(blocked.path("registration").path("id").asText());
+        assertThat(created.path("registration").path("status").asText()).isEqualTo("COMMISSIONED");
+        assertThat(json.readTree(addRequest.get()).path("unitID").asText()).isEqualTo("configured-after-draft");
+        assertThat(adds.get()).isEqualTo(1);
+    }
+
+    @Test void rejectsIncompatibleCommunicationCodeBeforeCloudWrite() throws Exception {
+        Map<String,Object> input=payload(serial);
+        input.put("communication_type",900004);
+        fixture.call(org.springframework.http.HttpMethod.POST,"/api/management/vendor-devices/hikvision-create",fixture.root,
+            "tenant-a","bad-communication-"+UUID.randomUUID(),input).andExpect(status().isBadRequest());
+        assertThat(adds.get()).isZero();
+    }
 
     @Test void createsWithoutDiscoveryOrPublishedVersionAndAppliesOnlyReportsAfterLocalOwnership() throws Exception {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM product_versions WHERE status='PUBLISHED'",Long.class)).isZero();
@@ -86,6 +119,11 @@ class HikvisionDirectCreateIntegrationTest {
         input.put("verification_code","verify-123");
         input.put("location","Building A");
         String key="direct-"+UUID.randomUUID();
+        var attemptedOverride=new java.util.LinkedHashMap<>(input);
+        attemptedOverride.put("vendor_unit_id","untrusted-unit");
+        fixture.call(org.springframework.http.HttpMethod.POST,"/api/management/vendor-devices/hikvision-create",fixture.root,
+            "tenant-a",key,attemptedOverride).andExpect(status().isBadRequest());
+        assertThat(adds.get()).isZero();
         JsonNode created=fixture.body(fixture.call(org.springframework.http.HttpMethod.POST,
             "/api/management/vendor-devices/hikvision-create",fixture.root,"tenant-a",key,input).andExpect(status().isOk()));
         assertThat(created.path("registration").path("status").asText()).isEqualTo("COMMISSIONED");
@@ -96,7 +134,7 @@ class HikvisionDirectCreateIntegrationTest {
         assertThat(submitted.path("deviceSerial").asText()).isEqualTo(serial);
         assertThat(submitted.path("deviceModel").asText()).isEqualTo("800235");
         assertThat(submitted.path("deviceType").asInt()).isEqualTo(600002);
-        assertThat(submitted.path("communicationType").asInt()).isEqualTo(1);
+        assertThat(submitted.path("communicationType").asInt()).isEqualTo(900002);
         assertThat(submitted.path("verificationCode").asText()).isEqualTo("verify-123");
         assertThat(submitted.path("unitID").asText()).isEqualTo("unit-a");
         assertThat(submitted.path("location").asText()).isEqualTo("Building A");
@@ -227,7 +265,7 @@ class HikvisionDirectCreateIntegrationTest {
         var input=new java.util.LinkedHashMap<String,Object>();
         input.put("mode","NEW_VENDOR");input.put("driver_key","HIKVISION_FIRECLOUD");input.put("external_serial",deviceSerial);
         input.put("device_name","Direct smoke");input.put("device_model","800235");input.put("device_type",600002);
-        input.put("communication_type",1);input.put("vendor_unit_id","unit-a");input.put("tenant_id",tenant);
+        input.put("communication_type",900002);input.put("tenant_id",tenant);
         input.put("place_id",fixture.placeId);
         return input;
     }

@@ -3,12 +3,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import { UsersPage } from '@/pages/users'
-import { AuthScreen } from '@/components/auth'
+import { CustomerLoginScreen } from '@/components/auth'
 import { UnitsPage } from '@/pages/units'
 import { api } from '@/lib/api'
 import { useSession } from '@/lib/store'
 import type { ManagedUser, PermissionCatalog, Unit } from '@/lib/types'
-import { customer, management, response } from './fixtures'
+import { customer, fixedLoginChallenge, management, response } from './fixtures'
 
 const p2Permissions = ['units:read', 'units:write', 'users:read', 'users:write', 'users:reset-password', 'platform-users:read', 'platform-users:write', 'platform-users:reset-password']
 const admin = { ...management, permissions: [...management.permissions, ...p2Permissions] }
@@ -65,10 +65,21 @@ describe('P2自助改密入口', () => {
     loginAdmin(); const fetcher = vi.fn().mockImplementation((url: string, init?: RequestInit) => url === '/api/auth/change-password' ? new Response(null, { status: 204 }) : defaultFetch(url, init)); vi.stubGlobal('fetch', fetcher)
     render(<App/>); const user = userEvent.setup(); await user.click(screen.getByRole('button', { name: '修改自己的密码' }))
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: actorSecret } }); fireEvent.change(screen.getByLabelText('新密码'), { target: { value: targetSecret } }); fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'different-test-only' } }); await user.click(screen.getByRole('button', { name: '更新密码并重新登录' })); expect(screen.getByRole('alert')).toHaveTextContent('两次新密码不一致')
-    fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: targetSecret } }); await user.click(screen.getByRole('button', { name: '更新密码并重新登录' })); await screen.findByText('密码已更新，旧会话已撤销。请使用新密码重新登录。')
+    for (const rejected of ['123456', 'abcdef']) {
+      fireEvent.change(screen.getByLabelText('新密码'), { target: { value: rejected } })
+      fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: rejected } })
+      await user.click(screen.getByRole('button', { name: '更新密码并重新登录' }))
+      expect(screen.getByRole('alert')).toHaveTextContent('数字、字母、符号至少使用两类')
+      expect(fetcher.mock.calls.some(call => call[0] === '/api/auth/change-password')).toBe(false)
+    }
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'Ab1234' } })
+    fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'Ab1234' } })
+    await user.click(screen.getByRole('button', { name: '更新密码并重新登录' }))
+    await screen.findByText('密码已更新，旧会话已撤销。请使用新密码重新登录。')
     expect(useSession.getState().token).toBeNull(); expect(screen.getByLabelText('密码')).toHaveValue(''); expect(JSON.stringify(useSession.getState())).not.toContain(actorSecret)
   })
   it('客户完成初始改密后仍从客户入口重新登录', async () => {
+    history.replaceState(null, '', '/customer/login')
     useSession.getState().login({ ...customer, user: { ...customer.user, must_change_password: true } }, 'customer')
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (url === '/api/auth/change-password') return Promise.resolve(new Response(null, { status: 204 }))
@@ -80,7 +91,8 @@ describe('P2自助改密入口', () => {
       }
       throw new Error(`Unexpected account lifecycle endpoint: ${url}`)
     }))
-    render(<AuthScreen/>)
+    const challenge = fixedLoginChallenge()
+    render(<CustomerLoginScreen/>)
     const user = userEvent.setup()
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: actorSecret } })
     fireEvent.change(screen.getByLabelText('新密码'), { target: { value: targetSecret } })
@@ -89,7 +101,8 @@ describe('P2自助改密入口', () => {
     await waitFor(() => expect(useSession.getState().token).toBeNull())
     fireEvent.change(screen.getByLabelText('账户'), { target: { value: customer.user.username } })
     fireEvent.change(screen.getByLabelText('密码'), { target: { value: targetSecret } })
-    await user.click(screen.getByRole('button', { name: '登录客户端' }))
+    fireEvent.change(screen.getByLabelText('验证码'), { target: { value: challenge } })
+    await user.click(screen.getByRole('button', { name: '登录' }))
     await waitFor(() => expect(useSession.getState().token).toBe(customer.access_token))
     expect(useSession.getState().audience).toBe('customer')
     expect(useSession.getState().user?.tenant_id).toBe(customer.user.tenant_id)
@@ -111,7 +124,9 @@ describe('P2页面边界与敏感表单', () => {
     managementView.unmount()
     useSession.getState().login({ ...customer, permissions: [...customer.permissions, 'users:read', 'users:write'] }, 'customer')
     render(<UsersPage platform={false}/>); await listedUser('单位读者')
-    await userEvent.click(screen.getByRole('button', { name: '创建单位用户' }))
+    const create = await screen.findByRole('button', { name: '添加用户' })
+    await waitFor(() => expect(create).toBeEnabled())
+    await userEvent.click(create)
     expect(screen.getByLabelText('初始密码')).toHaveValue(''); expect(screen.getByLabelText('确认初始密码')).toHaveValue('')
     expect(screen.queryByText('平台单位创建权限')).not.toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /报警复核（不可委派）/ })).toBeDisabled()

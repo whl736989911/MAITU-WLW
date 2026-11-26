@@ -3,13 +3,15 @@ package com.fireplatform.alarm;
 import com.fireplatform.identity.RequestSecurity;
 import com.fireplatform.shared.ScopeFilter;
 import com.fireplatform.shared.ApiError;
+import com.fireplatform.shared.LiteralLike;
+import java.util.ArrayList;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Set;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 public class AlarmWorkbenchController {
-    private static final Set<String> PARAMETERS=Set.of("page","size","keyword","physical_state","response_state","conclusion","occurred_from","occurred_to","scope_selected","scope_tenant_ids","scope_place_ids");
+    private static final Set<String> PARAMETERS=Set.of("page","size","keyword","physical_state","response_state","conclusion","occurred_from","occurred_to","scope_selected","scope_tenant_ids","scope_place_ids","system_type");
     private static final Set<String> DEVICE_PARAMETERS=Set.of("page","size","keyword","physical_state","response_state","conclusion","occurred_from","occurred_to");
     private final RequestSecurity security; private final AlarmWorkbenchQueries workbench; private final ScopeFilter scopeFilter;
     public AlarmWorkbenchController(RequestSecurity security,AlarmWorkbenchQueries workbench,ScopeFilter scopeFilter) { this.security=security; this.workbench=workbench; this.scopeFilter=scopeFilter; }
@@ -25,6 +27,12 @@ public class AlarmWorkbenchController {
         if(request.getParameterMap().entrySet().stream().anyMatch(e->!PARAMETERS.contains(e.getKey()) || e.getValue().length!=1)) throw ApiError.bad("筛选参数无效或重复");
         var selection=security.readSelection(request);
         var extra=selection.empty()?new ScopeFilter.Clause("1=0",java.util.List.of()):scopeFilter.alarmDevices("alarms",selection.tenantIds(),selection.placeIds());
-        return workbench.query(actor.user().id(),tenant,page,size,AlarmWorkbenchFilter.parse(keyword,physical,response,conclusion,from,to),extra.sql(),extra.bindings());
+        var filter=AlarmWorkbenchFilter.parse(keyword,physical,response,conclusion,from,to);
+        String system=LiteralLike.normalizedKeyword(request.getParameter("system_type"));
+        if(system.isEmpty()) return workbench.query(actor.user().id(),tenant,page,size,filter,extra.sql(),extra.bindings());
+        var bindings=new ArrayList<>(extra.bindings()); bindings.add(system);
+        String classification="EXISTS (SELECT 1 FROM devices ds WHERE ds.id=alarms.device_id AND ds.tenant_id=alarms.tenant_id AND ds.system_type=?)";
+        String scope=extra.sql()==null||extra.sql().isBlank()?classification:"("+extra.sql()+") AND "+classification;
+        return workbench.query(actor.user().id(),tenant,page,size,filter,scope,bindings);
     }
 }

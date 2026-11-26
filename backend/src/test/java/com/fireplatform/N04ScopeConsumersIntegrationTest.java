@@ -4,8 +4,10 @@ import com.fireplatform.identity.DeviceScopes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -30,8 +32,10 @@ class N04ScopeConsumersIntegrationTest {
         jdbc.execute("CREATE TABLE notifications(id VARCHAR,tenant_id VARCHAR,device_id VARCHAR)");
         jdbc.execute("CREATE TABLE device_group_members(group_id VARCHAR,tenant_id VARCHAR,device_id VARCHAR)");
         jdbc.execute("CREATE TABLE tenants(id VARCHAR PRIMARY KEY,enabled BOOLEAN)");
-        jdbc.execute("CREATE TABLE app_users(id VARCHAR PRIMARY KEY,user_type VARCHAR,enabled BOOLEAN,tenant_id VARCHAR)");
+        jdbc.execute("CREATE TABLE app_users(id VARCHAR PRIMARY KEY,user_type VARCHAR,enabled BOOLEAN,tenant_id VARCHAR,is_protected BOOLEAN DEFAULT FALSE)");
         jdbc.execute("CREATE TABLE user_tenant_grants(user_id VARCHAR,tenant_id VARCHAR)");
+        new ResourceDatabasePopulator(new ClassPathResource("db/migration/V97_1__client_platform_operator_scope.sql"))
+            .execute(java.util.Objects.requireNonNull(jdbc.getDataSource()));
         jdbc.update("INSERT INTO tenants VALUES ('tenant-a',TRUE),('tenant-b',TRUE)");
         jdbc.update("INSERT INTO user_tenant_grants VALUES ('set-actor','tenant-a'),('all-actor','tenant-b'),('empty-actor','tenant-a'),('place-actor','tenant-a')");
         jdbc.update("INSERT INTO user_device_scopes VALUES ('set-actor','tenant-a','DEVICE_SET',1),('all-actor','tenant-b','ALL_TENANT',1),('empty-actor','tenant-a','DEVICE_SET',1),('place-actor','tenant-a','PLACE_SUBTREE',1)");

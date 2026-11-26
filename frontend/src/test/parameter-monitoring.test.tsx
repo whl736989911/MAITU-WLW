@@ -28,18 +28,22 @@ describe('动态设备监测指标', () => {
     expect(unknown).not.toHaveTextContent(/%|℃|°C/)
     expect(screen.getByRole('cell', { name: '相对湿度 46 %' })).toBeInTheDocument()
   })
-  it.each(['pending', 'failed'])('历史查询%s时仍展示已成功读取的当前值', async state => {
+  it.each(['pending', 'failed'])('历史查询%s时切回最新读数仍可使用', async state => {
     mountMonitoring({ history: () => state === 'pending' ? new Promise<Response>(() => {}) : response({ code: 'QA_HISTORY_UNAVAILABLE' }, 503) })
     expect(await screen.findByRole('cell', { name: '海康温度 21.5 单位未知' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: '历史记录' }))
     if (state === 'failed') expect(await screen.findByRole('alert')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: '最新读数' }))
+    expect(await screen.findByRole('cell', { name: '海康温度 21.5 单位未知' })).toBeInTheDocument()
   })
 
-  it('当前值读取失败不隐藏已成功读取的历史样本', async () => {
+  it('当前值读取失败时仍可切换到历史样本', async () => {
     mountMonitoring({ current: () => response({ code: 'QA_CURRENT_UNAVAILABLE' }, 503) })
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: '历史记录' }))
     const history = await screen.findByRole('heading', { name: '历史样本筛选结果' })
     const panel = within(history.closest('[id]')!)
     expect(await panel.findByRole('cell', { name: /海康温度 21.5 单位未知/ })).toBeInTheDocument()
-    expect(await screen.findByRole('alert')).toBeInTheDocument()
   })
 
   it('手动刷新重新读取当前值，而不是继续显示旧快照', async () => {

@@ -13,7 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 class LegacyFactApplyTest {
     final JdbcTemplate jdbc = LegacyFactSchema.migrate("legacy-facts");
-    final LegacyFactApplier applier = new LegacyFactApplier(jdbc, new ObjectMapper(), org.mockito.Mockito.mock(com.fireplatform.identity.CoordinationFence.class), new LegacyAlarmLifecycleFixture(jdbc), org.mockito.Mockito.mock(com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer.class), org.mockito.Mockito.mock(com.fireplatform.integration.BusinessFactPublisher.class));
+    final LegacyFactApplier applier = new LegacyFactApplier(jdbc, new ObjectMapper(), org.mockito.Mockito.mock(com.fireplatform.identity.CoordinationFence.class), new LegacyAlarmLifecycleFixture(jdbc), org.mockito.Mockito.mock(com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer.class));
     final OffsetDateTime at = OffsetDateTime.parse("2026-10-30T14:44:16Z");
     int sequence;
 

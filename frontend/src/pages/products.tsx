@@ -47,7 +47,23 @@ function ProductsContent() {
     setSelected(current => current && current.id === updated.id ? updated : current)
     setEditing(null); setLifecycle(null); products.refresh()
   }
-  return <><PageHeading eyebrow="PRODUCTS · 产品模型" title="产品中心" description="维护产品型号、版本和声明能力；设备绑定具体的已发布版本。"><RefreshButton onClick={products.refresh}/>{canWrite && <Button onClick={() => setCreating(true)}><Plus/>创建产品</Button>}<DataTransferActions kind="PRODUCT_DRAFTS" label="产品草稿数据" onCompleted={receipt => { if ('plan_id' in receipt) products.refresh() }}/><PageHelp title="产品版本与能力证据"><p>本页管理全局产品模板。JSON Pointer 映射只解析合成测试样例，不执行脚本、不连接厂商，不更新设备或报警。</p><p>模板声明不等于硬件能力验证。测试通过或版本发布不代表真实厂商已接通；设备须明确绑定一个具体的已发布版本，新版本不会自动替换旧绑定。</p><p>厂商与型号是产品稳定身份，创建后不可修改；名称与描述可编辑并受 revision 冲突保护。归档会阻止发布新版本和新的设备绑定，但既有已发布版本、历史与存量解析继续可用；不会删除任何历史。</p></PageHelp></PageHeading><Card className="list-card"><CardContent><IdentitySearch placeholder="按产品名称、厂商或型号查询（字面匹配）" aria-label="搜索产品" onSearch={value => { setPage(1); setKeyword(value) }}><div className="field"><Label htmlFor="product-state-filter">产品状态</Label><select id="product-state-filter" className="native-select" value={stateFilter} onChange={event => { setStateFilter(event.target.value as ProductStateFilter); setPage(1) }}><option value="ACTIVE">启用中</option><option value="ARCHIVED">已归档</option><option value="ALL">全部</option></select></div></IdentitySearch>{products.loading ? <Loading/> : products.error != null ? <ErrorNotice error={products.error} retry={products.refresh}/> : products.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>产品</TableHead><TableHead>厂商 / 型号（稳定标识）</TableHead><TableHead>描述</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{products.data.items.map(item => {
+  return <>
+    <PageHeading eyebrow="PRODUCTS · 产品模型" title="产品中心" description="维护产品型号、版本和声明能力；设备绑定具体的已发布版本。">
+      <PageHelp title="产品版本与能力证据"><p>本页管理全局产品模板。JSON Pointer 映射只解析合成测试样例，不执行脚本、不连接厂商，不更新设备或报警。</p><p>模板声明不等于硬件能力验证。测试通过或版本发布不代表真实厂商已接通；设备须明确绑定一个具体的已发布版本，新版本不会自动替换旧绑定。</p><p>厂商与型号是产品稳定身份，创建后不可修改；名称与描述可编辑并受 revision 冲突保护。归档会阻止发布新版本和新的设备绑定，但既有已发布版本、历史与存量解析继续可用；不会删除任何历史。</p></PageHelp>
+    </PageHeading>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>产品模板列表</h2>
+        <div className="list-toolbar management-list-actions">
+          <DataTransferActions kind="PRODUCT_DRAFTS" label="产品草稿数据" onCompleted={receipt => { if ('plan_id' in receipt) products.refresh() }}/>
+          <RefreshButton onClick={products.refresh}/>
+          {canWrite && <Button onClick={() => setCreating(true)}><Plus/>创建产品</Button>}
+        </div>
+      </div>
+      <IdentitySearch placeholder="按产品名称、厂商或型号查询（字面匹配）" aria-label="搜索产品" onSearch={value => { setPage(1); setKeyword(value) }}>
+        <div className="field"><Label htmlFor="product-state-filter">产品状态</Label><select id="product-state-filter" className="native-select" value={stateFilter} onChange={event => { setStateFilter(event.target.value as ProductStateFilter); setPage(1) }}><option value="ACTIVE">启用中</option><option value="ARCHIVED">已归档</option><option value="ALL">全部</option></select></div>
+      </IdentitySearch>
+      {products.loading ? <Loading/> : products.error != null ? <ErrorNotice error={products.error} retry={products.refresh}/> : products.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>产品</TableHead><TableHead>厂商 / 型号（稳定标识）</TableHead><TableHead>描述</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{products.data.items.map(item => {
     const state = productState(item)
     return <TableRow key={item.id}><TableCell><Boxes size={16} className="inline mr-2"/>{item.name}{state === 'ARCHIVED' && <Badge variant="outline" className="status status-neutral">已归档</Badge>}<div className="table-sub mono">{item.id}</div></TableCell><TableCell>{item.manufacturer} / {item.model}</TableCell><TableCell className="whitespace-normal">{item.description || '未填写描述'}</TableCell><TableCell className="text-right">
       <Button variant="ghost" size="sm" onClick={() => setSelected(item)}>查看版本</Button>

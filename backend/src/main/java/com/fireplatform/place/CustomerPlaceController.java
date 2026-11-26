@@ -24,9 +24,10 @@ public class CustomerPlaceController {
     private final PlaceQueries queries;
     private final PlaceCommands commands;
     private final JdbcTemplate jdbc;
+    private final ScopeTreeQueries scopeTree;
 
-    public CustomerPlaceController(RequestSecurity security, PlaceQueries queries, PlaceCommands commands, JdbcTemplate jdbc) {
-        this.security = security; this.queries = queries; this.commands = commands; this.jdbc = jdbc;
+    public CustomerPlaceController(RequestSecurity security, PlaceQueries queries, PlaceCommands commands, JdbcTemplate jdbc, ScopeTreeQueries scopeTree) {
+        this.security = security; this.queries = queries; this.commands = commands; this.jdbc = jdbc; this.scopeTree = scopeTree;
     }
 
     private static void only(HttpServletRequest request, String... allowed) {
@@ -38,8 +39,13 @@ public class CustomerPlaceController {
     @GetMapping("/api/customer/scope-tree")
     public List<UnitNode> scopeTree(HttpServletRequest request) {
         var actor = security.require(request, "units:read", "customer");
-        String tenant = security.tenant(request);
         only(request);
+        if ("PLATFORM".equals(actor.user().userType())) return scopeTree.tree(actor.user().id()).stream()
+            .map(unit -> new UnitNode(unit.id(), unit.name(), unit.places().stream()
+                .map(place -> new ScopePlaceNode(place.id(), place.tenantId(), place.tenantName(), place.name(),
+                    place.parentId(), place.legacyPlaceId(), place.deviceCount(), place.level(), place.revision(),
+                    place.parentContext())).toList())).toList();
+        String tenant = security.tenant(request);
         String name = jdbc.queryForObject("SELECT name FROM tenants WHERE id=?", String.class, tenant);
         var places = queries.placesForTenant(actor.user().id(), tenant).stream()
             .map(place -> new ScopePlaceNode(place.id(), place.tenantId(), place.tenantName(), place.name(), place.parentId(),

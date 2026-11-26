@@ -35,8 +35,9 @@ const pageOf = (raw: string, key: 'items'): Record<string, unknown> => {
 }
 
 export const topologyApi = {
-  gateways(tenantId: string, page: number, keyword: string, signal?: AbortSignal) {
+  gateways(tenantId: string, page: number, keyword: string, signal?: AbortSignal, size?: number) {
     const params = new URLSearchParams({ page: String(page) })
+    if (size !== undefined) params.set('size', String(size))
     if (keyword) params.set('keyword', keyword)
     return request<GatewayPage>(`/${useSession.getState().audience}/topology/gateways?${params}`, {
       tenantScoped: true, tenantId, signal,

@@ -3,6 +3,7 @@ import { Search, SlidersHorizontal } from 'lucide-react'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
 import { compileDeviceDraft, emptyDeviceDraft, emptyDeviceFilters, getDeviceWorkbench, deviceFilterEnums, type DeviceDraft, type DeviceFilters, type DeviceMetrics } from '@/lib/device-workbench'
+import { defaultDeviceSort, nextDeviceSort, type DeviceColumnKey } from '@/lib/device-sort'
 import { statusLabel } from '@/lib/format'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -31,7 +32,8 @@ function Content({ back }: { back: () => void }) {
   function closeDetail() { setSelectedDetail(null) }
   const [draft, setDraft] = useState<DeviceDraft>({ ...emptyDeviceDraft }), [appliedDraft, setAppliedDraft] = useState({ ...emptyDeviceDraft }), [applied, setApplied] = useState<DeviceFilters>({ ...emptyDeviceFilters })
   const [page, setPage] = useState(1), [size, setSize] = useState<number | undefined>(), [error, setError] = useState<unknown>()
-  const devices = useResource(`device-workbench:${JSON.stringify([scopeTenantIds, scopePlaceIds, applied, page, size])}`, signal => getDeviceWorkbench(applied, page, size, signal)), data = devices.data, shown = data?.filters ?? applied
+  const [sort, setSort] = useState(defaultDeviceSort)
+  const devices = useResource(`device-workbench:${JSON.stringify([scopeTenantIds, scopePlaceIds, applied, page, size, sort])}`, signal => getDeviceWorkbench(applied, page, size, signal, sort)), data = devices.data, shown = data?.filters ?? applied
   const deviceRevision = useObjectRevision('devices'), organizationRevision = useObjectRevision('organization'), previous = useRef({ deviceRevision, organizationRevision })
   useEffect(() => {
     if (previous.current.deviceRevision !== deviceRevision || previous.current.organizationRevision !== organizationRevision) devices.refresh()
@@ -39,10 +41,12 @@ function Content({ back }: { back: () => void }) {
   }, [deviceRevision, organizationRevision, devices.refresh])
   function update(key: keyof DeviceDraft, value: string) { setDraft(old => ({ ...old, [key]: value })); setError(undefined) }
   function refresh() { closeDetail(); devices.refresh() }
+  function sortBy(column: DeviceColumnKey) { closeDetail(); setSort(current => nextDeviceSort(current, column)); setPage(1) }
   function apply(event: FormEvent) { event.preventDefault(); closeDetail(); try { setApplied(compileDeviceDraft(draft)); setAppliedDraft({ ...draft }); setPage(1); setError(undefined); devices.refresh() } catch (error) { setError(error) } }
   function clear() { closeDetail(); setDraft({ ...emptyDeviceDraft }); setAppliedDraft({ ...emptyDeviceDraft }); setApplied({ ...emptyDeviceFilters }); setPage(1); setError(undefined); devices.refresh() }
+  if (selectedDetail) return <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail}/></Suspense>
   return <section className="device-workbench" data-device-workbench-as-of={data?.as_of}>
-    <PageHeading eyebrow="DEVICES · 明确筛选" title="设备筛选工作台" description="按链路诊断、来源火情及登记属性筛选；列表另显示用户端状态。">
+    <PageHeading eyebrow="DEVICES · 明确筛选" title="设备筛选工作台" description="按链路诊断、来源火情及登记属性筛选设备。">
       <Button type="button" variant="outline" onClick={() => { closeDetail(); back() }}><SlidersHorizontal/>返回基础设备列表</Button>
       <DataTransferActions kind="DEVICES" filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(','), ...applied }} onCompleted={refresh}/>
       <Button type="button" variant="outline" onClick={refresh}><Search/>刷新设备工作台</Button>
@@ -64,11 +68,10 @@ function Content({ back }: { back: () => void }) {
       {devices.loading ? <Loading/> : devices.error != null ? <ErrorNotice error={devices.error} retry={refresh}/> : !data ? <Empty title="设备工作台尚未确认"/> : <>
         <p className="muted-note">本次工作台求值 {data.as_of} · {data.timezone} · FILTERED_ALL_PAGES · CONNECTIVITY_AND_OFFLINE_EVENTS；非最后上报或提交水位。随后详情是独立求值，不拿本行替代当前详情。</p>
         <div className="device-workbench-metrics">{metricLabels.map(([key, label]) => <div key={key}><span>{label}</span><strong data-device-workbench-metric={key}>{data.metrics[key]}</strong></div>)}</div>
-        <div className="device-workbench-table">{data.items.length ? <DeviceTable items={data.items} actions={device => <Button type="button" variant="ghost" size="sm" onClick={() => openDetail(device)}>查看设备详情</Button>}/> : <Empty title={data.total ? '当前设备页为空，匹配总量非0' : '当前设备条件无匹配'}/>}</div>
+        <div className="device-workbench-table">{data.items.length ? <DeviceTable items={data.items} sort={sort} onSort={sortBy} actions={device => <Button type="button" variant="ghost" size="sm" onClick={() => openDetail(device)}>查看设备详情</Button>}/> : <Empty title={data.total ? '当前设备页为空，匹配总量非0' : '当前设备条件无匹配'}/>}</div>
         <Pager page={data.page} size={data.size} total={data.total} onChange={next => { closeDetail(); setPage(next) }}/>
       </>}
       <p className="muted-note">高级仅只读设备与独立详情；编辑、迁移、绑定历史和开户请返回基础设备列表按已有权限操作。退出高级清空本次条件。</p>
     </CardContent></Card>
-    {selectedDetail && <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail}/></Suspense>}
   </section>
 }

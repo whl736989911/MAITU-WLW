@@ -13,8 +13,11 @@ import { DeviceSelector, PlaceSelector, TargetUnitSelect, type AssetReference } 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Empty, ErrorNotice, Loading, PageHeading, Pager } from '@/components/common'
 import { PageHelp } from '@/components/page-tools'
+import { CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable } from '@/components/customer-records'
+import { dateTime } from '@/lib/format'
 
 const wrap = { minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' as const }
 const PAGE = 'fire-archives'
@@ -163,13 +166,10 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
       new AbortController().signal).catch(failure => setLocalError(failure))
   }
 
-  return <section aria-label="消防档案" className="device-workbench" style={wrap}>
-    <PageHeading eyebrow="FIRE ARCHIVE · 单位消防资料" title="消防档案">
+  return <section aria-label="消防档案" className={audience === 'customer' ? 'legacy-record-page' : 'device-workbench'} style={wrap}>
+    {audience === 'management' && <PageHeading eyebrow="FIRE ARCHIVE · 单位消防资料" title="消防档案">
       <PageHelp title="消防档案边界">分类是单位自行填写的文本，不代表法规、合规或消防验收结论。更新只改本地元数据，不改变设备位置、火警或源状态。附件经过服务端加密后保存，下载需当前授权；导出只包含元数据，不含附件内容。</PageHelp>
-      {!freezeNavigation && <DataTransferActions kind="FIRE_ARCHIVES" tenantId={audience === 'management' ? targetUnit || undefined : undefined} filters={transferFilters}/>}
-      <Button variant="outline" onClick={refreshAll}>刷新档案</Button>
-      {canWrite && <Button onClick={beginCreate} disabled={mode === 'create' || freezeNavigation}>新建档案</Button>}
-    </PageHeading>
+    </PageHeading>}
     {completion && <section aria-label="档案提交回执" className="notice" style={wrap}>
       <h2>提交已确认（快照）</h2>
       <p>{completion.result.archive.id} · {completion.result.archive.status} · revision {completion.result.archive.revision} · 附件 {completion.result.attachments.length}</p>
@@ -216,9 +216,34 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
         <div className="version-actions"><Button type="submit" disabled={formLocked || !title.trim() || !category.trim() || !reason.trim() || audience === 'management' && !unit}>{busy ? '正在提交…' : mode === 'create' ? '确认新建' : '确认保存'}</Button><Button variant="outline" onClick={() => { setMode(null); resetWrite(); void intent.edit() }} disabled={busy}>关闭</Button></div>
       </form>
     </section>}
-    <section aria-label="档案列表" style={wrap}>
-      <h2>档案列表</h2>
-      <form className="search-form" onSubmit={event => { event.preventDefault(); if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page: 1, keyword: keywordDraft.trim() })) }} style={{ ...wrap, flexWrap: 'wrap', marginBottom: 12 }}>
+    {audience === 'customer' ? <>
+      <CustomerRecordsSearch field="档案名称 / 编号" keyword={keywordDraft} onKeyword={setKeywordDraft}
+        onSearch={event => { event.preventDefault(); if (!freezeNavigation) { choose(null); setQuery(current => ({ ...current, page: 1, keyword: keywordDraft.trim() })) } }}
+        onReset={() => { if (!freezeNavigation) { choose(null); setKeywordDraft(''); setQuery({ page: 1, status: '', keyword: '' }) } }}
+        actions={<>
+          {canWrite && <button type="button" className="legacy-device-button" disabled={mode === 'create' || freezeNavigation} onClick={beginCreate}>添加档案</button>}
+          {!freezeNavigation && <DataTransferActions kind="FIRE_ARCHIVES" filters={transferFilters}/>}
+        </>}>
+        <select aria-label="档案状态" value={query.status} disabled={freezeNavigation} onChange={event => { choose(null); setQuery(current => ({ ...current, page: 1, status: event.target.value })) }}>
+          <option value="">全部状态</option>{ARCHIVE_STATUSES.map(value => <option key={value} value={value}>{value === 'ACTIVE' ? '有效' : '已归档'}</option>)}
+        </select>
+      </CustomerRecordsSearch>
+      <CustomerRecordTable name="消防档案" columns={['档案名称', '档案编号', '分类', '所属位置', '更新时间', '操作']}
+        loading={list.loading} retry={list.refresh} error={list.error} rows={(list.data?.items ?? []).map(item => ({
+          key: item.id, cells: [item.title, item.archive_number, item.category, item.place_name, dateTime(item.updated_at),
+            <button type="button" className="legacy-device-link" disabled={freezeNavigation} onClick={() => choose(item.id)}>详情</button>],
+        }))}/>
+      {list.data && <CustomerRecordPager page={list.data.page} size={list.data.size} total={list.data.total} onPage={page => { if (!freezeNavigation) { choose(null); setQuery(current => ({ ...current, page })) } }}/>}
+    </> : <section aria-label="档案列表" className="management-list-panel management-record-list">
+      <div className="management-list-bar">
+        <h2>档案列表</h2>
+        <div className="list-toolbar management-list-actions">
+          {!freezeNavigation && <DataTransferActions kind="FIRE_ARCHIVES" tenantId={targetUnit || undefined} filters={transferFilters}/>}
+          <Button variant="outline" onClick={refreshAll}>刷新档案</Button>
+          {canWrite && <Button onClick={beginCreate} disabled={mode === 'create' || freezeNavigation}>新建档案</Button>}
+        </div>
+      </div>
+      <form className="filter-row management-search-filters" onSubmit={event => { event.preventDefault(); if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page: 1, keyword: keywordDraft.trim() })) }}>
         <Input aria-label="档案关键字" value={keywordDraft} maxLength={100} onChange={event => setKeywordDraft(event.target.value)} placeholder="标题 / 分类 / 编号 / 说明 / 设备名"/>
         <select aria-label="档案状态" className="native-select" value={query.status} onChange={event => { if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page: 1, status: event.target.value })) }}>
           <option value="">全部状态</option>{ARCHIVE_STATUSES.map(value => <option key={value} value={value}>{value}</option>)}
@@ -226,19 +251,22 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
         <Button type="submit" variant="outline" disabled={freezeNavigation}>查询档案</Button>
       </form>
       {list.loading ? <Loading/> : list.error != null ? <ErrorNotice error={list.error} retry={list.refresh}/> : list.data ? <>
-        <p>已应用状态：{query.status || '全部'} · 关键字：{query.keyword || '无'} · 本次每页 {list.data.size} 条（服务端实际值）</p>
-        {list.data.items.length === 0 ? <Empty title="本筛选无消防档案"/> : <div style={{ display: 'grid', gap: 12 }}>
-          {list.data.items.map(item => <article key={item.id} data-fire-archive-id={item.id} style={{ ...wrap, border: '1px solid #e3e8db', borderRadius: 12, padding: 16 }}>
-            <h3>{item.title}</h3>
-            <p>{item.status} · 分类 {item.category} · 编号 {item.archive_number ?? '未填写'} · 附件 {item.attachment_count}</p>
-            <p style={wrap}>{item.id} · 单位 {item.tenant_id} · revision {item.revision} · 更新 {item.updated_at}</p>
-            <Button variant="outline" onClick={() => choose(item.id)} disabled={freezeNavigation}>打开档案</Button>
-          </article>)}
-        </div>}
+        <p className="management-list-context">已应用状态：{query.status || '全部'} · 关键字：{query.keyword || '无'} · 本次每页 {list.data.size} 条（服务端实际值）</p>
+        {list.data.items.length === 0 ? <Empty title="本筛选无消防档案"/> : <Table className="management-record-table" aria-label="消防档案记录">
+          <TableHeader><TableRow><TableHead>档案 / 编号</TableHead><TableHead>分类 / 所属位置</TableHead><TableHead>状态</TableHead><TableHead>附件</TableHead><TableHead>更新时间 / 版本</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+          <TableBody>{list.data.items.map(item => <TableRow key={item.id} data-fire-archive-id={item.id}>
+            <TableCell><strong>{item.title}</strong><div className="table-sub">{item.archive_number ?? '未填写编号'}</div></TableCell>
+            <TableCell>{item.category}<div className="table-sub">{item.place_name ?? '未关联位置'} · 单位 {item.tenant_id}</div></TableCell>
+            <TableCell>{item.status === 'ACTIVE' ? '有效' : '已归档'}</TableCell>
+            <TableCell>{item.attachment_count}</TableCell>
+            <TableCell>{dateTime(item.updated_at)}<div className="table-sub">版本 {item.revision}</div></TableCell>
+            <TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => choose(item.id)} disabled={freezeNavigation}>打开档案</Button></TableCell>
+          </TableRow>)}</TableBody>
+        </Table>}
         <Pager page={list.data.page} size={list.data.size} total={list.data.total} onChange={page => { if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page })) }}/>
       </> : null}
-    </section>
-    {selected && <section aria-label="档案详情" data-selected-fire-archive-id={selected} style={wrap}>
+    </section>}
+    {selected && <section aria-label="档案详情" className={audience === 'management' ? 'management-record-detail-panel' : undefined} data-selected-fire-archive-id={selected} style={wrap}>
       <h2>档案详情</h2>
       {detail.loading ? <Loading/> : detail.error != null ? <ErrorNotice error={detail.error} retry={detail.refresh}/> : detail.data && archive ? <>
         <dl className="detail-list" style={wrap}>

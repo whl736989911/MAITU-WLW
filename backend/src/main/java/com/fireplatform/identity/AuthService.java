@@ -27,10 +27,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AuthService implements WriteAuthorization {
+    static final String CLIENT_PLATFORM_OPERATOR_ID="client-platform-operator";
+
+    private static String loginAudience(UserView user) {
+        return user.userType().equals("PLATFORM")&&!CLIENT_PLATFORM_OPERATOR_ID.equals(user.id())?"management":"customer";
+    }
     public record LoginRequest(@NotBlank @Size(max=100) String username, @NotBlank @Size(max=128) String password,
         @NotBlank @Pattern(regexp="management|customer") String audience) { }
     public record ChangePasswordRequest(@NotBlank @Size(max=128) String currentPassword,
-        @NotBlank @Size(min=12,max=128) String newPassword) { }
+        @NotBlank @Size(min=Limits.MIN_PASSWORD_LENGTH,max=Limits.MAX_PASSWORD_LENGTH) String newPassword) { }
     public record UserView(String id, String username, String name, String userType, String tenantId, boolean mustChangePassword) { }
     public record Identity(UserView user, List<String> permissions, String audience, String tokenHash) { }
     public record SessionView(UserView user, List<String> permissions) { }
@@ -62,7 +67,7 @@ public class AuthService implements WriteAuthorization {
             (rs,n) -> new Credential(user(rs), rs.getString("password_hash"), rs.getBoolean("enabled")), input.username());
         Credential c = rows.isEmpty() ? null : rows.getFirst();
         boolean matches = encoder.matches(input.password(), c == null ? dummyHash : c.passwordHash());
-        boolean audienceMatches = c != null && (c.user().userType().equals("PLATFORM") ? "management" : "customer").equals(input.audience());
+        boolean audienceMatches = c != null && loginAudience(c.user()).equals(input.audience());
         if (!matches || c == null || !c.enabled() || !audienceMatches || (c.user().tenantId() != null && !tenantEnabled(c.user().tenantId()))) {
             audit.record(null, null, "LOGIN", null, "DENIED", requestId);
             throw new ApiError(401, "INVALID_CREDENTIALS", "账号、密码或登录入口错误");
@@ -86,7 +91,7 @@ public class AuthService implements WriteAuthorization {
             (rs,n) -> new Identity(user(rs), List.of(), rs.getString("audience"), tokenHash), tokenHash, OffsetDateTime.now(clock));
         if (rows.isEmpty()) throw unauthorized();
         Identity found = rows.getFirst();
-        String expected = found.user().userType().equals("PLATFORM") ? "management" : "customer";
+        String expected = loginAudience(found.user());
         if (!expected.equals(found.audience()) || (found.user().tenantId()!=null && !tenantEnabled(found.user().tenantId()))) throw unauthorized();
         expiry.requireCurrent(found.user().id());
         return new Identity(found.user(), permissions(found.user().id()), found.audience(), tokenHash);
@@ -113,13 +118,16 @@ public class AuthService implements WriteAuthorization {
         lockAndCheck(identity);
         UserView current = jdbc.queryForObject("SELECT * FROM app_users WHERE id=?", (rs,n) -> user(rs), identity.user().id());
         String audience = jdbc.queryForObject("SELECT audience FROM sessions WHERE token_hash=?", String.class, identity.tokenHash());
-        String expected = current.userType().equals("PLATFORM") ? "management" : "customer";
+        String expected = loginAudience(current);
         if (!expected.equals(audience) || !audience.equals(identity.audience()) || (requiredAudience != null && !requiredAudience.equals(audience)))
             throw ApiError.forbidden("登录入口与操作受众不匹配");
         if (!permissions(current.id()).contains(permission)) throw ApiError.forbidden("操作权限已撤销");
         if (tenant != null) {
             if (current.userType().equals("CUSTOMER")) {
                 if (!tenant.equals(current.tenantId())) throw ApiError.forbidden("客户租户不匹配");
+            } else if (CLIENT_PLATFORM_OPERATOR_ID.equals(current.id())) {
+                if (jdbc.queryForObject("SELECT COUNT(*) FROM effective_user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,current.id(),tenant)!=1L)
+                    throw ApiError.forbidden("租户授权已撤销");
             } else if (jdbc.queryForList("SELECT tenant_id FROM user_tenant_grants WHERE user_id=? AND tenant_id=? FOR UPDATE", String.class, current.id(), tenant).isEmpty()) {
                 throw ApiError.forbidden("租户授权已撤销");
             }
@@ -141,7 +149,7 @@ public class AuthService implements WriteAuthorization {
         if (!encoder.matches(input.currentPassword(), c.passwordHash()) || !Limits.validPassword(input.newPassword())
             || input.currentPassword().equals(input.newPassword())) {
             audit.record(identity.user().id(), identity.user().tenantId(), "CHANGE_PASSWORD", identity.user().id(), "DENIED", requestId);
-            throw ApiError.bad("原密码不正确或新密码不符合策略（12至128字符且不同于原密码）");
+            throw ApiError.bad("原密码不正确，或新密码与原密码相同或不符合要求。" + Limits.PASSWORD_REQUIREMENTS);
         }
         jdbc.update("UPDATE app_users SET password_hash=?,must_change_password=FALSE,revision=revision+1 WHERE id=?", encoder.encode(input.newPassword()), identity.user().id());
         jdbc.update("UPDATE sessions SET revoked=TRUE WHERE user_id=?", identity.user().id());

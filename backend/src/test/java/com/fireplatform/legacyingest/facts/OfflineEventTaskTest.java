@@ -36,7 +36,8 @@ class OfflineEventTaskTest {
     @BeforeEach void schema() {
         jdbc.execute("CREATE TABLE numeric_settings(setting_key VARCHAR(64) PRIMARY KEY,setting_value BIGINT,revision BIGINT)");
         jdbc.update("INSERT INTO numeric_settings VALUES ('offline_threshold_minutes',120,0)");
-        jdbc.execute("CREATE TABLE parameter_overrides(tenant_id VARCHAR(64),scope VARCHAR(16),scope_id VARCHAR(64),parameter_key VARCHAR(64),override_value BIGINT,revision BIGINT)");
+        jdbc.execute("CREATE TABLE parameter_overrides(tenant_id VARCHAR(64),scope VARCHAR(16),scope_id VARCHAR(64),parameter_key VARCHAR(64),override_value BIGINT,revision BIGINT,group_id VARCHAR(64))");
+        jdbc.execute("CREATE TABLE device_group_members(tenant_id VARCHAR(64),group_id VARCHAR(64),device_id VARCHAR(64))");
         jdbc.execute("CREATE TABLE devices(id VARCHAR(64) PRIMARY KEY,tenant_id VARCHAR(64),place_id VARCHAR(64),last_message_at TIMESTAMP WITH TIME ZONE,is_simulated BOOLEAN DEFAULT FALSE,archived_at TIMESTAMP WITH TIME ZONE)");
         jdbc.execute("CREATE TABLE places(id VARCHAR(64) PRIMARY KEY,tenant_id VARCHAR(64),parent_place_id VARCHAR(64),archived_at TIMESTAMP WITH TIME ZONE)");
         jdbc.execute("CREATE TABLE legacy_ingest_events(id VARCHAR(64) PRIMARY KEY,tenant_id VARCHAR(64),message_id VARCHAR(64),device_id VARCHAR(64),kind VARCHAR(16),method VARCHAR(64),params_json TEXT,observed_at TIMESTAMP WITH TIME ZONE,created_at TIMESTAMP WITH TIME ZONE,business_key VARCHAR(64),business_code VARCHAR(64))");
@@ -60,6 +61,17 @@ class OfflineEventTaskTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_events WHERE kind='OFFLINE'",Integer.class)).isZero();
     }
 
+    @Test void groupPolicyIsConsumedByTheOfflineScanOnlyForCurrentMembers() {
+        var latest=time.now().minusMinutes(75);
+        jdbc.update("UPDATE devices SET last_message_at=? WHERE id='reported'",latest);
+        jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at) VALUES ('group-heartbeat','tenant','reported','HEARTBEAT','source.heartbeat','{}',?,?)",latest,latest);
+        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','GROUP','one-group','offline_threshold_minutes',30,1,'one-group')");
+        assertThat(task.scan()).isZero();
+        jdbc.update("INSERT INTO device_group_members VALUES ('tenant','one-group','reported')");
+        assertThat(task.scan()).isEqualTo(1);
+        assertThat(task.scan()).isZero();
+    }
+
 
     @Test void delayedActivityWithOldSourceTimeDoesNotReopenAnOfflineRound() {
         OffsetDateTime now=time.now(),last=now.minusHours(3);
@@ -77,9 +89,9 @@ class OfflineEventTaskTest {
     @Test void effectiveDeviceTenantGlobalThresholdsRequireTimedHeartbeatEvidenceAndActivityReopensRounds() {
         OffsetDateTime now=time.now(),heartbeat=now.minusMinutes(45);
         jdbc.update("INSERT INTO places(id,tenant_id,parent_place_id) VALUES ('building','tenant',NULL),('room','tenant','building')");
-        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','TENANT','tenant','offline_threshold_minutes',120,1)");
-        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','PLACE','building','offline_threshold_minutes',60,1)");
-        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','DEVICE','reported','offline_threshold_minutes',30,1)");
+        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','TENANT','tenant','offline_threshold_minutes',120,1,NULL)");
+        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','PLACE','building','offline_threshold_minutes',60,1,NULL)");
+        jdbc.update("INSERT INTO parameter_overrides VALUES ('tenant','DEVICE','reported','offline_threshold_minutes',30,1,NULL)");
         jdbc.update("UPDATE devices SET last_message_at=? WHERE id='reported'",heartbeat);
         jdbc.update("INSERT INTO devices(id,tenant_id,place_id,last_message_at) VALUES ('tenant-only','tenant','room',?)",now.minusMinutes(90));
         jdbc.update("INSERT INTO devices(id,tenant_id,last_message_at) VALUES ('global-only','other',?)",now.minusMinutes(90));

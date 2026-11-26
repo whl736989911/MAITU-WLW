@@ -26,13 +26,12 @@ try {
   function next(page, predicate = () => true) { return page.waitForResponse(response => endpoint(response) && predicate(new URL(response.url()), response.request())) }
   async function body(pending) { const response = await pending; assert.equal(response.status(), 200); return response.json() }
   async function login(page, customer = false) {
-    await page.goto(ctx.url)
-    if (customer) await page.getByRole('button', { name: '客户端', exact: true }).click()
+    await page.goto(new URL(customer ? '/customer/login' : '/management/login', ctx.url).href)
     await page.getByLabel('账户', { exact: true }).fill(customer ? ctx.customer_username : ctx.username)
     await page.getByLabel('密码', { exact: true }).fill(customer ? ctx.customer_password : ctx.password)
-    await page.getByRole('button', { name: customer ? '登录客户端' : '登录管理端', exact: true }).click()
+    await page.getByRole('button', { name: '登录', exact: true }).click()
     if (!customer) await page.getByRole('combobox', { name: '选择租户' }).selectOption(ctx.tenant_id)
-    await page.getByRole('button', { name: '报警中心', exact: true }).click()
+    await page.getByRole('button', { name: customer ? '警情监控' : '报警中心', exact: true }).click()
     await page.getByRole('heading', { name: '报警筛选与口径统计', exact: true }).waitFor()
     await page.getByRole('heading', { name: '实际应用条件（服务端已确认）', exact: true }).waitFor()
   }

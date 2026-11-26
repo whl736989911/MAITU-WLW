@@ -36,16 +36,16 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
                 JsonNode first = NormalizerSupport.object(value instanceof JsonNode node ? node : null);
                 OffsetDateTime time = firstTime(first, "time");
                 if (time == null) time = firstTime(body, "ts", "timestamp");
-                if (time == null) time = firstTime(platformMsg, "timestamp", "ts");
+                if (time == null) time = firstTime(platformMsg, "timestamp", "ts", "time");
                 if (observed == null) observed = time;
                 if (battery == null) battery = NormalizerSupport.decimal(first, "battery");
                 events.add(NormalizerSupport.event(mapper, kind, method, value, time));
             }
         } else if (body.has("params") || messageType != null) {
-            // CAT1：params 可为双重 JSON 字符串；ts 和 platformMsg.timestamp 是源信封时间。
+            // CAT1: the gateway can send a doubly encoded params field and its source time in platformMsg.time.
             Object value = paramsValue(body.path("params"));
-            String bodyType = NormalizerSupport.text(body, "messageType");
-            String method = categoryFor(bodyType != null && !bodyType.isBlank() ? bodyType : messageType).method;
+            String bodyType = firstText(body, "messageType");
+            String method = (bodyType == null ? routeCategory(messageType) : categoryFor(bodyType)).method;
             JsonNode first = NormalizerSupport.object(value instanceof JsonNode node ? node : null);
             String stateCode = firstText(first, "deviceStateCode");
             if (stateCode == null) stateCode = NormalizerSupport.text(body, "deviceStateCode");
@@ -59,7 +59,7 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
             }
             OffsetDateTime time = firstTime(body, "ts");
             if (time == null) time = firstTime(body, "timestamp");
-            if (time == null) time = firstTime(platformMsg, "timestamp", "ts");
+            if (time == null) time = firstTime(platformMsg, "timestamp", "ts", "time");
             if (time == null) time = firstTime(first, "time");
             observed = time;
             battery = NormalizerSupport.decimal(first, "battery");
@@ -93,7 +93,12 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
 
     /** Preserve the route fallback semantics without persisting the original path segment. */
     public static String canonicalRouteType(String label) {
-        return label == null ? null : categoryFor(label).label;
+        return label == null ? null : routeCategory(label).label;
+    }
+
+    private static Category routeCategory(String label) {
+        // /alarms/telemetry carries all CAT1 reports. It is not evidence of an alarm.
+        return "alarms".equalsIgnoreCase(label) ? Category.OTHER : categoryFor(label);
     }
 
     private static Category categoryFor(String messageType) {
@@ -101,7 +106,7 @@ public class FormTtlNormalizer implements LegacyIngressNormalizer {
         if (value.contains("fault") || value.contains("故障")) return Category.FAULT;
         if ((value.contains("recover") || value.contains("恢复")) && (value.contains("alarm") || value.contains("fire") || value.contains("火警") || value.contains("报警"))) return Category.RECOVERY;
         if (value.contains("alarm") || value.contains("火警") || value.contains("警报")) return Category.ALARM;
-        if (value.contains("heartbeat") || value.contains("心跳")) return Category.HEARTBEAT;
+        if (value.contains("heartbeat") || value.equals("hearbeat") || value.contains("心跳")) return Category.HEARTBEAT;
         if (value.contains("param") || value.contains("参数")) return Category.PARAM;
         if (value.contains("offline") || value.contains("离线")) return Category.OFFLINE;
         return Category.OTHER;

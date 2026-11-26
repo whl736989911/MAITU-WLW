@@ -66,6 +66,30 @@ class LegacyRealtimeNormalizerRegressionTest {
         assertTrue(parsed.events().getFirst().paramsJson().contains("smoke_concentration"));
     }
 
+    @Test void cat1UsesPlatformTimeForHeartbeatInBothEnvelopeShapes() throws Exception {
+        var normalizer = new FormTtlNormalizer(json);
+        var sourceTime = OffsetDateTime.parse("2026-10-30T06:45:05Z");
+        for (String report : List.of(
+                "\"parseMsg\":[{\"method\":\"thing.event.heartbeat\",\"params\":{\"battery\":75}}]",
+                "\"messageType\":\"HearBeat\",\"params\":{\"battery\":75}")) {
+            var body = json.readTree("{\"platformMsg\":{\"deviceId\":\"fixture-cat1\",\"time\":1793342705}," + report + "}");
+            var parsed = normalizer.parse(body, "formttl", "alarms");
+            assertEquals("HEARTBEAT", parsed.kind());
+            assertEquals(sourceTime, parsed.observedAt());
+            assertEquals(sourceTime, parsed.events().getFirst().observedAt());
+        }
+    }
+
+    @Test void cat1GenericRouteCannotTurnUntypedDataIntoAnAlarmAfterSpooling() throws Exception {
+        var normalizer = new FormTtlNormalizer(json);
+        var body = json.readTree("{\"deviceId\":\"fixture-cat1\",\"params\":{\"temperature_value\":23}}");
+        for (String type : List.of("alarms", FormTtlNormalizer.canonicalRouteType("alarms"))) {
+            var parsed = normalizer.parse(body, "formttl", type);
+            assertEquals("OTHER", parsed.events().getFirst().kind());
+            assertNull(parsed.observedAt());
+        }
+    }
+
     @Test void unknownCat1BusinessCodeAndMissingTimeStayUnknown() throws Exception {
         var parsed = new FormTtlNormalizer(json).parse(json.readTree(
             "{\"deviceId\":\"cat1\",\"messageType\":\"other\",\"params\":\"{\\\"deviceStateCode\\\":\\\"9999999\\\",\\\"smoke_concentration\\\":209}\"}"), "formttl", null);
@@ -125,10 +149,12 @@ class LegacyRealtimeNormalizerRegressionTest {
             projected.readings().stream().map(com.fireplatform.duty.DutyTelemetryQueries.Reading::metric).toList());
         assertEquals("-108.0", projected.readings().get(0).value());
         assertEquals("13.0", projected.readings().get(1).value());
-        var number = com.fireplatform.duty.DutyTelemetryQueries.class.getDeclaredMethod("metricNumber", String.class, JsonNode.class);
-        number.setAccessible(true);
-        assertNull(number.invoke(null, "sinr", json.readTree("\"1e9999999\"")));
-        assertNull(number.invoke(null, "temperature", json.readTree("\"24.4\"")));
+        Object invalid = constructor.newInstance("invalid-numbers", "tenant", "device", "name", "address", null,
+            "{\"temperature\":\"24.4\",\"sinr\":\"1e9999999\",\"smoke_concentration\":255}",
+            OffsetDateTime.parse("2026-10-30T06:45:05Z"), null, null, "formttl");
+        var filtered = (com.fireplatform.duty.DutyTelemetryQueries.Sample) sample.invoke(queries, invalid, java.util.Map.of(), null);
+        assertEquals(List.of("smoke_concentration"),
+            filtered.readings().stream().map(com.fireplatform.duty.DutyTelemetryQueries.Reading::metric).toList());
         assertEquals("255", projected.readings().get(2).value());
         assertEquals("24.4", projected.readings().get(3).value());
         assertTrue(projected.readings().stream().allMatch(reading -> reading.unitStatus().equals("UNKNOWN")));

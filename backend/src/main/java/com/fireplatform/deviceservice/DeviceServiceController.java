@@ -63,11 +63,11 @@ public class DeviceServiceController {
 
     @GetMapping("/api/{audience:management|customer}/devices/{id}/service-commands")
     public Page<DeviceServiceModels.CommandSummary> commands(@PathVariable String audience, @PathVariable String id, @RequestParam(defaultValue = "1") int page,
-                                                             @RequestParam(required = false) Integer size, HttpServletRequest request) {
+                                                             @RequestParam(required = false) Integer size, @RequestParam(required = false) String serviceKey, HttpServletRequest request) {
         var actor = security.require(request, "device-services:read", audience);
-        if (request.getParameterMap().entrySet().stream().anyMatch(entry -> !List.of("page", "size").contains(entry.getKey()) || entry.getValue().length != 1))
-            throw ApiError.bad("分页参数无效或重复");
-        return commands.page(actor.user().id(), security.tenant(request), id, page, size);
+        if (request.getParameterMap().entrySet().stream().anyMatch(entry -> !List.of("page", "size", "serviceKey").contains(entry.getKey()) || entry.getValue().length != 1))
+            throw ApiError.bad("命令查询参数无效或重复");
+        return commands.page(actor.user().id(), security.tenant(request), id, page, size, serviceKey);
     }
 
     @GetMapping("/api/{audience:management|customer}/device-service-commands/{id}")

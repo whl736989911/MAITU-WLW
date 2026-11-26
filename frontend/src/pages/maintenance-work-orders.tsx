@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useSession } from '@/lib/store'
-import { ApiError } from '@/lib/api'
+import { ApiError, request } from '@/lib/api'
 import { useResource } from '@/lib/use-resource'
 import {
   WORK_ORDER_PRIORITIES, WORK_ORDER_RESULTS, WORK_ORDER_STATUSES,
@@ -15,6 +15,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Empty, ErrorNotice, Loading, PageHeading, Pager } from '@/components/common'
 import { PageHelp } from '@/components/page-tools'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { dateTime } from '@/lib/format'
+import { Card, CardContent } from '@/components/ui/card'
 
 const wrap = { minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' as const }
 const PAGE = 'maintenance-work-orders'
@@ -23,12 +26,62 @@ type ActionKind = 'open' | 'assign' | 'worklog' | 'submit' | 'review' | 'reopen'
 
 export function MaintenanceWorkOrdersPage() {
   const s = useSession()
+  const [recordView, setRecordView] = useState(true)
   const correct = s.audience === 'management' ? s.user?.user_type === 'PLATFORM' : s.user?.user_type === 'CUSTOMER'
   if (!s.token || !correct || s.user?.must_change_password || !s.permissions.includes('maintenance:read') || String(s.page) !== PAGE)
     return <Empty title="当前无维修工单读取范围"/>
   const frame = `${s.authGeneration}`
-  return <Content key={frame} permissions={[...s.permissions]} audience={s.audience} sessionTenant={s.user?.tenant_id ?? ''}
-    scopeTenantIds={[...s.scopeTenantIds]} scopePlaceIds={[...s.scopePlaceIds]}/>
+  const fieldRecords = s.audience === 'management' && s.permissions.includes('device:read')
+  return <>
+    {fieldRecords && <div className="list-toolbar" role="tablist" aria-label="设备维护视图">
+      <Button type="button" role="tab" aria-selected={recordView} variant={recordView ? 'default' : 'outline'} onClick={() => setRecordView(true)}>现场维护清单</Button>
+      <Button type="button" role="tab" aria-selected={!recordView} variant={!recordView ? 'default' : 'outline'} onClick={() => setRecordView(false)}>维保工单</Button>
+    </div>}
+    {fieldRecords && recordView ? <FieldRecords key={`${frame}:${s.scopeTenantIds.join(',')}:${s.scopePlaceIds.join(',')}`}/> :
+      <Content key={frame} permissions={[...s.permissions]} audience={s.audience} sessionTenant={s.user?.tenant_id ?? ''}
+        scopeTenantIds={[...s.scopeTenantIds]} scopePlaceIds={[...s.scopePlaceIds]}/>}
+  </>
+}
+
+type FieldRecord = {
+  id: string; tenant_name: string; device_name: string; device_serial: string; place_name: string | null; address: string | null
+  actor_name: string; action: 'HANDLE' | 'REPLACE'; reason_code: string; note: string | null; created_at: string; completed_at: string | null
+  status: string; replacement_serial: string | null
+}
+const reasons: Record<string, string> = {
+  LOW_BATTERY: '低电量', TAMPER: '防拆', SMOKE_CHAMBER: '烟室污染', SENSOR: '传感器故障', OFFLINE: '设备离线', OTHER: '其他', REPLACED: '更换设备',
+}
+const fieldStatuses: Record<string, string> = {
+  COMPLETE: '已完成', NEW_DEVICE_PENDING: '等待新设备接入', CLOUD_PENDING: '等待云端核对',
+  CLOUD_REJECTED: '云端未完成', CLOUD_UNKNOWN: '云端结果未确认', READY_TO_RETIRE: '待归档旧设备',
+}
+function FieldRecords() {
+  const { scopeTenantIds, scopePlaceIds, scopeInitialized } = useSession()
+  const [page, setPage] = useState(1)
+  const query = new URLSearchParams({ page: String(page), scope_selected: 'true',
+    scope_tenant_ids: scopeTenantIds.join(','), scope_place_ids: scopePlaceIds.join(',') }).toString()
+  const records = useResource(`field-maintenance:${query}`, signal =>
+    request<{ items: FieldRecord[]; page: number; size: number; total: number }>(`/management/maintenance/field-records?${query}`, { signal }), scopeInitialized)
+  return <>
+    <PageHeading eyebrow="MAINTENANCE · 设备维护" title="现场维护清单" description="查看现场设备处理和更换记录，不要求逐台建立维保工单。">
+      <Button type="button" variant="outline" onClick={records.refresh}>刷新维护记录</Button>
+    </PageHeading>
+    <Card className="list-card management-list-panel"><CardContent>
+      {records.loading ? <Loading/> : records.error != null ? <ErrorNotice error={records.error} retry={records.refresh}/> :
+        records.data?.items.length ? <>
+          <Table><TableHeader><TableRow><TableHead>维护时间</TableHead><TableHead>设备／编号</TableHead><TableHead>单位／位置</TableHead><TableHead>维护员</TableHead><TableHead>维护方式／原因</TableHead><TableHead>结果</TableHead></TableRow></TableHeader>
+            <TableBody>{records.data.items.map(row => <TableRow key={row.id}>
+              <TableCell>{dateTime(row.created_at)}</TableCell><TableCell>{row.device_name}<div className="table-sub mono">{row.device_serial}</div></TableCell>
+              <TableCell>{row.tenant_name}<div className="table-sub">{row.place_name ?? row.address ?? '未记录位置'}</div></TableCell>
+              <TableCell>{row.actor_name}</TableCell>
+              <TableCell>{row.action === 'REPLACE' ? '更换' : '处理'} · {reasons[row.reason_code] ?? row.reason_code}{row.note && <div className="table-sub">{row.note}</div>}</TableCell>
+              <TableCell>{fieldStatuses[row.status] ?? row.status}{row.replacement_serial && <div className="table-sub mono">新设备 {row.replacement_serial}</div>}{row.completed_at && <div className="table-sub">{dateTime(row.completed_at)}</div>}</TableCell>
+            </TableRow>)}</TableBody>
+          </Table>
+          <Pager page={records.data.page} size={records.data.size} total={records.data.total} onChange={setPage}/>
+        </> : <Empty title="当前范围暂无现场维护记录">现场处理或换机提交成功后才会出现在清单中。人工登记不表示设备已恢复。</Empty>}
+    </CardContent></Card>
+  </>
 }
 
 function StatusOptions() {
@@ -169,12 +222,17 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
     void intent.perform(request)
   }
 
+  const management = audience === 'management'
+  const listActions = <>
+    {!freezeNavigation && <DataTransferActions kind="WORK_ORDERS" tenantId={management ? targetUnit || undefined : undefined} filters={transferFilters}/>}
+    <Button variant="outline" onClick={refreshAll}>刷新工单与队列</Button>
+    {canWrite && <Button onClick={beginCreate} disabled={creating || freezeNavigation}>新建工单</Button>}
+  </>
+
   return <section aria-label="维修工单" className="device-workbench" style={wrap}>
     <PageHeading eyebrow="MAINTENANCE · 本地维修流程" title="维修工单">
       <PageHelp title="维修工单边界">工单是本地人工记录：指派、维护记录、复核、关闭/退回、重开与取消都写不可变历史，但不会改变源故障、恢复状态、设备物理状态或厂商记录。更换设备只登记关系，必须另行处理实际退役。导入只创建草稿，不自动指派或通知。</PageHelp>
-      {!freezeNavigation && <DataTransferActions kind="WORK_ORDERS" tenantId={audience === 'management' ? targetUnit || undefined : undefined} filters={transferFilters}/>}
-      <Button variant="outline" onClick={refreshAll}>刷新工单与队列</Button>
-      {canWrite && <Button onClick={beginCreate} disabled={creating || freezeNavigation}>新建工单</Button>}
+      {!management && listActions}
     </PageHeading>
     {completion && <section aria-label="工单提交回执" className="notice" style={wrap}>
       <h2>提交已确认（快照）</h2>
@@ -216,16 +274,28 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
         <div className="version-actions"><Button type="submit" disabled={formLocked || !device || !createTitle.trim() || !reason.trim() || audience === 'management' && !targetUnit}>{busy ? '正在创建…' : '确认创建'}</Button><Button variant="outline" onClick={() => { setCreating(false); setLocalError(undefined); void intent.edit() }} disabled={busy}>关闭</Button></div>
       </form>
     </section>}
-    <section aria-label="工单队列" style={wrap}>
-      <h2>工单队列</h2>
-      <form className="search-form" onSubmit={search} style={{ ...wrap, flexWrap: 'wrap', marginBottom: 12 }}>
+    <section aria-label="工单队列" className={management ? 'management-list-panel management-record-list' : undefined} style={wrap}>
+      {management ? <div className="management-list-bar">
+        <h2>工单队列</h2><div className="list-toolbar management-list-actions">{listActions}</div>
+      </div> : <h2>工单队列</h2>}
+      <form className={management ? 'filter-row management-search-filters' : 'search-form'} onSubmit={search} style={management ? undefined : { ...wrap, flexWrap: 'wrap', marginBottom: 12 }}>
         <Input aria-label="工单关键字" value={keywordDraft} maxLength={100} onChange={event => setKeywordDraft(event.target.value)} placeholder="标题 / 说明 / 设备名（字面匹配）"/>
         <select aria-label="工单状态" className="native-select" value={query.status} onChange={event => { if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page: 1, status: event.target.value })) }}><StatusOptions/></select>
         <Button type="submit" variant="outline" disabled={freezeNavigation}>查询工单</Button>
       </form>
       {list.loading ? <Loading/> : list.error != null ? <ErrorNotice error={list.error} retry={list.refresh}/> : list.data ? <>
-        <p>已应用状态：{query.status || '全部'} · 关键字：{query.keyword || '无'} · 本次每页 {list.data.size} 条（服务端实际值）</p>
-        {list.data.items.length === 0 ? <Empty title="本筛选无维修工单"/> : <div style={{ display: 'grid', gap: 12 }}>
+        <p className={management ? 'management-list-context' : undefined}>已应用状态：{query.status || '全部'} · 关键字：{query.keyword || '无'} · 本次每页 {list.data.size} 条（服务端实际值）</p>
+        {list.data.items.length === 0 ? <Empty title="本筛选无维修工单"/> : management ? <Table className="management-record-table" aria-label="维修工单记录">
+          <TableHeader><TableRow><TableHead>标题 / 工单编号</TableHead><TableHead>设备 / 所属单位</TableHead><TableHead>状态 / 优先级</TableHead><TableHead>负责人</TableHead><TableHead>更新时间 / 版本</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+          <TableBody>{list.data.items.map(item => <TableRow key={item.id} data-work-order-id={item.id}>
+            <TableCell><strong>{item.title}</strong><div className="table-sub mono">{item.id}</div></TableCell>
+            <TableCell>{item.device_name ?? item.device_id}<div className="table-sub">单位 {item.tenant_id}</div></TableCell>
+            <TableCell>{item.status}<div className="table-sub">优先级 {item.priority ?? '未指定'}</div></TableCell>
+            <TableCell>{item.assignee_name ?? '未指派'}</TableCell>
+            <TableCell>{dateTime(item.updated_at)}<div className="table-sub">版本 {item.revision}</div></TableCell>
+            <TableCell className="text-right"><Button variant="outline" size="sm" onClick={() => choose(item.id)} disabled={freezeNavigation}>打开工单</Button></TableCell>
+          </TableRow>)}</TableBody>
+        </Table> : <div style={{ display: 'grid', gap: 12 }}>
           {list.data.items.map(item => <article key={item.id} data-work-order-id={item.id} style={{ ...wrap, border: '1px solid #e3e8db', borderRadius: 12, padding: 16 }}>
             <h3>{item.title}</h3>
             <p>{item.status} · 优先级 {item.priority ?? '未指定'} · 设备 {item.device_name ?? item.device_id} · 负责人 {item.assignee_name ?? '未指派'}</p>
@@ -236,7 +306,7 @@ function Content({ permissions, audience, sessionTenant, scopeTenantIds, scopePl
         <Pager page={list.data.page} size={list.data.size} total={list.data.total} onChange={page => { if (freezeNavigation) return; choose(null); setQuery(current => ({ ...current, page })) }}/>
       </> : null}
     </section>
-    {selected && <section aria-label="工单详情" data-selected-work-order-id={selected} style={wrap}>
+    {selected && <section aria-label="工单详情" className={management ? 'management-record-detail-panel' : undefined} data-selected-work-order-id={selected} style={wrap}>
       <h2>工单详情</h2>
       {detail.loading ? <Loading/> : detail.error != null ? <ErrorNotice error={detail.error} retry={detail.refresh}/> : detail.data && order ? <>
         <dl className="detail-list" style={wrap}>

@@ -19,10 +19,10 @@ public class DutyController {
         @RequestParam(required=false) String keyword,@RequestParam(required=false) String from,@RequestParam(required=false) String to,
         @RequestParam(name="handling_state",required=false) String handlingState,HttpServletRequest request) {
         var identity=security.require(request,"device:read",audience);
-        if(request.getParameterMap().entrySet().stream().anyMatch(e->!(LIST_PARAMS.contains(e.getKey())||e.getKey().equals("handling_state"))||e.getValue().length!=1)) throw ApiError.bad("故障查询参数无效或重复");
+        if(request.getParameterMap().entrySet().stream().anyMatch(e->!(LIST_PARAMS.contains(e.getKey())||e.getKey().equals("handling_state")||e.getKey().equals("system_type"))||e.getValue().length!=1)) throw ApiError.bad("故障查询参数无效或重复");
         OffsetDateTime start=parse(from),end=parse(to); if(start!=null&&end!=null&&!start.isBefore(end))throw ApiError.bad("结束时间必须晚于开始时间");
         var selection=security.readSelection(request);
-        return queries.faults(identity.user().id(),security.optionalTenant(request),selection,keyword,start,end,handlingState,page,size);
+        return queries.faults(identity.user().id(),security.optionalTenant(request),selection,keyword,start,end,handlingState,page,size,request.getParameter("system_type"));
     }
     @GetMapping("/api/{audience:management|customer}/duty/device-faults")
     public com.fireplatform.shared.Page<DutyQueries.DeviceFaultSummary> deviceFaults(@PathVariable String audience,

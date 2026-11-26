@@ -2,7 +2,7 @@ import { DataTransferActions } from '@/components/data-transfer-actions'
 import { lazy, Suspense, useState, type FormEvent } from 'react'
 import { TreeSelect } from 'antd'
 import { Eraser, SlidersHorizontal } from 'lucide-react'
-import { api } from '@/lib/api'
+import { api, request } from '@/lib/api'
 import { batteryApi } from '@/lib/battery-api'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
@@ -31,21 +31,31 @@ function ParametersContent() {
   const definitions = useResource('parameter-definitions', signal => api.parameterDefinitions(signal))
   const [scope, setScope] = useState<ParameterScope | ''>(''), [tenantId, setTenantId] = useState(''), [device, setDevice] = useState<{ id: string; tenant_id: string } | null>(null), [key, setKey] = useState('')
   const [placeId, setPlaceId] = useState(''), [policyRevision, setPolicyRevision] = useState(0)
+  const [groupId, setGroupId] = useState('')
   const chosenUnit = tree.data?.find(unit => unit.id === tenantId)
   const definition = definitions.data?.items.find(item => item.key === key && !!scope && item.allowed_scopes.includes(scope))
-  const scopeId = scope === 'TENANT' ? tenantId : scope === 'PLACE' ? placeId : device?.id ?? ''
+  const scopeId = scope === 'TENANT' ? tenantId : scope === 'PLACE' ? placeId : scope === 'GROUP' ? groupId : device?.id ?? ''
   const targetTenant = scope === 'DEVICE' ? device?.tenant_id ?? '' : tenantId
   const refreshPolicies = () => setPolicyRevision(revision => revision + 1)
   return <>
     <PageHeading eyebrow="PARAMETERS · 判定策略" title="设备策略" description="设置设备上报超时阈值，查看每台设备实际采用的规则。">
       <RefreshButton onClick={() => { definitions.refresh(); refreshPolicies() }}/><DataTransferActions kind="POLICY_DRAFTS" label="离线阈值配置" tenantId={targetTenant || undefined} filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(',') }} onCompleted={receipt => { if ('plan_id' in receipt) refreshPolicies() }}/>
-      <PageHelp title="策略继承与生效边界"><p>优先级：单台设备 → 最近有配置的位置（含上级位置）→ 单位 → 全局。位置覆盖对本位置及未单独覆盖的下级设备生效。</p><p>在阈值内有有效上报（包括自检）即显示在线。超时且有独立周期上报证据才判离线，否则显示“上报超时，离线未确认”。连接状态不改变物理火警，也不会因此发送付费通知。</p><p>左侧范围只筛选读取，不会更改已经选定的编辑目标。</p></PageHelp>
+      <PageHelp title="策略继承与生效边界"><p>优先级：单台设备 → 设备分组 → 最近有配置的位置（含上级位置）→ 单位 → 全局。设备加入或退出分组后按当前成员关系计算；多个组有覆盖时，取较长阈值，同值按分组 ID 确定来源。分组不改变授权。</p><p>在阈值内有有效上报（包括自检）即显示在线。超时且有独立周期上报证据才判离线，否则显示“上报超时，离线未确认”。连接状态不改变物理火警，也不会因此发送付费通知。</p><p>左侧范围只筛选读取，不会更改已经选定的编辑目标。</p></PageHelp>
     </PageHeading>
-    <ParameterOverview definitions={definitions.data?.items ?? []} units={tree.data ?? []} scopeTenantIds={scopeTenantIds} scopePlaceIds={scopePlaceIds} scopeInitialized={scopeInitialized} scopeKey={`${scopeKey}:${policyRevision}`}/>
     <Card className="list-card"><CardHeader><CardTitle>调整上报超时阈值</CardTitle></CardHeader><CardContent>
-      <div className="parameter-selection"><div className="field"><Label htmlFor="parameter-scope">覆盖层级</Label><select id="parameter-scope" className="native-select" value={scope} onChange={e => { const next = e.target.value; setScope(next === 'TENANT' || next === 'PLACE' || next === 'DEVICE' ? next : ''); setTenantId(''); setPlaceId(''); setDevice(null); setKey('') }}><option value="">请先明确选择层级</option><option value="TENANT">单位覆盖（TENANT）</option><option value="PLACE">位置覆盖（PLACE）</option><option value="DEVICE">单设备覆盖（DEVICE）</option></select></div>
-      {(scope === 'TENANT' || scope === 'PLACE') && <div className="field"><Label htmlFor="parameter-tenant">目标单位</Label>{tree.loading ? <Loading/> : tree.error != null ? <ErrorNotice error={tree.error} retry={tree.refresh}/> : <select id="parameter-tenant" className="native-select" value={tenantId} onChange={e => { setTenantId(e.target.value); setPlaceId(''); setKey('') }}><option value="">请选择本次操作单位</option>{chosenUnit && !selectedUnits?.some(unit => unit.id === chosenUnit.id) && <option value={chosenUnit.id}>{chosenUnit.name}</option>}{selectedUnits?.map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.id}</option>)}</select>}</div>}
+      <div className="parameter-selection">
+      <div className="field"><Label htmlFor="parameter-scope">覆盖层级</Label>
+        <select id="parameter-scope" className="native-select" value={scope} onChange={e => {
+          setScope(e.target.value as ParameterScope | ''); setTenantId(''); setPlaceId(''); setGroupId(''); setDevice(null); setKey('')
+        }}>
+          <option value="">请先明确选择层级</option>
+          <option value="TENANT">单位覆盖</option><option value="PLACE">位置覆盖</option>
+          <option value="GROUP">设备分组覆盖</option><option value="DEVICE">单设备覆盖</option>
+        </select>
+      </div>
+      {!!scope && scope !== 'DEVICE' && <div className="field"><Label htmlFor="parameter-tenant">目标单位</Label>{tree.loading ? <Loading/> : tree.error != null ? <ErrorNotice error={tree.error} retry={tree.refresh}/> : <select id="parameter-tenant" className="native-select" value={tenantId} onChange={e => { setTenantId(e.target.value); setPlaceId(''); setGroupId(''); setKey('') }}><option value="">请选择本次操作单位</option>{chosenUnit && !selectedUnits?.some(unit => unit.id === chosenUnit.id) && <option value={chosenUnit.id}>{chosenUnit.name}</option>}{selectedUnits?.map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.id}</option>)}</select>}</div>}
       {scope === 'PLACE' && <div className="field"><Label htmlFor="parameter-place">目标位置</Label><TreeSelect id="parameter-place" aria-label="目标位置" disabled={!chosenUnit} allowClear showSearch treeNodeFilterProp="title" value={placeId || undefined} treeData={placeTreeOptions(chosenUnit?.places ?? [])} placeholder="选择实际位置" onChange={value => { setPlaceId(value ?? ''); setKey('') }}/></div>}
+      {scope === 'GROUP' && chosenUnit && <ParameterGroupPicker key={chosenUnit.id} tenantId={chosenUnit.id} value={groupId} choose={id => { setGroupId(id); setKey('') }}/>}
       {scope === 'DEVICE' && <ParameterTargetPicker value={device?.id ?? ''} choose={target => { setDevice(target); setKey('') }} scopeTenantIds={scopeTenantIds} scopePlaceIds={scopePlaceIds} scopeKey={scopeKey} scopeInitialized={scopeInitialized}/>}
       <div className="field"><Label htmlFor="parameter-key">覆盖参数</Label>{definitions.loading ? <Loading/> : definitions.error != null ? <ErrorNotice error={definitions.error} retry={definitions.refresh}/> : <select id="parameter-key" className="native-select" value={key} disabled={!scope || !scopeId} onChange={e => { const item = definitions.data?.items.find(item => item.key === e.target.value && !!scope && item.allowed_scopes.includes(scope) && item.value_type === 'INTEGER' && (item.key === 'offline_threshold_minutes' ? item.effect === 'LOCAL_DERIVATION' && item.consumer === 'CONNECTIVITY_AND_OFFLINE_EVENTS' : item.effect === 'QUERY_ONLY')); setKey(item?.key ?? '') }}><option value="">请选择允许该层覆盖的参数（不默认）</option>{definitions.data?.items.map(item => <option key={item.key} value={item.key} disabled={!scope || !item.allowed_scopes.includes(scope) || item.value_type !== 'INTEGER' || (item.key === 'offline_threshold_minutes' ? item.effect !== 'LOCAL_DERIVATION' || item.consumer !== 'CONNECTIVITY_AND_OFFLINE_EVENTS' : item.effect !== 'QUERY_ONLY')}>{item.name} · {item.key}</option>)}</select>}</div>
       {definition && <div className="parameter-definition"><strong>{definition.name}</strong><p>定义范围：{definition.min}–{definition.max} {definition.unit} · 类型 {definition.value_type} · 效果 {definition.effect}</p><p>目录读取时全局基础值：{definition.global_value} {definition.unit} · global revision {definition.global_revision}</p><p className="muted-note">消费者：{definition.consumer}。以同次PolicyView的effective/chain为准。</p></div>}
@@ -53,6 +63,7 @@ function ParametersContent() {
     </CardContent></Card>
     {scope && scopeId && targetTenant && definition && !definitions.loading && <ParameterReader key={`${scope}:${scopeId}:${definition.key}:${definition.global_revision}`} scope={scope} scopeId={scopeId} tenantId={targetTenant} definition={definition} onSaved={refreshPolicies}/>}
     {scope === 'DEVICE' && device && <Suspense fallback={<Loading/>}><BatteryOverride key={device.id} deviceId={device.id} tenantId={device.tenant_id}/></Suspense>}
+    <ParameterOverview definitions={definitions.data?.items ?? []} units={tree.data ?? []} scopeTenantIds={scopeTenantIds} scopePlaceIds={scopePlaceIds} scopeInitialized={scopeInitialized} scopeKey={`${scopeKey}:${policyRevision}`}/>
   </>
 }
 function ParameterOverview({ definitions, units, scopeTenantIds, scopePlaceIds, scopeInitialized, scopeKey }: { definitions: ParameterDefinition[]; units: ScopeUnit[]; scopeTenantIds: string[]; scopePlaceIds: string[]; scopeInitialized: boolean; scopeKey: string }) {
@@ -83,10 +94,26 @@ function ParameterOverview({ definitions, units, scopeTenantIds, scopePlaceIds, 
     </>}
   </CardContent></Card>
 }
+function ParameterGroupPicker({ tenantId, value, choose }: { tenantId: string; value: string; choose: (id: string) => void }) {
+  const [page, setPage] = useState(1)
+  const groups = useResource(`parameter-groups:${tenantId}:${page}`, signal =>
+    request<{ items: { id: string; name: string }[]; total: number; size: number }>(`/management/parameter-groups?page=${page}`, { signal, tenantScoped: true, tenantId }))
+  return <div className="field"><Label htmlFor="parameter-group">目标设备分组</Label>
+    {groups.loading ? <Loading/> : groups.error != null ? <ErrorNotice error={groups.error} retry={groups.refresh}/> :
+      groups.data && (groups.data.items.length > 0 ? <>
+        <select id="parameter-group" className="native-select" value={value} onChange={e => choose(groups.data?.items.find(item => item.id === e.target.value)?.id ?? '')}>
+          <option value="">请选择当前单位的设备分组</option>
+          {groups.data.items.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+        </select>
+        {groups.data.total > groups.data.size && <Pager page={page} size={groups.data.size} total={groups.data.total} onChange={next => { choose(''); setPage(next) }}/>}
+      </> : <Empty title="当前单位未建分组">先到「设备分组」创建分组并维护成员。</Empty>)}
+    <p className="muted-note">设置影响当前和以后加入分组的设备，需要全单位设备权限。</p>
+  </div>
+}
 function ParameterTargetPicker({ value, choose, scopeTenantIds, scopePlaceIds, scopeKey, scopeInitialized }: { value: string; choose: (target: { id: string; tenant_id: string } | null) => void; scopeTenantIds: string[]; scopePlaceIds: string[]; scopeKey: string; scopeInitialized: boolean }) {
   const [page, setPage] = useState(1), [keyword, setKeyword] = useState('')
   const targets = useResource(`parameter-targets:${page}:${keyword}:${scopeKey}`, signal => api.parameterTargets(page, keyword, signal, scopeTenantIds, scopePlaceIds), scopeInitialized)
-  return <div className="parameter-target"><IdentitySearch aria-label="搜索参数目标设备" placeholder="按最小设备目录名称或标识查询（字面匹配）" onSearch={value => { setKeyword(value); setPage(1); choose(null) }}/><Label htmlFor="parameter-device">参数目标设备</Label>{targets.loading ? <Loading/> : targets.error != null ? <ErrorNotice error={targets.error} retry={targets.refresh}/> : <><select id="parameter-device" className="native-select" value={value} onChange={e => { const target = targets.data?.items.find(item => item.id === e.target.value); choose(target?.tenant_id ? { id: target.id, tenant_id: target.tenant_id } : null) }}><option value="">请明确选择已授权范围内的设备（不默认）</option>{targets.data?.items.map(item => <option key={item.id} value={item.id}>{reported(item.name)} · {item.id} · {item.tenant_id}</option>)}</select>{targets.data && <Pager page={targets.data.page} size={targets.data.size} total={targets.data.total} onChange={next => { setPage(next); choose(null) }}/>}</>}<p className="muted-note">仅parameter-targets最小目录，只返回id/name/tenant_id，不要求device:read、device:write或其它来源权限。</p></div>
+  return <section className="parameter-target" aria-label="选择参数目标设备"><IdentitySearch aria-label="搜索参数目标设备" placeholder="按最小设备目录名称或标识查询（字面匹配）" onSearch={value => { setKeyword(value); setPage(1); choose(null) }}/><Label htmlFor="parameter-device">参数目标设备</Label>{targets.loading ? <Loading/> : targets.error != null ? <ErrorNotice error={targets.error} retry={targets.refresh}/> : <><select id="parameter-device" className="native-select" value={value} onChange={e => { const target = targets.data?.items.find(item => item.id === e.target.value); choose(target?.tenant_id ? { id: target.id, tenant_id: target.tenant_id } : null) }}><option value="">请明确选择已授权范围内的设备（不默认）</option>{targets.data?.items.map(item => <option key={item.id} value={item.id}>{reported(item.name)} · {item.id} · {item.tenant_id}</option>)}</select>{targets.data && <Pager page={targets.data.page} size={targets.data.size} total={targets.data.total} onChange={next => { setPage(next); choose(null) }}/>}</>}<p className="muted-note">仅parameter-targets最小目录，只返回id/name/tenant_id，不要求device:read、device:write或其它来源权限。</p></section>
 }
 function ParameterReader({ scope, scopeId, tenantId, definition, onSaved }: { scope: ParameterScope; scopeId: string; tenantId: string; definition: ParameterDefinition; onSaved: () => void }) {
   const canWrite = useSession(s => s.permissions.includes('parameters:write'))
@@ -115,13 +142,15 @@ function ParameterReader({ scope, scopeId, tenantId, definition, onSaved }: { sc
           {current.chain.map(entry => <TableRow key={`${entry.scope}:${entry.scope_id}`}><TableCell>{parameterScopeNames[entry.scope] ?? '未知层级'} · {entry.scope}<div className="table-sub mono">{entry.scope_id ?? '全局基础项'}</div></TableCell><TableCell><OverrideValue value={entry.has_override ? entry.value : null}/></TableCell><TableCell>{entry.revision}</TableCell><TableCell>{entry.is_effective ? '当前有效来源' : '未生效'}</TableCell></TableRow>)}
         </TableBody></Table>
       </>}
-      <h3 className="mt-5 mb-3">不可变覆盖历史</h3>
+      <section aria-labelledby="parameter-history-heading">
+      <h3 id="parameter-history-heading" className="mt-5 mb-3">不可变覆盖历史</h3>
       {history.loading ? <Loading/> : history.error != null ? <ErrorNotice error={history.error} retry={history.refresh}/> : history.data && <>
         {history.data.items.length ? <Table><TableHeader><TableRow><TableHead>动作 / 变更</TableHead><TableHead>前值 → 后值</TableHead><TableHead>revision</TableHead><TableHead>操作人 / 原因 / 时间</TableHead></TableRow></TableHeader><TableBody>
           {history.data.items.map(change => <TableRow key={change.id}><TableCell>{change.action}<div className="table-sub mono">{change.id}</div></TableCell><TableCell><OverrideValue value={change.previous_value}/> → <OverrideValue value={change.value}/></TableCell><TableCell>{change.revision_before} → {change.revision_after}</TableCell><TableCell>{change.actor_id}<div className="table-sub">{change.reason}</div><div className="table-sub">{dateTime(change.created_at)}</div></TableCell></TableRow>)}
         </TableBody></Table> : <Empty title="暂无覆盖变更历史"/>}
         <Pager page={history.data.page} size={history.data.size} total={history.data.total} onChange={setHistoryPage}/>
       </>}
+      </section>
       <Sheet open={!!editor && canWrite && matches} onOpenChange={open => { if (!open) setEditor(null) }}>
         <SheetContent className="review-sheet sm:max-w-xl">{editor && canWrite && matches && current && <ParameterForm key={`${editor}:${identity}:${current.revision}`} actionType={editor} policy={current} definition={definition} saved={saved} refresh={refresh}/>}</SheetContent>
       </Sheet>
@@ -152,7 +181,7 @@ function ParameterForm({ actionType, policy, definition, saved, refresh }: { act
         {action.error != null && <ErrorNotice error={action.error}/>}
         <Button type="submit" disabled={action.busy}>核对参数变更</Button>
       </fieldset> : <OperationConfirmation action={action} title={`确认${title}`} submitLabel={`确认${title}`} refresh={refresh}
-        warning={policy.scope === 'PLACE' ? '影响该位置及继承其策略的下级设备。' : '影响该范围内继承此策略的设备。'}>
+        warning={policy.scope === 'GROUP' ? '影响当前及以后加入此分组、且由该组策略生效的设备。' : policy.scope === 'PLACE' ? '影响该位置及继承其策略的下级设备。' : '影响该范围内继承此策略的设备。'}>
         <p>目标：{parameterScopeNames[policy.scope]} · {policy.scope_id}</p>
         <p>当前覆盖：{policy.has_override ? `${policy.value} ${definition.unit}` : '未设置，继承上级'}</p>
         <p>拟变更：{actionType === 'SET' ? `${value} ${definition.unit}` : '清除本层覆盖，恢复继承上级规则'}</p><p>原因：{reason.trim()}</p>

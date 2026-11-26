@@ -58,9 +58,9 @@ function SettingsContent() {
     event.preventDefault(); if (!canWrite || !targetUnit || busy) return; setError(''); setNotice('')
     if (!canReadUsers || !selectedCustomer || users.loading || users.error != null) { setError('请明确选择当前单位的客户用户'); return }
     if (ownerType === 'PLACE' && (!selectedPlace || places.loading || places.error != null)) { setError('请明确选择当前单位的充值位置'); return }
-    if (!window.confirm(`为 ${selectedCustomer.name} 新增充值授权：${ownerType === 'ORGANIZATION' ? '单位账户' : `位置账户 ${selectedPlace!.label}`}。仅控制客户端可选账户，不充值、不产生订单。继续？`)) return
+    if (!window.confirm(`为 ${selectedCustomer.name} 新增充值授权：${ownerType === 'ORGANIZATION' ? '单位账户' : `位置账户 ${selectedPlace!.label}`}。仅修改该用户可选的充值账户，不充值、不产生订单。继续？`)) return
     setBusy(true)
-    try { await api.addNotificationRechargeGrant({ user_id: selectedCustomer.id, owner_type: ownerType, owner_id: ownerType === 'ORGANIZATION' ? targetUnit : selectedPlace!.id }, undefined, targetUnit); setNotice('授权记录已添加；仅在“按用户授权”模式下控制客户端可选账户，请刷新客户端核对。'); grants.refresh(); grantOverview.refresh(); publishObjectChange('notifications') }
+    try { await api.addNotificationRechargeGrant({ user_id: selectedCustomer.id, owner_type: ownerType, owner_id: ownerType === 'ORGANIZATION' ? targetUnit : selectedPlace!.id }, undefined, targetUnit); setNotice('授权记录已添加；仅在“按用户授权”模式下影响该用户可选的充值账户。'); grants.refresh(); grantOverview.refresh(); publishObjectChange('notifications') }
     catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
   async function revoke(grant: NotificationRechargeGrant) {

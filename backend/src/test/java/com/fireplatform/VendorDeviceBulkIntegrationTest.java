@@ -284,6 +284,64 @@ class VendorDeviceBulkIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_place_history WHERE device_id=?",Long.class,deviceId)).isEqualTo(1);
     }
 
+    @Test void originalXlsUsesEachRowsPlatformAndPreservesDifferentNamesForTheSameModel(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path appendix) throws Exception {
+        var legacy=java.nio.file.Files.createDirectory(appendix.resolve("legacy"));
+        java.nio.file.Files.createDirectory(appendix.resolve("codecs"));
+        java.nio.file.Files.writeString(legacy.resolve("products.tsv"),"""
+            p_id\tp_name\tp_model\tp_manufacturer
+            8174\tSame heat detector\tFixture-Heat\tFixture-TYY
+            8223\tSame heat detector\tFixture-Heat\tFixture-AEP
+            8313\tShort smoke name\tFixture-Smoke\tFixture-NB
+            8323\tLong smoke name\tFixture-Smoke\tFixture-NB
+            """);
+        java.nio.file.Files.writeString(legacy.resolve("product_attrs.tsv"),"pa_id\tpa_pid\n");
+        java.nio.file.Files.writeString(appendix.resolve("excel-product-platform.tsv"),"""
+            p_id\tproduct_name\texcel_platform_name\tevidence
+            8174\tSame heat detector\tTYY fixture\tarchive
+            8223\tSame heat detector\tAEP fixture\tarchive
+            8313\tShort smoke name\tTYY fixture\tarchive
+            8323\tLong smoke name\tTYY fixture\tarchive
+            8323\tLong smoke name\tAEP fixture\tarchive
+            """);
+        var importer=new com.fireplatform.legacyingest.importer.LegacyDictionaryImporter(jdbc,appendix.toString(),"");
+        assertThat(importer.previewDictionaries().sourceCompanies()).isZero();
+        importer.importDictionaries();
+        importer.importDictionaries();
+        String place=jdbc.queryForObject("SELECT name FROM places WHERE id=?",String.class,fixture.placeId);
+        var products=List.of("Same heat detector","Same heat detector","Short smoke name","Long smoke name");
+        var platforms=List.of("TYY fixture","AEP fixture","TYY fixture","TYY fixture");
+        byte[] seed=java.util.Base64.getDecoder().decode(originalFile("012345678901234",place));
+        try(var book=new HSSFWorkbook(new java.io.ByteArrayInputStream(seed));var out=new java.io.ByteArrayOutputStream()){
+            var sheet=book.getSheet("终端设备");
+            sheet.removeRow(sheet.getRow(2));
+            for(int i=0;i<products.size();i++){
+                var data=sheet.createRow(i+1);
+                data.createCell(2).setCellValue(platforms.get(i));
+                data.createCell(3).setCellValue(products.get(i));
+                data.createCell(4).setCellValue("Fixture "+i);
+                data.createCell(5).setCellValue(place);
+                data.createCell(6).setCellValue("mixed-fixture-"+i);
+            }
+            book.write(out);
+            var rows=fixture.body(previewOriginal("tenant-a",java.util.Base64.getEncoder().encodeToString(out.toByteArray()))
+                .andExpect(status().isOk())).path("rows");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM devices WHERE device_eui LIKE 'mixed-fixture-%'",Long.class)).isZero();
+            call("mixed-profile-import",Map.of("source","LEGACY_REALTIME","rows",rows)).andExpect(status().isOk());
+            assertThat(jdbc.queryForList("""
+                SELECT v.legacy_product_id FROM devices d JOIN product_versions v ON v.id=d.product_version_id
+                WHERE d.device_eui LIKE 'mixed-fixture-%' ORDER BY d.device_eui
+                """,String.class)).containsExactly("8174","8223","8313","8323");
+            sheet.getRow(4).getCell(6).setCellValue("still-new");
+            sheet.getRow(4).getCell(2).setCellValue("Unknown platform");
+            for(int i=1;i<4;i++)sheet.removeRow(sheet.getRow(i));
+            out.reset();
+            book.write(out);
+            previewOriginal("tenant-a",java.util.Base64.getEncoder().encodeToString(out.toByteArray()))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("第5行")));
+        }
+    }
+
     @Test void originalXlsRejectsNumericIdsAndAmbiguousOrOutsidePositions() throws Exception {
         var same=jdbc.queryForObject("SELECT name FROM places WHERE id=?",String.class,fixture.placeId);
         var outside=jdbc.queryForObject("SELECT name FROM places WHERE id=?",String.class,foreignPlaceId);

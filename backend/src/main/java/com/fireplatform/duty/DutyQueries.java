@@ -36,6 +36,7 @@ public class DutyQueries {
     private record FaultTypeKey(String code,String label) { }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Pattern EPOCH = Pattern.compile("\\d{10}|\\d{13}");
+    private static final String ACTIVE_FAULT=" AND d.archived_at IS NULL AND h.handled IS NOT TRUE AND hf.source_recovered IS NOT TRUE";
     private final JdbcTemplate jdbc;
     private final DeviceAccessScope access;
     private final ScopeFilter scope;
@@ -45,19 +46,24 @@ public class DutyQueries {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Page<FaultEvent> faults(String actor,String tenant,ScopeFilter.Selection selection,String keyword,OffsetDateTime from,OffsetDateTime to,String handlingState,int page,Integer requestedSize) {
-        return faultPage(actor,tenant,selection,keyword,from,to,page,requestedSize,null,handlingState);
+        return faults(actor,tenant,selection,keyword,from,to,handlingState,page,requestedSize,null);
+    }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public Page<FaultEvent> faults(String actor,String tenant,ScopeFilter.Selection selection,String keyword,OffsetDateTime from,OffsetDateTime to,String handlingState,int page,Integer requestedSize,String systemType) {
+        return faultPage(actor,tenant,selection,keyword,from,to,page,requestedSize,null,handlingState,LiteralLike.normalizedKeyword(systemType));
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Page<FaultEvent> faultsForDevice(String actor,String tenant,ScopeFilter.Selection selection,String deviceId,String keyword,OffsetDateTime from,OffsetDateTime to,String handlingState,int page,Integer requestedSize) {
         if(deviceId==null||deviceId.isBlank())throw ApiError.bad("设备ID无效");
-        return faultPage(actor,tenant,selection,keyword,from,to,page,requestedSize,deviceId,handlingState);
+        return faultPage(actor,tenant,selection,keyword,from,to,page,requestedSize,deviceId,handlingState,"");
     }
-    private Page<FaultEvent> faultPage(String actor,String tenant,ScopeFilter.Selection selection,String keyword,OffsetDateTime from,OffsetDateTime to,int page,Integer requestedSize,String deviceId,String handlingState) {
+    private Page<FaultEvent> faultPage(String actor,String tenant,ScopeFilter.Selection selection,String keyword,OffsetDateTime from,OffsetDateTime to,int page,Integer requestedSize,String deviceId,String handlingState,String systemType) {
         String handlingClause=switch(handlingState==null||handlingState.isBlank()?"":handlingState){
             case ""->"";
             case "UNRECORDED"->" AND h.event_id IS NULL";
             case "UNHANDLED"->" AND h.handled=FALSE";
             case "HANDLED"->" AND h.handled=TRUE";
+            case "ACTIVE"->ACTIVE_FAULT;
             default->throw ApiError.bad("故障处置状态筛选无效");
         };
         var pagination=Pagination.of(page,requestedSize,sizes.defaultPageSize());
@@ -74,6 +80,7 @@ public class DutyQueries {
         where.append(accessClause.and()).append(treeClause.and());
         where.append(handlingClause);
         if(keyword!=null&&!keyword.isBlank()) { where.append(" AND (LOWER(COALESCE(d.name,'')) LIKE LOWER(?) ESCAPE '!' OR LOWER(COALESCE(d.address,'')) LIKE LOWER(?) ESCAPE '!' OR LOWER(COALESCE(e.method,'')) LIKE LOWER(?) ESCAPE '!')"); var like=LiteralLike.contains(keyword); args.add(like);args.add(like);args.add(like); }
+        if(!systemType.isEmpty()){where.append(" AND d.system_type=?");args.add(systemType);}
         if(from!=null){where.append(" AND e.observed_at>=?");args.add(from);}
         if(to!=null){where.append(" AND e.observed_at<?");args.add(to);}
         String base=" FROM legacy_ingest_events e LEFT JOIN devices d ON d.id=e.device_id AND d.tenant_id=e.tenant_id LEFT JOIN duty_fault_handlings h ON h.event_id=e.id AND h.tenant_id=e.tenant_id LEFT JOIN hikvision_fault_state hf ON hf.normalized_event_id=e.id LEFT JOIN raw_messages rm ON rm.id=e.raw_message_id AND rm.tenant_id=e.tenant_id";
@@ -127,11 +134,15 @@ public class DutyQueries {
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public FaultEvent fault(String actor,String tenant,ScopeFilter.Selection selection,String id) {
+        return fault(actor,tenant,selection,id,false);
+    }
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public FaultEvent fault(String actor,String tenant,ScopeFilter.Selection selection,String id,boolean activeOnly) {
         if(selection.empty()) throw ApiError.missing();
         var accessClause=access.predicate(actor,"e.tenant_id","e.device_id");
         var treeClause=scope.alarmDevices("e",selection.tenantIds(),selection.placeIds());
         var args=new ArrayList<Object>();args.add(id);if(tenant!=null)args.add(tenant);args.addAll(accessClause.bindings());args.addAll(treeClause.bindings());
-        var rows=jdbc.query("SELECT e.id,e.tenant_id,e.device_id,e.kind,e.method,e.params_json,e.observed_at,e.created_at,COALESCE(m.vendor_platform,e.source_platform) AS vendor_platform,m.payload_raw,COALESCE(m.received_at,rm.received_at) AS received_at,d.name AS device_name,d.address AS device_address,d.place_id,h.handled AS handling_handled,h.note AS handling_note,h.revision AS handling_revision,h.updated_by AS handling_updated_by,h.updated_at AS handling_updated_at,hf.source_fault_id,hf.source_recovered AS source_recovered,hf.source_stop_time AS source_recovered_at FROM legacy_ingest_events e LEFT JOIN devices d ON d.id=e.device_id AND d.tenant_id=e.tenant_id LEFT JOIN duty_fault_handlings h ON h.event_id=e.id AND h.tenant_id=e.tenant_id LEFT JOIN hikvision_fault_state hf ON hf.normalized_event_id=e.id LEFT JOIN legacy_ingest_messages m ON m.id=e.message_id AND m.tenant_id=e.tenant_id LEFT JOIN raw_messages rm ON rm.id=e.raw_message_id AND rm.tenant_id=e.tenant_id WHERE e.id=? AND e.kind='FAULT' AND d.is_simulated=FALSE"+(tenant==null?"":" AND e.tenant_id=?")+accessClause.and()+treeClause.and(),DutyQueries::row,args.toArray());
+        var rows=jdbc.query("SELECT e.id,e.tenant_id,e.device_id,e.kind,e.method,e.params_json,e.observed_at,e.created_at,COALESCE(m.vendor_platform,e.source_platform) AS vendor_platform,m.payload_raw,COALESCE(m.received_at,rm.received_at) AS received_at,d.name AS device_name,d.address AS device_address,d.place_id,h.handled AS handling_handled,h.note AS handling_note,h.revision AS handling_revision,h.updated_by AS handling_updated_by,h.updated_at AS handling_updated_at,hf.source_fault_id,hf.source_recovered AS source_recovered,hf.source_stop_time AS source_recovered_at FROM legacy_ingest_events e LEFT JOIN devices d ON d.id=e.device_id AND d.tenant_id=e.tenant_id LEFT JOIN duty_fault_handlings h ON h.event_id=e.id AND h.tenant_id=e.tenant_id LEFT JOIN hikvision_fault_state hf ON hf.normalized_event_id=e.id LEFT JOIN legacy_ingest_messages m ON m.id=e.message_id AND m.tenant_id=e.tenant_id LEFT JOIN raw_messages rm ON rm.id=e.raw_message_id AND rm.tenant_id=e.tenant_id WHERE e.id=? AND e.kind='FAULT' AND d.is_simulated=FALSE"+(tenant==null?"":" AND e.tenant_id=?")+accessClause.and()+treeClause.and()+(activeOnly?ACTIVE_FAULT:""),DutyQueries::row,args.toArray());
         if(rows.isEmpty()) throw ApiError.missing(); return rows.getFirst();
     }
     static FaultEvent row(ResultSet rs,int n)throws SQLException {

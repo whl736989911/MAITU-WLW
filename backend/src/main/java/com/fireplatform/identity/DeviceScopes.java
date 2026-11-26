@@ -53,7 +53,7 @@ public class DeviceScopes implements DeviceAccessScope {
 
     /** Trusted-expression builder shared by the public predicate and identity's own place coverage check. */
     private static Filter placeFilter(String actorId, String tenantExpression, String placeExpression) {
-        String sql = "EXISTS (SELECT 1 FROM user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
+        String sql = "EXISTS (SELECT 1 FROM effective_user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
             + " AND __authz_scope.tenant_id=(" + tenantExpression + ") AND (__authz_scope.mode='ALL_TENANT'"
             + " OR (__authz_scope.mode='PLACE_SUBTREE' AND EXISTS (SELECT 1 FROM " + PLACE_TREE
             + " WHERE __authz_tree.tenant_id=__authz_scope.tenant_id AND __authz_tree.id=(" + placeExpression + ")))))";
@@ -63,7 +63,7 @@ public class DeviceScopes implements DeviceAccessScope {
     @Override public Filter allPredicate(String actorId, String tenantColumn) {
         requireActor(actorId);
         String tenant = column(tenantColumn);
-        return new Filter("EXISTS (SELECT 1 FROM user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
+        return new Filter("EXISTS (SELECT 1 FROM effective_user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
             + " AND __authz_scope.tenant_id=(" + tenant + ") AND __authz_scope.mode='ALL_TENANT')", List.of(actorId));
     }
 
@@ -102,7 +102,7 @@ public class DeviceScopes implements DeviceAccessScope {
         Object[] params = new Object[1 + ids.size()];
         params[0] = tenantId;
         for (int i = 0; i < ids.size(); i++) params[i + 1] = ids.get(i);
-        jdbc.query("SELECT DISTINCT s.user_id,s.mode,sd.device_id,r.place_id FROM user_device_scopes s"
+        jdbc.query("SELECT DISTINCT s.user_id,s.mode,sd.device_id,r.place_id FROM effective_user_device_scopes s"
             + " LEFT JOIN user_device_scope_devices sd ON sd.user_id=s.user_id AND sd.tenant_id=s.tenant_id"
             + " LEFT JOIN user_device_scope_places r ON r.user_id=s.user_id AND r.tenant_id=s.tenant_id"
             + " WHERE s.tenant_id=? AND s.user_id IN (" + marks(ids.size()) + ")",
@@ -160,7 +160,7 @@ public class DeviceScopes implements DeviceAccessScope {
      */
     public boolean covers(String actorId, String targetId) {
         requireActor(actorId);
-        for (StoredScope scope : jdbc.query("SELECT user_id,tenant_id,mode,revision FROM user_device_scopes WHERE user_id=?",
+        for (StoredScope scope : jdbc.query("SELECT user_id,tenant_id,mode,revision FROM effective_user_device_scopes WHERE user_id=?",
             (rs, n) -> row(rs), targetId)) {
             if (ALL.equals(scope.mode())) {
                 if (!all(actorId, scope.tenantId())) return false;
@@ -203,7 +203,7 @@ public class DeviceScopes implements DeviceAccessScope {
 
     private String visible(String actorId, String tenantExpression, String deviceExpression) {
         requireActor(actorId);
-        return "EXISTS (SELECT 1 FROM user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
+        return "EXISTS (SELECT 1 FROM effective_user_device_scopes __authz_scope WHERE __authz_scope.user_id=?"
             + " AND __authz_scope.tenant_id=(" + tenantExpression + ") AND ("
             + "__authz_scope.mode='ALL_TENANT'"
             + " OR (__authz_scope.mode='DEVICE_SET' AND EXISTS (SELECT 1 FROM user_device_scope_devices __authz_member"
@@ -221,7 +221,7 @@ public class DeviceScopes implements DeviceAccessScope {
     }
 
     private StoredScope stored(String userId, String tenantId) {
-        var rows = jdbc.query("SELECT user_id,tenant_id,mode,revision FROM user_device_scopes WHERE user_id=? AND tenant_id=?",
+        var rows = jdbc.query("SELECT user_id,tenant_id,mode,revision FROM effective_user_device_scopes WHERE user_id=? AND tenant_id=?",
             (rs, n) -> row(rs), userId, tenantId);
         if (rows.isEmpty()) return null;
         if (rows.size() != 1) throw new IllegalStateException("Duplicate device scope row");

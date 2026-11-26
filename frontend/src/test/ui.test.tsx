@@ -31,11 +31,12 @@ describe('中文展示与页面权限', () => {
     expect(reported(null)).toBe('未上报'); expect(reported(0)).toBe('0'); expect(battery(null)).toBe('未上报'); expect(battery(0)).toBe('0%'); expect(dateTime(null)).toBe('未上报'); expect(statusLabel('UNKNOWN')).toBe('状态未确认')
   })
   it('客户只有四个快捷入口且无权页面不会读取业务API', async () => {
+    history.replaceState(null, '', '/customer')
     useSession.getState().login({ ...customer, permissions: [] }, 'customer'); useSession.getState().navigate('settings')
     const fetcher = vi.fn().mockResolvedValue(response({ status: 'ok', storage_mode: 'h2-dev', roles: [] })); vi.stubGlobal('fetch', fetcher)
     render(<App/>)
     expect(screen.queryByRole('button', { name: '管理设置' })).not.toBeInTheDocument()
-    expect(within(screen.getByRole('navigation', { name: '用户端快捷导航' })).getAllByRole('button').map(button => button.textContent)).toEqual(['首页', '设备', '报警', '我的'])
+    expect(within(screen.getByRole('navigation', { name: '快捷导航' })).getAllByRole('button').map(button => button.textContent)).toEqual(['首页', '设备', '报警', '我的'])
     expect(fetcher.mock.calls.every(call => call[0] === '/api/health')).toBe(true)
   })
   it('首次改密仅显示改密表单，不触发业务读取', async () => {

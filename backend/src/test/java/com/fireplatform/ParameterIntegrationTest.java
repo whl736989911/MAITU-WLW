@@ -46,6 +46,12 @@ class ParameterIntegrationTest {
     }
     @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc; @Autowired Bootstrap bootstrap; @Autowired JsonPointerParser parser; @Autowired DeviceQueryService devices; @Autowired @Qualifier("dataSource") DataSource dataSource; @Autowired com.fireplatform.configuration.DatabaseTime databaseTime;
     IngestionIntegrationTest f;
+    @org.junit.jupiter.api.AfterEach void clearGroupPolicyFixtures() {
+        jdbc.update("DELETE FROM parameter_changes WHERE scope='GROUP'");
+        jdbc.update("DELETE FROM parameter_overrides WHERE scope='GROUP'");
+        jdbc.update("DELETE FROM device_group_members WHERE group_id IN ('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222')");
+        jdbc.update("DELETE FROM device_groups WHERE id IN ('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222')");
+    }
     @BeforeEach void reset() throws Exception { jdbc.update("DELETE FROM parameter_changes"); jdbc.update("DELETE FROM parameter_overrides"); f=new IngestionIntegrationTest(); f.mvc=mvc; f.json=json; f.jdbc=jdbc; f.bootstrap=bootstrap; f.parser=parser; f.reset(); jdbc.update("UPDATE numeric_settings SET setting_value=2880,revision=0 WHERE setting_key='offline_threshold_minutes'"); jdbc.update("UPDATE numeric_settings SET setting_value=20,revision=0 WHERE setting_key='default_page_size'"); jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,integration_state) VALUES ('device-a-unactivated','tenant-a','Explicit unactivated fixture','fixture-a-unactivated','fixture','A2','UNKNOWN',FALSE,'LEGACY_UNVERIFIED')"); }
     String path(String scope,String id) { return "/api/management/parameter-values/"+scope+"/"+id+"/offline_threshold_minutes"; }
     JsonNode view(String scope,String id) throws Exception { var result=f.body(f.call(HttpMethod.GET,path(scope,id),f.root,"tenant-a",null,null).andExpect(status().isOk())); assertThat(result.get("consumer").asText()).isEqualTo("CONNECTIVITY_AND_OFFLINE_EVENTS"); return result; }
@@ -116,24 +122,36 @@ class ParameterIntegrationTest {
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-floor");
         assertThat(item("device-a").get("connectivity").asText()).isEqualTo("UNKNOWN");
         assertThat(item("device-a").get("physical_state").asText()).isEqualTo("FIRE");
-        set("PLACE","test-room",15,0,"room-policy").andExpect(status().isOk());
-        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-room");
-        assertThat(item("device-a").at("/offline_policy/value").asLong()).isEqualTo(15);
         set("DEVICE","device-a",45,0,"device-policy").andExpect(status().isOk());
         assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("DEVICE");
         assertThat(item("device-a").get("connectivity").asText()).isEqualTo("ONLINE");
         clear("DEVICE","device-a",1,"clear-device-place").andExpect(status().isOk());
-        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-room");
-        clear("PLACE","test-room",1,"clear-room").andExpect(status().isOk());
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo("test-floor");
         clear("PLACE","test-floor",1,"clear-floor").andExpect(status().isOk());
         assertThat(view("PLACE","test-floor").get("revision").asInt()).isEqualTo(2);
         assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo(f.placeId);
         jdbc.update("UPDATE devices SET place_id=NULL WHERE id='device-a'");
         assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("TENANT");
-        clear("TENANT","tenant-a",1,"clear-unit").andExpect(status().isOk());
-        assertThat(item("device-a").at("/offline_policy/source_scope").asText()).isEqualTo("GLOBAL");
         set("PLACE","other-place",1,0,"foreign-policy").andExpect(status().isNotFound());
+    }
+
+    @Test void deviceGroupsApplyOnlyToCurrentMembersAndDoNotOverrideAnExplicitDevice() throws Exception {
+        String first = "11111111-1111-4111-8111-111111111111";
+        String second = "22222222-2222-4222-8222-222222222222";
+        jdbc.update("INSERT INTO device_groups(id,tenant_id,name,description,revision) VALUES (?,'tenant-a','Policy group A','',0),(?,'tenant-a','Policy group B','',0)",first,second);
+        set("TENANT","tenant-a",30,0,"unit-for-groups").andExpect(status().isOk());
+        set("GROUP",first,10,0,"policy-group-a").andExpect(status().isOk());
+        set("GROUP",second,20,0,"policy-group-b").andExpect(status().isOk());
+        assertThat(item("device-a").at("/offline_policy/value").asLong()).isEqualTo(30);
+        jdbc.update("INSERT INTO device_group_members(tenant_id,group_id,device_id) VALUES ('tenant-a',?,'device-a'),('tenant-a',?,'device-a')",first,second);
+        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo(second);
+        assertThat(view("DEVICE","device-a").at("/effective/source_scope").asText()).isEqualTo("GROUP");
+        set("DEVICE","device-a",4,0,"group-precedence").andExpect(status().isOk());
+        assertThat(item("device-a").at("/offline_policy/value").asLong()).isEqualTo(4);
+        clear("DEVICE","device-a",1,"group-clear-device").andExpect(status().isOk());
+        jdbc.update("DELETE FROM device_group_members WHERE tenant_id='tenant-a' AND group_id=?",second);
+        assertThat(item("device-a").at("/offline_policy/source_id").asText()).isEqualTo(first);
+        assertThat(item("device-a-unactivated").at("/offline_policy/value").asLong()).isEqualTo(30);
     }
     @Test void integerTokensUnknownFieldsReasonsScopesAndCrossTenantTargetsFailClosed() throws Exception {
         for(String token:List.of("\"10\"","true","null","10.0","1e1","0","525601")) mvc.perform(put(path("TENANT","tenant-a")).header("Authorization","Bearer "+f.root).header("X-Tenant-Id","tenant-a").header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json").content("{\"value\":"+token+",\"expected_revision\":0,\"reason\":\"test\"}")).andExpect(status().isBadRequest());

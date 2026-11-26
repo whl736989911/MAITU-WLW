@@ -1,7 +1,6 @@
 import { DataTransferActions } from '@/components/data-transfer-actions'
-import { useState, type FormEvent, type ReactNode } from 'react'
-import { ArrowLeft, BellRing, Mail, UserRound } from 'lucide-react'
-import { ApiError, api } from '@/lib/api'
+import { useEffect, useState, type FormEvent } from 'react'
+import { api, request } from '@/lib/api'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
 import { dateTime } from '@/lib/format'
@@ -9,156 +8,116 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Empty, ErrorNotice, Loading, PageHeading, RefreshButton } from '@/components/common'
-import { useMutationAction } from '@/components/identity-common'
+import { PageHelp } from '@/components/page-tools'
+import { Empty, ErrorNotice, Loading, PageHeading } from '@/components/common'
 import { WechatSelfBinding } from '@/components/wechat-binding'
-import type { MyMessage, MyProfile } from '@/lib/types'
-import '../customer/customer.css'
+import { CustomerDateRange, CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable } from '@/components/customer-records'
+import { compileAlarmDraft, emptyAlarmDraft, emptyAlarmFilters } from '@/lib/alarm-workbench'
+import type { MyMessage, Paginated } from '@/lib/types'
 
-const names: Record<MyMessage['status'], string> = { UNREAD: '未读', READ: '已读', HANDLED: '已处理' }
+const names: Record<string, string> = { UNREAD: '未读', READ: '已读', HANDLED: '已处理' }
 
 export function AccountPage() { return <AccountGate><AccountContent/></AccountGate> }
 
-function AccountGate({ children }: { children: ReactNode }) {
+function AccountGate({ children }: { children: React.ReactNode }) {
   const { user, permissions } = useSession()
   if (!user || user.must_change_password || !permissions.includes('inbox:read')) return <Empty title="当前账户无个人中心权限"/>
   return <>{children}</>
 }
 
 function AccountContent() {
-  const { audience, navigate } = useSession()
-  return <div className="customer-hub">
-    <PageHeading eyebrow="账号与消息" title="消息与资料">
-      {audience === 'customer' && <Button type="button" variant="outline" onClick={() => navigate('my-profile')}><ArrowLeft/>返回我的</Button>}
-    </PageHeading>
-    <div className="customer-account-layout">
-      <MessageInbox/>
-      <div className="customer-account-stack">
-        <ProfileDetails/>
-        <LoginSessions/>
-        {audience === 'management' && <WechatSelfBinding/>}
-      </div>
-    </div>
-  </div>
-}
-
-function MessageInbox() {
-  const canHandle = useSession(s => s.permissions.includes('inbox:handle'))
-  const [page, setPage] = useState(1)
-  const messages = useResource(`me-messages:${page}`, signal => api.myMessages(page, signal))
-  const action = useMutationAction()
-  function refresh() { action.touch(); messages.refresh() }
-  function act(message: MyMessage, handle: boolean) {
-    void action.run((_, signal) => handle ? api.handleMessage(message.id, message.revision, signal) : api.readMessage(message.id, message.revision, signal), refresh)
-  }
-  return <Card><CardContent>
-    <div className="customer-section-head">
-      <h2>站内消息</h2>
-      <div className="customer-controls"><RefreshButton onClick={refresh}/><DataTransferActions kind="MY_NOTIFICATIONS" label="导出我的消息"/></div>
-    </div>
-    {action.error != null && <ErrorNotice error={action.error}/>}
-    {messages.loading ? <Loading/> : messages.error != null ? <ErrorNotice error={messages.error} retry={refresh}/> : messages.data && <>
-      {messages.data.items.length ? <ul className="customer-records">
-        {messages.data.items.map(message => {
-          const Icon = message.kind === 'ALARM' ? BellRing : Mail
-          return <li key={message.id} className="customer-message">
-            <span className="customer-record-icon" aria-hidden="true"><Icon size={17}/></span>
-            <article>
-              <div className="customer-message-title"><h3>{message.title}</h3><Badge variant={message.status === 'UNREAD' ? 'secondary' : 'outline'}>{names[message.status]}</Badge></div>
-              <time dateTime={message.created_at}>{dateTime(message.created_at)}</time>
-              <p>{message.body}</p>
-              {message.status !== 'HANDLED' && <div className="customer-controls">
-                {message.status === 'UNREAD' && <Button type="button" variant="outline" onClick={() => act(message, false)} disabled={action.busy || action.error != null}>标记已读</Button>}
-                {canHandle && <Button type="button" variant="outline" onClick={() => act(message, true)} disabled={action.busy || action.error != null}>标记已处理</Button>}
-              </div>}
-            </article>
-          </li>
-        })}
-      </ul> : <Empty title="暂无站内消息"/>}
-      {messages.data.total > messages.data.size && <nav className="customer-inbox-pager" aria-label="站内消息分页">
-        <Button type="button" variant="outline" disabled={page <= 1 || action.busy} onClick={() => { action.touch(); setPage(page - 1) }}>上一页</Button>
-        <span>第 {page} / {Math.ceil(messages.data.total / messages.data.size)} 页</span>
-        <Button type="button" variant="outline" disabled={page * messages.data.size >= messages.data.total || action.busy} onClick={() => { action.touch(); setPage(page + 1) }}>下一页</Button>
-      </nav>}
-    </>}
-  </CardContent></Card>
-}
-
-function ProfileDetails() {
+  const permissions = useSession(s => s.permissions)
+  const legacy = useSession(s => s.audience === 'customer')
+  const [draft, setDraft] = useState(emptyAlarmDraft), [applied, setApplied] = useState(emptyAlarmFilters)
+  const [page, setPage] = useState(1), [size, setSize] = useState(10)
+  const [moving, setMoving] = useState(false)
+  const [name, setName] = useState(''), [notice, setNotice] = useState(''), [error, setError] = useState<unknown>(null)
   const profile = useResource('me-profile', signal => api.myProfile(signal))
-  return <Card><CardContent>
-    <div className="customer-section-head"><h2>个人资料</h2><UserRound size={18} aria-hidden="true"/></div>
-    {profile.loading ? <Loading/> : profile.error != null ? <ErrorNotice error={profile.error} retry={profile.refresh}/> : profile.data && <RenameProfile profile={profile.data}/>}
-  </CardContent></Card>
-}
-
-function RenameProfile({ profile }: { profile: MyProfile }) {
-  const [savedName, setSavedName] = useState(profile.name)
-  const [name, setName] = useState(profile.name)
-  const [notice, setNotice] = useState('')
-  const action = useMutationAction()
-  function save(event: FormEvent) {
-    event.preventDefault()
-    setNotice('')
-    if (!name.trim() || name.trim() === savedName) return
-    let confirmedName = ''
-    void action.run(async (_, signal) => {
-      const updated = await api.renameMe(name.trim(), signal)
-      if (updated.id !== profile.id || typeof updated.name !== 'string' || !updated.name) throw new Error('服务端未确认姓名修改结果，请重新读取资料')
-      confirmedName = updated.name
-    }, () => {
-      setSavedName(confirmedName)
-      setName(confirmedName)
-      useSession.setState(state => state.user?.id === profile.id ? { user: { ...state.user, name: confirmedName } } : state)
-      setNotice('姓名已保存。')
-    })
-  }
-  return <form className="form-stack" onSubmit={save}>
-    <dl className="detail-list">
-      <div><dt>登录账号</dt><dd>{profile.username}</dd></div>
-      <div><dt>账号类型</dt><dd>{profile.user_type === 'CUSTOMER' ? '客户账户' : '平台账户'}</dd></div>
-    </dl>
-    <div className="field"><Label htmlFor="me-name">姓名</Label><Input id="me-name" required maxLength={200} value={name} disabled={action.busy} onChange={e => { setName(e.target.value); setNotice(''); action.touch() }}/></div>
-    {notice && <p role="status" className="notice">{notice}</p>}
-    {action.error != null && <ErrorNotice error={action.error}/>}
-    <div className="identity-form-actions"><Button type="submit" disabled={action.busy || !name.trim() || name.trim() === savedName}>{action.busy ? '保存中…' : '保存资料'}</Button></div>
-  </form>
-}
-
-function LoginSessions() {
   const sessions = useResource('me-sessions', signal => api.mySessions(signal))
-  const [notice, setNotice] = useState('')
-  const action = useMutationAction()
-  const otherSessions = sessions.data?.filter(session => !session.current).length ?? 0
-  const unconfirmed = action.error != null && (!(action.error instanceof ApiError) || action.error.status === 0 || action.error.status >= 500 || action.error.code === 'INVALID_RESPONSE')
-  function refresh() { action.touch(); sessions.refresh() }
-  function revoke(event: FormEvent) {
-    event.preventDefault()
-    setNotice('')
-    if (!action.confirming || unconfirmed) return
-    let revoked = 0
-    void action.run(async (_, signal) => { ({ revoked } = await api.revokeOtherSessions(signal)) }, () => {
-      setNotice(`已撤销 ${revoked} 个其他会话。`)
-      refresh()
-    })
+  const messages = useResource(`me-messages:${page}:${size}:${JSON.stringify(applied)}`, signal => {
+    if (!legacy) return api.myMessages(1, signal)
+    const query = new URLSearchParams({ page: String(page), size: String(size), keyword: applied.keyword })
+    if (applied.occurred_from) query.set('from', applied.occurred_from)
+    if (applied.occurred_to) query.set('to', applied.occurred_to)
+    return request<Paginated<MyMessage>>(`/me/messages?${query}`, { signal })
+  })
+  const [refreshKey, setRefreshKey] = useState(0)
+  useEffect(() => { if (profile.data) setName(profile.data.name) }, [profile.data])
+
+  async function save(event: FormEvent) {
+    event.preventDefault(); setError(undefined); setNotice('')
+    try { const updated = await api.renameMe(name.trim()); setNotice(`已保存为 ${updated.name}`); profile.refresh() } catch (e) { setError(e) }
   }
-  return <Card><CardContent>
-    <div className="customer-section-head"><h2>登录会话</h2><RefreshButton onClick={refresh}/></div>
-    {notice && <p role="status" className="notice">{notice}</p>}
-    {sessions.loading ? <Loading/> : sessions.error != null ? <ErrorNotice error={sessions.error} retry={refresh}/> : sessions.data?.length ? <>
-      <ul className="customer-records">
-        {sessions.data.map((session, index) => <li key={index} className="customer-session">
-          <strong>{session.current ? '当前会话' : '其他会话'}</strong>
-          <div>登录：{session.created_at ? dateTime(session.created_at) : '未记录'}</div>
-          <div>到期：{dateTime(session.expires_at)}</div>
-        </li>)}
-      </ul>
-      {action.error != null && <ErrorNotice error={action.error}/>}
-      {unconfirmed ? <p role="status">撤销结果未确认。请刷新会话列表核对，不会自动重试。</p> : action.confirming ? <form className="sensitive-confirmation" onSubmit={revoke}>
-        <p>撤销本账号全部其他登录会话；当前会话保留。</p>
-        <div className="customer-controls"><Button type="button" variant="outline" disabled={action.busy} onClick={action.touch}>取消</Button><Button type="submit" variant="destructive" disabled={action.busy}>确认撤销</Button></div>
-      </form> : otherSessions > 0 && <Button type="button" variant="outline" onClick={() => action.setConfirming(true)}>撤销其他会话</Button>}
-    </> : <Empty title="没有有效会话"/>}
-  </CardContent></Card>
+  async function revokeOthers() {
+    setError(undefined)
+    try { const result = await api.revokeOtherSessions(); setNotice(`已撤销 ${result.revoked} 个其它会话`); sessions.refresh() } catch (e) { setError(e) }
+  }
+  async function act(id: string, revision: number, handle: boolean) {
+    if (moving) return
+    setError(undefined); setMoving(true)
+    try { if (handle) await api.handleMessage(id, revision); else await api.readMessage(id, revision); messages.refresh(); setRefreshKey(v => v + 1) } catch (e) { setError(e) }
+    finally { setMoving(false) }
+  }
+  const unread = messages.data?.items.filter(message => message.status === 'UNREAD') ?? []
+  async function readPage() {
+    if (moving || !unread.length || !window.confirm(`将本页 ${unread.length} 条未读消息标为已读？`)) return
+    setMoving(true); setError(undefined); setNotice('')
+    const results = await Promise.allSettled(unread.map(message => api.readMessage(message.id, message.revision)))
+    const confirmed = results.filter(result => result.status === 'fulfilled').length
+    setNotice(confirmed === unread.length ? `已核对 ${confirmed} 条消息的已读状态` : `已核对 ${confirmed} 条，另外 ${unread.length - confirmed} 条结果未确认，请查看刷新后的列表。`)
+    messages.refresh(); setMoving(false)
+  }
+  if (legacy) return <section className="legacy-record-page" aria-label="通知消息">
+    <CustomerRecordsSearch field="通知内容" keyword={draft.keyword} onKeyword={keyword => setDraft(current => ({ ...current, keyword }))}
+      onSearch={event => { event.preventDefault(); try { setApplied(compileAlarmDraft(draft)); setPage(1); setError(undefined) } catch (e) { setError(e) } }}
+      onReset={() => { setDraft(emptyAlarmDraft); setApplied(emptyAlarmFilters); setPage(1); setError(undefined) }}
+      actions={<>
+        <button type="button" className="legacy-device-button" disabled={moving || messages.loading || !unread.length} onClick={() => void readPage()}>本页全部已读</button>
+        <DataTransferActions kind="MY_NOTIFICATIONS" label="导出全部消息"/>
+      </>}>
+      <CustomerDateRange from={draft.occurred_from} to={draft.occurred_to} onFrom={occurred_from => setDraft(current => ({ ...current, occurred_from }))}
+        onTo={occurred_to => setDraft(current => ({ ...current, occurred_to }))}/>
+    </CustomerRecordsSearch>
+    {error != null && <ErrorNotice error={error}/>}
+    {notice && <p role="status">{notice}</p>}
+    <CustomerRecordTable name="通知消息" columns={['消息类型', '通知方式', '通知内容', '通知时间', '状态']}
+      loading={messages.loading} error={messages.error} retry={messages.refresh} rows={(messages.data?.items ?? []).map(message => ({
+        key: message.id, cells: [message.kind === 'ALARM' ? '报警' : '系统', '站内消息',
+          <details className="legacy-message-body"><summary>{message.title}</summary><p>{message.body}</p></details>, dateTime(message.created_at),
+          <div className="legacy-record-actions"><span>{names[message.status]}</span>
+            {message.status === 'UNREAD' && <button type="button" className="legacy-device-link" disabled={moving} onClick={() => void act(message.id, message.revision, false)}>标为已读</button>}
+            {message.status !== 'HANDLED' && permissions.includes('inbox:handle') && <button type="button" className="legacy-device-link" disabled={moving} onClick={() => void act(message.id, message.revision, true)}>标为已处理</button>}
+          </div>],
+      }))}/>
+    {messages.data && <CustomerRecordPager page={messages.data.page} size={messages.data.size} total={messages.data.total}
+      onPage={setPage} onSize={next => { setSize(next); setPage(1) }}/>}
+    <details className="secondary-controls"><summary>个人资料和会话</summary>
+      {profile.loading ? <Loading/> : profile.error != null ? <ErrorNotice error={profile.error} retry={profile.refresh}/> : profile.data && <form className="legacy-record-form" onSubmit={save}>
+        <label>昵称<input value={name} onChange={event => setName(event.target.value)}/></label><button type="submit" className="legacy-device-button">保存</button>
+      </form>}
+      <div className="legacy-record-actions"><button type="button" className="legacy-device-button" disabled={sessions.loading}
+        onClick={() => { if (window.confirm('撤销其它设备上的登录会话？')) void revokeOthers() }}>撤销其它会话</button></div>
+      {sessions.error != null && <ErrorNotice error={sessions.error} retry={sessions.refresh}/>}
+      {sessions.data && <ul>{sessions.data.map((item, index) => <li key={index}>{dateTime(item.created_at)} · 到期 {dateTime(item.expires_at)}{item.current && ' · 当前会话'}</li>)}</ul>}
+      {notice && <p role="status">{notice}</p>}
+    </details>
+  </section>
+  return <>
+    <PageHeading eyebrow="ACCOUNT · 个人中心" title="我的消息与账号" description="处理站内消息、维护个人资料与登录会话。"><PageHelp title="个人中心说明"><div className="form-stack"><p>消息按当前用户独立记录；已读和已处理是不同状态。</p><p>撤销其它会话只撤销当前账户在其它设备上的登录，不退出当前会话。</p></div></PageHelp></PageHeading>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar"><h2>我的消息</h2><div className="list-toolbar management-list-actions"><DataTransferActions kind="MY_NOTIFICATIONS" label="导出我的消息"/></div></div>
+      {messages.loading ? <Loading/> : messages.error != null ? <ErrorNotice error={messages.error} retry={messages.refresh}/> : messages.data && messages.data.items.length ? <Table key={refreshKey}><TableHeader><TableRow><TableHead>标题</TableHead><TableHead>状态</TableHead><TableHead>时间</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{messages.data.items.map(message => <TableRow key={message.id}><TableCell><strong>{message.title}</strong><div className="table-sub">{message.body}</div></TableCell><TableCell><Badge variant="outline">{names[message.status]}</Badge></TableCell><TableCell>{dateTime(message.created_at)}</TableCell><TableCell>{message.status === 'UNREAD' && <Button variant="ghost" size="sm" onClick={() => void act(message.id, message.revision, false)}>标记已读</Button>}{message.status !== 'HANDLED' && permissions.includes('inbox:handle') && <Button variant="ghost" size="sm" onClick={() => void act(message.id, message.revision, true)}>标记已处理</Button>}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="暂无站内消息"/>}
+    </CardContent></Card>
+    <Card className="list-card management-list-panel"><CardContent><div className="management-list-bar"><h2>我的资料</h2></div>
+      {profile.loading ? <Loading/> : profile.error != null ? <ErrorNotice error={profile.error} retry={profile.refresh}/> : profile.data && <form className="form-stack" onSubmit={save}><dl className="detail-list"><div><dt>账号</dt><dd>{profile.data.username}</dd></div><div><dt>类型</dt><dd>{profile.data.user_type}</dd></div><div><dt>单位</dt><dd>{profile.data.tenant_id ?? '平台'}</dd></div></dl><div className="field"><Label htmlFor="me-name">姓名</Label><Input id="me-name" value={name} onChange={e => setName(e.target.value)}/></div><div className="identity-form-actions"><Button type="submit">保存资料</Button></div></form>}
+      {notice && <p role="status" className="notice">{notice}</p>}
+      {error != null && <ErrorNotice error={error}/>}
+    </CardContent></Card>
+    <Card className="list-card management-list-panel"><CardContent><div className="management-list-bar"><h2>我的会话</h2><div className="list-toolbar management-list-actions"><Button type="button" variant="outline" onClick={() => void revokeOthers()}>撤销其它会话</Button></div></div>
+      {sessions.loading ? <Loading/> : sessions.error != null ? <ErrorNotice error={sessions.error} retry={sessions.refresh}/> : sessions.data && sessions.data.length ? <Table><TableHeader><TableRow><TableHead>登录时间</TableHead><TableHead>过期时间</TableHead><TableHead>当前</TableHead></TableRow></TableHeader><TableBody>{sessions.data.map((session, index) => <TableRow key={index}><TableCell>{session.created_at ? dateTime(session.created_at) : '未记录'}</TableCell><TableCell>{dateTime(session.expires_at)}</TableCell><TableCell>{session.current ? '当前会话' : ''}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="没有有效会话"/>}
+    </CardContent></Card>
+    <WechatSelfBinding/>
+  </>
 }

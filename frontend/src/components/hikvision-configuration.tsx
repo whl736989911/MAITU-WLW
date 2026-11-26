@@ -55,7 +55,9 @@ export function HikvisionConfiguration() {
   }, [authGeneration, form])
 
   async function save(values: Values) {
-    if (!configuration || !canWrite) return
+    if (!configuration || !canWrite || !configuration.secret_storage_ready || saving) return
+    if ((values.app_key?.trim() || values.app_secret?.trim() || values.enabled !== configuration.enabled)
+      && !window.confirm('确认更新海康云接口设置？服务端采集和装维扫码新增将按生效配置使用；保存本身不会新增设备。')) return
     const controller = new AbortController()
     saveController.current?.abort()
     saveController.current = controller
@@ -106,9 +108,9 @@ export function HikvisionConfiguration() {
   }
 
 
-  return <Card title="海康 FireCloud 连接配置" loading={loading}>
+  return <Card title="海康云接口设置" loading={loading}>
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Alert type="info" showIcon message="保存配置、只读认证核验和运行采集是三个独立状态。此处核验只读取组织 API，不会注册订阅或主动访问设备。" />
+      <Alert type="info" showIcon message="App Key 和 App Secret 只在服务端使用，供海康采集、事件接入和安卓装维扫码新增使用。保存配置与只读核验独立；核验不会注册订阅或触达设备。" />
       {configuration && <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered>
         <Descriptions.Item label="保存状态">{configuration.configuration_source === 'ENVIRONMENT' ? '环境配置（不回显）' : `数据库配置 · revision ${configuration.revision}`}</Descriptions.Item>
         <Descriptions.Item label="保存凭据">{configuration.configured ? '已配置' : '未配置'}{configuration.app_key_masked ? ` · App Key ${configuration.app_key_masked}` : ''}</Descriptions.Item>
@@ -123,6 +125,7 @@ export function HikvisionConfiguration() {
       {error && <Alert type="error" showIcon message={error} />}
       {validation && <Alert type="success" showIcon message={validation} />}
       <Form form={form} layout="vertical" onFinish={save} disabled={!canWrite || loading}>
+        <div className="management-credential-grid">
         <Form.Item name="endpoint" label="HTTPS Endpoint" rules={[{ required: true, type: 'url' }]}>
           <Input placeholder={initialEndpoint} autoComplete="url" />
         </Form.Item>
@@ -132,6 +135,7 @@ export function HikvisionConfiguration() {
         <Form.Item name="app_secret" label="App Secret（仅写入）" extra="不返回明文；首次保存请填写，后续留空保留已存密文。">
           <Input.Password autoComplete="new-password" />
         </Form.Item>
+        </div>
         <Space align="start" wrap>
           <Form.Item name="enabled" label="启用周期采集" valuePropName="checked"><Switch /></Form.Item>
           <Form.Item name="poll_interval_seconds" label="采集周期（秒）" rules={[{ required: true }]}>

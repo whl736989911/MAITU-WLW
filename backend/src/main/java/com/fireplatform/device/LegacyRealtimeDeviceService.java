@@ -26,6 +26,7 @@ public class LegacyRealtimeDeviceService {
     private static final String AEP_ASSOCIATE = "legacy-aep-device-associate";
     private record Profile(String id,String productId,String name,String model,long version,String legacyProductId) { }
     private static final String PROFILES = " FROM product_versions v JOIN products p ON p.id=v.product_id WHERE v.schema_format='LEGACY_ATTR_JS_V1' AND v.legacy_product_id IS NOT NULL AND p.state='ACTIVE'";
+    private static final String PROFILE_NAME = "COALESCE(v.legacy_product_name,p.name)";
     private final JdbcTemplate jdbc;
     private final ManagementGuard guard;
     private final CoordinationFence coordination;
@@ -47,26 +48,37 @@ public class LegacyRealtimeDeviceService {
         String term=keyword==null?"":keyword;
         if(term.length()>Limits.MAX_KEYWORD_LENGTH)throw ApiError.bad("搜索关键字过长");
         String like="%"+term.toLowerCase(Locale.ROOT).replace("!","!!").replace("%","!%").replace("_","!_")+"%";
-        String where=PROFILES+" AND (LOWER(p.name) LIKE ? ESCAPE '!' OR LOWER(p.manufacturer) LIKE ? ESCAPE '!' OR LOWER(p.model) LIKE ? ESCAPE '!' OR LOWER(v.legacy_product_id) LIKE ? ESCAPE '!')";
+        String where=PROFILES+" AND (LOWER("+PROFILE_NAME+") LIKE ? ESCAPE '!' OR LOWER(p.manufacturer) LIKE ? ESCAPE '!' OR LOWER(p.model) LIKE ? ESCAPE '!' OR LOWER(v.legacy_product_id) LIKE ? ESCAPE '!')";
         long total=jdbc.queryForObject("SELECT COUNT(*)"+where,Long.class,like,like,like,like);
-        var items=jdbc.query("SELECT v.id,p.name,p.manufacturer,p.model,v.legacy_product_id,EXISTS(SELECT 1 FROM legacy_product_decoders c WHERE c.legacy_product_id=v.legacy_product_id) AS decoder_ready"+where+" ORDER BY p.name,p.model,v.legacy_product_id,v.id LIMIT ? OFFSET ?",
+        var items=jdbc.query("SELECT v.id,"+PROFILE_NAME+",p.manufacturer,p.model,v.legacy_product_id,EXISTS(SELECT 1 FROM legacy_product_decoders c WHERE c.legacy_product_id=v.legacy_product_id) AS decoder_ready"+where+" ORDER BY "+PROFILE_NAME+",p.model,v.legacy_product_id,v.id LIMIT ? OFFSET ?",
             (row,n)->new LegacyProfile(row.getString(1),row.getString(2),row.getString(3),row.getString(4),row.getString(5),row.getBoolean(6)),like,like,like,like,pagination.size(),pagination.offset());
         return new Page<>(items,total,pagination.page(),pagination.size());
     }
 
     List<WorkbookModel> workbookModels() {
-        return jdbc.query("SELECT v.id,p.name,p.manufacturer,p.model,v.legacy_product_id,v.version_number"+PROFILES,
+        return jdbc.query("SELECT v.id,"+PROFILE_NAME+",p.manufacturer,p.model,v.legacy_product_id,v.version_number"+PROFILES,
             (row,n)->new WorkbookModel(row.getString(1),row.getString(2)+" · "+row.getString(3)+" / "+row.getString(4)
                 +"（产品 "+row.getString(5)+"，解析版本 "+row.getLong(6)+"）"));
     }
     record WorkbookModel(String id,String label) { }
 
-    String terminalProfile(String exactProductName,String selectedProfile) {
-        var candidates=jdbc.queryForList("SELECT v.id"+PROFILES+" AND p.name=? ORDER BY v.id",String.class,exactProductName);
-        if(candidates.size()==1)return candidates.getFirst();
-        if(candidates.isEmpty())throw ApiError.bad("未精确匹配本地型号；请填写旧产品全名或先维护解析定义");
-        if(selectedProfile!=null&&candidates.contains(selectedProfile))return selectedProfile;
-        throw ApiError.bad("同名产品对应多个解析定义，请核对协议后选择上方的共用型号");
+    private record TerminalCandidate(String id, boolean mapped, boolean matchesPlatform) { }
+
+    String terminalProfile(String exactProductName,String platform,String selectedProfile) {
+        var candidates=jdbc.query("""
+            SELECT v.id,
+                EXISTS(SELECT 1 FROM legacy_excel_product_platforms x WHERE x.product_version_id=v.id),
+                EXISTS(SELECT 1 FROM legacy_excel_product_platforms x WHERE x.product_version_id=v.id AND x.platform_name=?)
+            """+PROFILES+" AND "+PROFILE_NAME+"=? ORDER BY v.id",
+            (row,n)->new TerminalCandidate(row.getString(1),row.getBoolean(2),row.getBoolean(3)),platform,exactProductName);
+        if(candidates.isEmpty()) throw ApiError.bad("未精确匹配本地型号；请填写旧产品全名或先维护解析定义");
+        if(!platform.isEmpty()&&candidates.stream().anyMatch(TerminalCandidate::mapped)) {
+            candidates=candidates.stream().filter(TerminalCandidate::matchesPlatform).toList();
+            if(candidates.isEmpty()) throw ApiError.bad("产品与本行平台不匹配，请核对旧模板「平台」列");
+        }
+        if(candidates.size()==1) return candidates.getFirst().id();
+        if(selectedProfile!=null&&candidates.stream().anyMatch(candidate->candidate.id().equals(selectedProfile))) return selectedProfile;
+        throw ApiError.bad("同名产品对应多个解析定义，请填写本行「平台」列；无平台映射时可核对后选择共用型号");
     }
 
     void requireNewTerminalIdentity(String identifier) {
@@ -107,7 +119,7 @@ public class LegacyRealtimeDeviceService {
         if(replay!=null)return replay.id();
         var places=jdbc.queryForList("SELECT name FROM places WHERE tenant_id=? AND id=? AND archived_at IS NULL",String.class,tenant,input.placeId());
         if(places.isEmpty())throw ApiError.bad("安装位置不存在、不属于当前单位或已归档");
-        var profiles=jdbc.query("SELECT v.id,v.product_id,p.name,p.model,v.version_number,v.legacy_product_id"+PROFILES+" AND v.id=?",
+        var profiles=jdbc.query("SELECT v.id,v.product_id,"+PROFILE_NAME+",p.model,v.version_number,v.legacy_product_id"+PROFILES+" AND v.id=?",
             (row,n)->new Profile(row.getString(1),row.getString(2),row.getString(3),row.getString(4),row.getLong(5),row.getString(6)),input.legacyProfileId());
         if(profiles.isEmpty())throw ApiError.bad("所选设备型号/协议定义不存在或已停用，不能用无解析定义的普通物模型草稿代替");
         boolean previouslyOwned=requireUnclaimed(input.serial());

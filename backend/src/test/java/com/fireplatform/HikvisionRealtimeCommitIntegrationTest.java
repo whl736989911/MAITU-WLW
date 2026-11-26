@@ -44,7 +44,7 @@ class HikvisionRealtimeCommitIntegrationTest {
     }
     @Test void rollbackDoesNotDispatchAndCommittedHttpReceiptPublishesWithoutWorkerTick() throws Exception {
         var actor=auth.authenticate(f.root);
-        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","realtime-fixture-key","realtime-fixture-secret",false,30,"800235"),"realtime-fixture");
+        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","realtime-fixture-key","realtime-fixture-secret",false,30,"800235",null),"realtime-fixture");
         String serial="realtime-"+UUID.randomUUID(),external="source-"+UUID.randomUUID();
         ingestion.accept(HikvisionClient.Stream.DEVICE,json.valueToTree(List.of(Map.of("deviceID",external,"deviceSerial",serial,"deviceName","Realtime smoke","deviceType","600002","deviceModel","800235"))),OffsetDateTime.now());
         String device=f.body(f.call(HttpMethod.POST,"/api/management/vendor-devices",f.root,"tenant-a",UUID.randomUUID().toString(),Map.of("source","HIKVISION_FIRECLOUD","name","Realtime smoke","serial",serial,"place_id",f.placeId)).andExpect(status().isOk())).path("id").asText();

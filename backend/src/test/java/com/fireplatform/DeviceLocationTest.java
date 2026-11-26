@@ -125,6 +125,32 @@ class DeviceLocationTest {
         call(HttpMethod.GET,"/api/management/devices?page=1&size=100&scope_tenant_ids=UNKNOWN",root,null,null,null).andExpect(status().isForbidden());
     }
 
+    @Test void deviceLedgerSortsTheAuthorizedResultsBeforePaging() throws Exception {
+        jdbc.update("INSERT INTO places(id,tenant_id,name) VALUES ('sort-a','tenant-a','Zone Z'),('sort-z','tenant-a','Zone A')");
+        jdbc.update("UPDATE devices SET place_id='sort-a',last_message_at=TIMESTAMP WITH TIME ZONE '2026-01-01 00:00:00+00' WHERE id='device-a'");
+        jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,integration_state,place_id,last_message_at) VALUES "
+            +"('device-latest','tenant-a','Sort latest','sort-latest','fixture','A','UNKNOWN','LEGACY_UNVERIFIED','sort-z',TIMESTAMP WITH TIME ZONE '2026-01-02 02:00:00+02'),"
+            +"('device-tie','tenant-a','Sort tie','sort-tie','fixture','A','UNKNOWN','LEGACY_UNVERIFIED','sort-z',TIMESTAMP WITH TIME ZONE '2026-01-02 00:00:00+00'),"
+            +"('device-unknown','tenant-a','Sort unknown','sort-unknown','fixture','A','UNKNOWN','LEGACY_UNVERIFIED',NULL,NULL)");
+        jdbc.update("UPDATE devices SET last_message_at=TIMESTAMP WITH TIME ZONE '2026-01-03 00:00:00+00' WHERE id='device-b'");
+
+        String ledger="/api/management/devices?scope_tenant_ids=tenant-a";
+        assertThat(sortedDeviceIds(ledger,"last","desc",1)).containsExactly("device-latest","device-tie");
+        assertThat(sortedDeviceIds(ledger,"last","desc",2)).containsExactly("device-a","device-unknown");
+        assertThat(sortedDeviceIds(ledger,"last","asc",1)).containsExactly("device-a","device-latest");
+        assertThat(sortedDeviceIds(ledger,"placement","asc",1)).containsExactly("device-latest","device-tie");
+        assertThat(sortedDeviceIds(ledger,"placement","desc",1)).containsExactly("device-a","device-latest");
+        assertThat(sortedDeviceIds("/api/management/device-workbench?scope_tenant_ids=tenant-a","placement","desc",2))
+            .containsExactly("device-tie","device-unknown");
+        call(HttpMethod.GET,ledger+"&sort=nonexistent&direction=asc",root,null,null,null).andExpect(status().isBadRequest());
+        call(HttpMethod.GET,ledger+"&sort=last&direction=sideways",root,null,null,null).andExpect(status().isBadRequest());
+    }
+
+    private List<String> sortedDeviceIds(String path,String sort,String direction,int page) throws Exception {
+        return body(call(HttpMethod.GET,path+"&sort="+sort+"&direction="+direction+"&size=2&page="+page,root,null,null,null)
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(4))).path("items").findValuesAsText("id");
+    }
+
     @Test void distributionCountsOnlyDevicesVisibleToActorScope() throws Exception {
         long a=revision("device-a"), b=revision("device-b");
         var updatedA=body(call(HttpMethod.PUT,"/api/management/devices/device-a/location",root,"tenant-a",null,Map.of("latitude",31.0,"longitude",121.0,"expected_revision",a)).andExpect(status().isOk()));

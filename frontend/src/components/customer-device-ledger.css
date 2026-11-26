@@ -1,0 +1,90 @@
+.legacy-device-ledger { min-width: 0; color: #fff; font-size: 14px; }
+.legacy-customer .content:has(.legacy-device-ledger) { padding: 0 10px 20px; }
+.legacy-customer .content:has(.legacy-device-detail) { padding: 0 20px 20px; }
+.legacy-customer .legacy-page:has(.legacy-device-ledger) > .legacy-breadcrumb { min-height: 36px; }
+.legacy-customer .legacy-page:has(.legacy-device-detail) > .legacy-breadcrumb { display: none; }
+.legacy-device-systems { display: flex; overflow-x: auto; border-bottom: 1px solid #355779; min-width: 0; }
+.legacy-device-systems button { flex: 0 0 auto; padding: 8px 16px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #fff; white-space: nowrap; cursor: pointer; }
+.legacy-device-systems button[aria-pressed='true'] { border-bottom-color: #049eff; color: #049eff; }
+.legacy-device-systems button:disabled { cursor: not-allowed; }
+.legacy-device-toolbar, .legacy-device-search, .legacy-device-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.legacy-device-toolbar { justify-content: space-between; margin: 15px 0 20px; }
+.legacy-device-search { flex: 0 0 auto; max-width: 100%; }
+.legacy-device-toolbar > .legacy-device-tools { margin-inline-start: auto; }
+.legacy-device-search :is(select,input) { box-sizing: border-box; height: 32px; min-width: 0; padding: 0 8px; border: 1px solid #4d6485; border-radius: 4px; background: #3c577b; color: #fff; }
+.legacy-device-search select { width: 90px; }
+.legacy-device-search input { width: 200px; max-width: 100%; }
+.legacy-device-search input::placeholder { color: #b9c2cf; }
+.legacy-device-button { display: inline-flex; min-height: 32px; gap: 4px; padding: 0 14px; align-items: center; justify-content: center; border: 1px solid #049eff; border-radius: 4px; background: #049eff; color: #fff; white-space: nowrap; cursor: pointer; }
+.legacy-device-button:hover:not(:disabled) { background: #30aeff; }
+.legacy-device-danger { border-color: #ed4014; background: #ed4014; }
+.legacy-device-danger:hover:not(:disabled) { background: #f36643; }
+.legacy-device-button:disabled { cursor: not-allowed; opacity: .48; }
+.legacy-device-table-wrap { max-width: 100%; overflow-x: auto; }
+.legacy-device-table { width: 100%; min-width: 805px; table-layout: fixed; border-spacing: 0; color: #fff; font-size: 14px; }
+.legacy-device-table :is(th, td) { overflow: hidden; padding: 0 12px; border-bottom: 1px solid #204c76; text-overflow: ellipsis; text-align: left; white-space: nowrap; }
+.legacy-device-table th { height: 40px; background: #0c4277; color: #b9c2cf; font-weight: 600; }
+.legacy-device-table td { height: 48px; background: #043769; }
+.legacy-device-table tbody tr:not(:has(.legacy-device-empty)):hover td { background: #0c4277; }
+.legacy-device-table :is(th,td):first-child { width: 40px; padding-inline: 0; text-align: center; }
+.legacy-device-table th:nth-child(2) { width: 15%; }
+.legacy-device-table th:nth-child(6) { width: 103px; }
+.legacy-device-table th:nth-child(7) { width: 17%; }
+.legacy-device-table th:last-child { width: 132px; }
+.legacy-device-table input[type='checkbox'] { width: 16px; height: 16px; margin: 0; vertical-align: middle; accent-color: #049eff; }
+.legacy-device-table .legacy-device-empty { height: 100px; padding: 8px; text-align: center; color: #b9c2cf; }
+.legacy-device-empty > span { display: block; width: 58px; height: 54px; margin-inline: auto; background: url('../assets/legacy-customer/table-empty.png') center / contain no-repeat; }
+.legacy-device-filter-mark[data-active='false'] { color: #b9c2cf; }
+.legacy-device-status-filter { display: grid; gap: 6px; min-width: 102px; }
+.legacy-device-status-filter label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.legacy-device-status-filter input { accent-color: #049eff; }
+.legacy-device-status-filter > div { display: flex; justify-content: space-between; border-top: 1px solid #345277; padding-top: 6px; }
+.legacy-device-empty > .empty-state { min-height: 0; padding: 10px; }
+.legacy-device-filter-mark { display: inline-block; margin-inline-start: 6px; vertical-align: middle; }
+.legacy-device-row-actions { display: flex; gap: 8px; align-items: center; }
+.legacy-device-link { max-width: 100%; overflow: hidden; padding: 0; border: 0; background: none; color: #049eff; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.legacy-device-link:hover:not(:disabled) { color: #65c8ff; }
+.legacy-device-link:disabled { cursor: not-allowed; opacity: .5; }
+.legacy-device-delete { color: #ff704e; }
+.legacy-device-status { display: inline-block; padding: 0 8px; border: 1px solid currentColor; border-radius: 3px; color: #b9c2cf; line-height: 20px; }
+.legacy-device-status[data-status='ONLINE'] { color: #19be6b; background: #123e46; }
+.legacy-device-status[data-status='FIRE'] { color: #ff7552; background: #502e46; }
+.legacy-device-status[data-status='FAULT'] { color: #ffb458; background: #493849; }
+.legacy-device-pager { display: flex; min-height: 53px; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 12px; }
+.legacy-device-pager .ant-pagination { font-size: 12px; }
+.legacy-device-pager .ant-pagination :is(.ant-pagination-item,.ant-pagination-prev button,.ant-pagination-next button) { border-radius: 4px; background: #3c577b; }
+.legacy-device-pager .ant-pagination .ant-pagination-item-active { border-color: #049eff; background: #049eff; }
+.legacy-device-pager .ant-pagination .ant-pagination-item-active a { color: #fff; }
+.legacy-device-jump { font-size: 12px; }
+.legacy-device-jump input { width: 48px; height: 32px; margin-inline: 3px; padding-inline: 6px; border: 1px solid #4d6485; border-radius: 4px; background: #3c577b; color: #fff; }
+.legacy-device-back { display: inline-flex; align-items: center; gap: 3px; margin: 0 0 10px; }
+.legacy-device-detail { padding-top: 7px; }
+.legacy-device-card { margin-bottom: 10px; border: 1px solid #294a74; border-radius: 4px; background: #0f2958; }
+.legacy-device-card > header { display: flex; min-height: 62px; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #345277; }
+.legacy-device-card h2 { margin: 0; color: #fff; font-size: 16px; font-weight: 600; }
+.legacy-device-card-content { padding: 14px 20px; }
+.legacy-device-card-content h3 { color: #d8eaff; font-size: 14px; }
+.legacy-device-fields { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px 20px; margin: 0; }
+.legacy-terminal-detail .legacy-device-card:first-of-type { min-height: 421px; }
+.legacy-terminal-detail .legacy-device-card:nth-of-type(2) { min-height: 265px; }
+.legacy-terminal-detail .legacy-device-card:nth-of-type(n+3) { min-height: 135px; }
+.legacy-terminal-detail .legacy-device-card-content > h3 { margin: 22px 0 16px; border-top: 1px solid #345277; padding-top: 14px; }
+.legacy-terminal-detail .legacy-device-card-content > .legacy-device-link { margin-top: 16px; }
+.legacy-device-fields > div { display: grid; grid-template-columns: minmax(84px, auto) 1fr; align-items: center; gap: 8px; }
+.legacy-device-fields dt { color: #b9c2cf; text-align: right; }
+.legacy-device-fields dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.legacy-device-empty-section { margin: 0; color: #b9c2cf; }
+@media (max-width: 1100px) { .legacy-device-fields { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 640px) {
+  .legacy-device-search { flex:1 1 100%; }
+  .legacy-device-search input { flex:1 1 120px; }
+  .legacy-device-search :is(select,input,button),.legacy-device-tools button { min-height:40px; }
+  .legacy-device-toolbar > .legacy-device-tools { margin-inline-start:0; }
+  .legacy-device-card :is(header,.legacy-device-card-content) { padding-inline:14px; }
+  .legacy-terminal-detail .legacy-device-card:nth-of-type(n) { min-height:0; }
+  .legacy-device-fields { grid-template-columns: 1fr; }
+  .legacy-device-fields dt { text-align: left; }
+  .legacy-device-card > header { flex-wrap: wrap; }
+  .legacy-device-pager { justify-content: flex-start; }
+  .legacy-device-pager .ant-pagination { min-width:0; max-width:100%; }
+}

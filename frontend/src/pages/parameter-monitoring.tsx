@@ -1,4 +1,5 @@
 import { DataTransferActions } from '@/components/data-transfer-actions'
+import { Tabs } from 'antd'
 import { useMemo, useState, type FormEvent } from 'react'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
@@ -29,6 +30,8 @@ function ReadingValue({ reading, declaredType }: { reading: TelemetryReading; de
 
 export function ParameterMonitoringPage() {
   const session = useSession(), scopeKey = `${session.scopeTenantIds.join(',')}:${session.scopePlaceIds.join(',')}:${session.scopeInitialized}`
+  const management = session.audience === 'management'
+  const [view, setView] = useState('latest')
   const [metric, setMetric] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState('')
   const [page, setPage] = useState(1), [currentPage, setCurrentPage] = useState(1), [days, setDays] = useState<7 | 30>(7)
   const [applied, setApplied] = useState<{metric:string;from:string;to:string}>({ metric: '', from: '', to: '' })
@@ -38,9 +41,9 @@ export function ParameterMonitoringPage() {
   const metricOptions = useResource(`duty-telemetry-metrics:${scopeKey}`, signal => queryTelemetryMetrics(signal), enabled)
   const metrics = metricOptions.data ?? []
   const metricLabel = (key: string) => metrics.find(metricOption => metricOption.key === key)?.label ?? key
-  const data = useResource(`duty-parameters:${scopeKey}:${JSON.stringify([page, applied])}`, signal => queryTelemetry(page, applied.metric, applied.from, applied.to, signal), enabled)
-  const current = useResource(`duty-parameters-current:${scopeKey}:${currentPage}:${applied.metric}`, signal => queryCurrentTelemetry(currentPage, applied.metric, signal), enabled)
-  const trend = useResource(`duty-parameters-analytics:${scopeKey}:${days}:${trendMetric}`, signal => queryTelemetryAnalytics(days, trendMetric, signal), enabled && trendMetric !== '')
+  const data = useResource(`duty-parameters:${scopeKey}:${JSON.stringify([page, applied])}`, signal => queryTelemetry(page, applied.metric, applied.from, applied.to, signal), enabled && (!management || view === 'history'))
+  const current = useResource(`duty-parameters-current:${scopeKey}:${currentPage}:${applied.metric}`, signal => queryCurrentTelemetry(currentPage, applied.metric, signal), enabled && (!management || view === 'latest'))
+  const trend = useResource(`duty-parameters-analytics:${scopeKey}:${days}:${trendMetric}`, signal => queryTelemetryAnalytics(days, trendMetric, signal), enabled && trendMetric !== '' && (!management || view === 'trend'))
   const historyResult = !data.loading && data.error == null ? data.data : undefined
   const currentResult = !current.loading && current.error == null ? current.data : undefined
   const samples = historyResult?.items ?? [], currentSamples = currentResult?.items ?? []
@@ -58,21 +61,43 @@ export function ParameterMonitoringPage() {
     setApplied({ metric, from: dateValue(from), to: dateValue(to) }); setPage(1); setCurrentPage(1)
   }
   return <>
-    <PageHeading eyebrow="DUTY · PARAMETER MONITORING" title="数据监测" description="查看已接收的设备读数、历史样本与完整窗口趋势。"><PageHelp title="监测数据口径" label="数据说明"><div className="form-stack"><p>当前值只使用有来源观察时间的记录；分项上报的指标可能来自不同时刻，汇总时间不表示所有数值同时测得。各指标原始时间请查历史；未知观察时间不会改用服务接收时间冒充最新值。</p><p>本页展示已接收快照，不自动轮询。点击“刷新监测数据”重新查询，不主动触发设备上报。</p><p>历史统计不重复计入快照。指标筛选应用于当前值与历史表，历史时间筛选仅影响历史表；趋势独立选择指标及 7/30 天完整窗口。</p><p>趋势按单位声明分组；单位未知时只绘样本数，不比较数值。单位来自厂商原始声明或设备绑定产品版本，未声明时不推断。文本/布尔离散读数只展示原始值与样本数，不做数值平均、最小值或最大值比较。</p></div></PageHelp><Button type="button" variant="outline" disabled={!enabled} onClick={refresh}>刷新监测数据</Button><DataTransferActions kind="MONITORING" label="导出监测值" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), metric: applied.metric, observed_from: applied.from, observed_to: applied.to }}/></PageHeading>
-    <details className="secondary-controls"><summary>筛选监测记录{(applied.metric || applied.from || applied.to) && ' · 已启用筛选'}</summary>
+    <PageHeading eyebrow="DUTY · PARAMETER MONITORING" title="数据监测" description="查看已接收的读数、历史样本与趋势。">
+      <PageHelp title="监测数据口径" label="数据说明"><div className="form-stack">
+        <p>当前值只使用有来源观察时间的记录；分项上报的指标可能来自不同时刻，汇总时间不表示所有数值同时测得。各指标原始时间请查历史；未知观察时间不会改用服务接收时间冒充最新值。</p>
+        <p>本页展示已接收快照，不自动轮询。点击“刷新监测数据”重新查询，不主动触发设备上报。</p>
+        <p>历史统计不重复计入快照。指标筛选应用于当前值与历史表，历史时间筛选仅影响历史表；趋势独立选择指标及 7/30 天完整窗口。</p>
+        <p>趋势按单位声明分组；单位未知时只绘样本数，不比较数值。单位来自厂商原始声明或设备绑定产品版本，未声明时不推断。文本/布尔离散读数只展示原始值与样本数，不做数值平均、最小值或最大值比较。</p>
+      </div></PageHelp>
+      <Button type="button" variant="outline" disabled={!enabled} onClick={refresh}>刷新监测数据</Button>
+      {(!management || view !== 'trend') && <DataTransferActions kind="MONITORING"
+        label={management ? view === 'history' ? '导出历史记录' : '导出读数与历史' : '导出监测值'}
+        filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), metric: applied.metric,
+          observed_from: management && view === 'latest' ? '' : applied.from, observed_to: management && view === 'latest' ? '' : applied.to,
+          ...(management && view === 'history' ? { history_only: 'true' } : {}),
+        }}/>}
+    </PageHeading>
+    {management && enabled && <Tabs activeKey={view} onChange={setView} animated={false} className="page-tabs" items={[
+      { key: 'latest', label: '最新读数' }, { key: 'history', label: '历史记录' }, { key: 'trend', label: '趋势' },
+    ]}/>}
+    {(!management || view === 'history') && <details className="secondary-controls" open={management || undefined}><summary>筛选监测记录{(applied.metric || applied.from || applied.to) && ' · 已启用筛选'}</summary>
     <Card><CardContent><form className="device-workbench-grid" onSubmit={apply}>
       <div className="field"><Label htmlFor="parameter-metric">监测指标</Label><select id="parameter-metric" className="native-select" value={metric} onChange={event => setMetric(event.target.value)}><option value="">全部支持指标</option>{metrics.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}</select></div>
       <div className="field"><Label htmlFor="parameter-from">历史开始时间（本地）</Label><Input id="parameter-from" type="datetime-local" value={from} onChange={event => setFrom(event.target.value)} /></div>
       <div className="field"><Label htmlFor="parameter-to">历史结束时间（本地）</Label><Input id="parameter-to" type="datetime-local" value={to} onChange={event => setTo(event.target.value)} /></div>
       <div className="parameter-filter-actions"><Button type="submit">应用筛选</Button><Button type="button" variant="outline" onClick={() => { setMetric(''); setFrom(''); setTo(''); setApplied({ metric: '', from: '', to: '' }); setPage(1); setCurrentPage(1) }}>清除筛选</Button></div>
     </form></CardContent></Card>
-    </details>
+    </details>}
     {empty ? <Empty title="当前范围未选择">不扩大为全部单位或读取此前范围缓存。</Empty> : !session.scopeInitialized ? <Loading /> : !session.permissions.includes('device:read') ? <Empty title="无设备读取权限" /> : <>
       {metricOptions.error != null && <ErrorNotice error={metricOptions.error} retry={metricOptions.refresh} />}
-        <details className="secondary-controls"><summary>查询统计</summary><section className="dashboard-stat-strip" aria-label="当前样本概况">
+      {!management && <details className="secondary-controls"><summary>查询统计</summary><section className="dashboard-stat-strip" aria-label="当前样本概况">
           <div><span>历史筛选匹配事件</span><strong>{historyResult?.total ?? '未确认'}</strong></div><div><span>当前有观察时间样本设备数</span><strong>{currentResult?.total ?? '未确认'}</strong></div><div><span>当前页最新样本</span><strong>{currentResult ? currentSamples.length : '未确认'}</strong></div><div><span>当前历史页观察时间未知</span><strong>{historyResult ? samples.filter(sample => sample.observed_at === null).length : '未确认'}</strong></div>
-        </section></details>
-        <DashboardPanel title="设备当前监测值">
+        </section></details>}
+      {management && view === 'latest' && <div className="list-toolbar">
+        <div className="field"><Label htmlFor="latest-monitoring-metric">监测指标</Label><select id="latest-monitoring-metric" className="native-select" value={applied.metric} onChange={event => {
+          setMetric(event.target.value); setApplied(previous => ({ ...previous, metric: event.target.value })); setCurrentPage(1); setPage(1)
+        }}><option value="">全部指标</option>{metrics.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}</select></div>
+      </div>}
+        {(!management || view === 'latest') && <DashboardPanel title="设备当前监测值">
           {current.loading ? <Loading /> : current.error != null ? <ErrorNotice error={current.error} retry={current.refresh} /> : !currentResult ? <Empty title="当前监测值尚未确认" /> : <>
           <div className="dashboard-table-wrap"><table className="dashboard-table monitoring-values-table"><thead><tr><th>设备</th>{visibleMetrics.map(key => <th key={key}>{metricLabel(key)}</th>)}<th>汇总观察时间</th><th>汇总接收时间</th></tr></thead><tbody>
             {latest.map(sample => <tr key={`${sample.tenant_id}:${sample.device_id ?? sample.event_id}`}><td><strong className="monitoring-device-name" title={sample.name}>{sample.name}</strong><small className="monitoring-subline" title={sample.address ?? sample.device_id ?? undefined}>{sample.address ?? sample.device_id ?? '设备标识未知'}</small></td>{visibleMetrics.map(key => { const reading = sample.values.get(key); return <td key={key} title={reading?.label ?? metricLabel(key)} aria-label={reading ? readingAccessibleName(reading, reading.label ?? metricLabel(key), metricValueType(key)) : `${metricLabel(key)} 未上报`}>{reading ? <ReadingValue reading={reading} declaredType={metricValueType(key)}/> : '未上报'}</td> })}<td className={sample.observed_at ? '' : 'dashboard-unknown'}>{sample.observed_at ? dateTime(sample.observed_at) : '未知（未用接收时间替代）'}</td><td>{sample.received_at ? dateTime(sample.received_at) : <><span>接收时间未知</span><small className="monitoring-subline">记录于 {dateTime(sample.recorded_at)}</small></> }</td></tr>)}
@@ -81,8 +106,8 @@ export function ParameterMonitoringPage() {
           <Pager page={currentResult.page} size={currentResult.size} total={currentResult.total} onChange={setCurrentPage} />
           <p className="muted-note">各指标可能来自不同时刻；汇总时间不表示同时测量，未知观察时间不回填。当前为已存快照，可刷新重新读取。</p>
           </>}
-        </DashboardPanel>
-        <DashboardPanel title="历史样本筛选结果">
+        </DashboardPanel>}
+        {(!management || view === 'history') && <DashboardPanel title="历史样本筛选结果">
           {data.loading ? <Loading /> : data.error != null ? <ErrorNotice error={data.error} retry={data.refresh} /> : !historyResult ? <Empty title="历史监测样本尚未确认" /> : <>
           <div className="dashboard-table-wrap"><table className="dashboard-table"><thead><tr><th>设备 / 地址</th><th>事件观察时间</th><th>服务接收时间</th><th>参数样本</th></tr></thead><tbody>
             {samples.map(sample => <tr key={sample.event_id}><td>{sample.device_name ?? '未命名设备'}<small className="monitoring-subline">{sample.address ?? sample.device_id ?? '未关联设备'}</small></td><td className={sample.observed_at ? '' : 'dashboard-unknown'}>{sample.observed_at ? dateTime(sample.observed_at) : '未知'}</td><td>{sample.received_at ? dateTime(sample.received_at) : <><span>接收时间未知</span><small className="monitoring-subline">记录于 {dateTime(sample.recorded_at)}</small></> }</td><td>{sample.readings.map(reading => <span className="monitoring-reading" key={reading.metric}>{reading.label ?? metricLabel(reading.metric)} <ReadingValue reading={reading} declaredType={metricValueType(reading.metric)}/></span>)}{sample.readings.length === 0 && '无支持的读数'}</td></tr>)}
@@ -90,8 +115,8 @@ export function ParameterMonitoringPage() {
           {!samples.length && <p className="muted-note" role="status">筛选范围内无历史样本。</p>}
           <Pager page={historyResult.page} size={historyResult.size} total={historyResult.total} onChange={setPage} />
           </>}
-        </DashboardPanel>
-      <details className="secondary-controls"><summary>趋势分析</summary><div className="secondary-controls-body">
+        </DashboardPanel>}
+      {(!management || view === 'trend') && <details className="secondary-controls" open={management || undefined}><summary>趋势分析</summary><div className="secondary-controls-body">
       <DashboardPanel title="完整窗口监测趋势">
         <div className="parameter-trend-controls"><div className="field"><Label htmlFor="trend-metric">趋势指标</Label><select id="trend-metric" className="native-select" value={trendMetric} onChange={event => setTrendMetric(event.target.value)}><option value="">选择指标</option>{metrics.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}</select></div><div role="group" aria-label="监测趋势统计窗口">{([7, 30] as const).map(n => <Button key={n} type="button" variant={days === n ? 'default' : 'outline'} onClick={() => setDays(n)}>近{n}天</Button>)}</div></div>
         {metricValueType(trendMetric) !== 'NUMBER' && trendMetric !== '' && <p className="muted-note">该指标为{metricValueType(trendMetric) === 'BOOLEAN' ? '布尔' : '文本'}离散状态：趋势仅统计每日样本数，不做数值平均、最小值或最大值比较。</p>}
@@ -107,7 +132,7 @@ export function ParameterMonitoringPage() {
           {!trend.data.series.length && <Empty title="所选范围没有可聚合的样本" />}
         </> : <Empty title="趋势数据尚未确认" />}
       </DashboardPanel>
-      </div></details>
+      </div></details>}
     </>}
   </>
 }

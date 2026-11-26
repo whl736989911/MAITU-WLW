@@ -51,7 +51,7 @@ const planWire = {
 const bindingsWire = [{ consumer_kind: 'OUTPUT_APPLICATION', scope_key: 'application:app-live', consumer_id: 'app-live', consumer_revision: 9, owned_fields: ['name'], updated_at: '2026-11-12T01:00:00Z' }]
 const catalogWire = {
   node_types: [
-    { type: 'mqtt', label: '数据输出引用', category: 'REFERENCE', port: 'REFERENCE', fixed: false, min_count: 0, max_count: 4, supported: true, rationale: '只读核对', description: '只登记引用' },
+    { type: 'mqtt', label: '历史数据输出引用（已退役）', category: 'REFERENCE', port: 'REFERENCE', fixed: false, min_count: 0, max_count: 4, supported: false, rationale: '已退役', description: '历史记录' },
     { type: 'device.message', label: '设备消息', category: 'SOURCE', port: 'START', fixed: true, min_count: 1, max_count: 1, supported: true, rationale: '入口', description: '真实事实入口' },
     { type: 'persist', label: '持久化', category: 'NATIVE', port: 'FIXED', fixed: true, min_count: 1, max_count: 1, supported: true, rationale: '固定', description: '固定阶段' },
   ],
@@ -93,7 +93,7 @@ function login() {
 beforeEach(() => useSession.getState().clear())
 
 describe('规则流真实蛇形响应边界', () => {
-  it('真实蛇形计划、发布历史、消费回读渲染到界面，未启用MQTT输出的应用不可选', async () => {
+  it('保留已退役输出节点的历史引用和消费回读，不允许重新配置', async () => {
     login()
     const api = ruleFlowApiFor('tenant-a')
     const catalog = await api.catalog()
@@ -101,10 +101,8 @@ describe('规则流真实蛇形响应边界', () => {
     render(<RuleFlowEditor tenantId="tenant-a" flow={detail.flow} definition={detail.definition} catalog={catalog}
       canWrite={false} canPublish onSaved={() => {}}/>)
 
-    const unavailable = screen.getByText(/无已启用MQTT输出/).closest('option')
-    const available = screen.getByText(/MQTT已启用 2/).closest('option')
-    expect(unavailable).toHaveAttribute('disabled')
-    expect(available).not.toHaveAttribute('disabled')
+    expect(screen.getByText(/第三方输出已退役。历史应用编号：app-live/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('已发布数据输出应用')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '编译预览' }))
     expect(await screen.findByText('true/120')).toBeInTheDocument()

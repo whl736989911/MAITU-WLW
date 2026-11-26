@@ -158,13 +158,13 @@ function PaymentSettingsContent({ canWrite }: { canWrite: boolean }) {
         </fieldset>
       </form>
     </>}
-    <Card><CardContent>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <h2 className="section-heading" style={{ margin: 0 }}><AlertTriangle size={18}/>每日对账</h2>
-        <Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={runs.refresh}>刷新</Button>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2 className="section-heading"><AlertTriangle size={16}/>每日对账</h2>
+        <div className="list-toolbar management-list-actions"><Button variant="outline" size="sm" onClick={runs.refresh}>刷新</Button></div>
       </div>
-      <p className="muted-note">对账只下载当日「成功交易」账单并记录差异，不会自动入账、退款或关闭订单。日期为微信账单日期（yyyyMMdd），可查询约三个月内账单。</p>
-      <form className="provider-grid" onSubmit={runReconciliation}>
+      <p className="management-list-context">对账只下载当日「成功交易」账单并记录差异，不会自动入账、退款或关闭订单。日期为微信账单日期（yyyyMMdd），可查询约三个月内账单。</p>
+      <form className="filter-row management-named-filters" onSubmit={runReconciliation}>
         <div className="field"><Label htmlFor="payment-bill-date">账单日期</Label><Input id="payment-bill-date" value={billDate} onChange={e => setBillDate(e.target.value.trim())} placeholder="yyyyMMdd" maxLength={8} disabled={!canWrite || reconcileBusy}/></div>
         <div style={{ display: 'flex', alignItems: 'flex-end' }}><Button type="submit" disabled={!canWrite || reconcileBusy}><FileSearch/>{reconcileBusy ? '下载对账中…' : '下载并比对昨日账单'}</Button></div>
       </form>

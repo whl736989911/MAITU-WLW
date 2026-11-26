@@ -88,6 +88,24 @@ class LegacyMirrorPipelineIntegrationTest {
         assertThat(row.get("observed_at")).isNotNull();
     }
 
+    @Test void lorawanUnavailableBatteryDoesNotRollBackRawMessageOrLastReport() throws Exception {
+        var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(LORAWAN);
+        body.put("data", "B210000D0000E1").put("battery", 255);
+        jdbc.update("UPDATE devices SET battery_percent=61 WHERE id='d1'");
+        var unknown = json.writeValueAsString(body);
+        sendUplink(unknown).andExpect(jsonPath("$.state").value("PENDING_DECODER"));
+        assertThat(jdbc.queryForObject("SELECT payload_raw FROM legacy_ingest_messages", String.class)).isEqualTo(unknown);
+        assertThat(jdbc.queryForObject("SELECT last_message_at FROM devices WHERE id='d1'", java.time.OffsetDateTime.class))
+            .isEqualTo(java.time.OffsetDateTime.parse("2026-10-30T07:07:22Z"));
+        assertThat(jdbc.queryForObject("SELECT battery_percent FROM devices WHERE id='d1'", java.math.BigDecimal.class))
+            .isEqualByComparingTo("61");
+
+        body.put("battery", 0).put("datetime", "2026-10-30T07:08:22Z").put("fcnt", 328);
+        sendUplink(json.writeValueAsString(body));
+        assertThat(jdbc.queryForObject("SELECT battery_percent FROM devices WHERE id='d1'", java.math.BigDecimal.class))
+            .isEqualByComparingTo("0");
+    }
+
     @Test void sameFrameArrivingTwiceIsRecordedOnceWithADuplicateCount() throws Exception {
         sendUplink(LORAWAN).andExpect(status().isOk());
         mvc.perform(post("/api/notify/v1/vector-token/lorawan_turbo/telemetry")

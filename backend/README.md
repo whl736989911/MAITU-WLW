@@ -24,6 +24,8 @@ bash scripts/run.sh
 
 包含真实设备标识的私有回放样本不随源码发布。若需要运行 `LegacyIngestVectorTest` 的归档向量用例，设置 `LEGACY_APPENDIX` 为受控的解压目录（包含 `test-vectors/`）；不设置时仅跳过依赖归档的用例。已设置但缺少所需文件会导致用例失败。
 
+仅导入旧产品时，将 `LEGACY_APPENDIX` 指向受控目录，包含 `legacy/products.tsv`、`legacy/product_attrs.tsv`、`excel-product-platform.tsv` 和 `codecs/`（获准内部使用的 `<p_id>.js`；缺失的解码器不补造）。通过管理端旧平台接入的字典预检和确认导入；不提供 `legacy/companies.tsv`、`legacy/places.tsv` 时，不创建组织、位置或单位授权。旧产品全名和 Excel 平台按产品版本保存，重导后可补齐既有版本的原名。同名产品找不到唯一平台对应时不自动取第一项。平台列仅用于建档匹配，不决定实际收包路由；导入解码器不等于已验证报文。
+
 ## 部署与存储
 
 prod必须显式`APP_STORAGE=postgresql`，独立库和最小权限账号；设置`APP_DB_URL/APP_DB_USERNAME/APP_DB_PASSWORD`。通用认证来源应用worker、报警变更读取/发布/信号及真实通知均受各自配置与角色边界约束；默认发送/变更读取发布与信号关闭。启用真实外部渠道须按各自合同并经授权，不运行模拟业务。API与worker使用同库/稳定密钥，H2不作多进程共享生产库。Linux systemd以非root运行，私密环境文件由管理员保管，不自动安装/重启数据库服务。

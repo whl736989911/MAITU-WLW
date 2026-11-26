@@ -30,9 +30,26 @@ function DeliveriesContent({ canReconcile, canConfigure }: { canReconcile: boole
   const [notice, setNotice] = useState('')
   const scopeTenantIds = useSession(s => s.scopeTenantIds), scopePlaceIds = useSession(s => s.scopePlaceIds), scopeKey = useSession(s => `${s.scopeTenantIds.join(',')}|${s.scopePlaceIds.join(',')}|${s.scopeInitialized}`)
   const deliveries = useResource(`notification-deliveries:${scopeKey}:${page}`, signal => notificationDeliveryApi.list(page, scopeTenantIds, scopePlaceIds, signal))
-  return <><PageHeading eyebrow="NOTIFICATION · 发送记录" title="通知记录" description="查询火警、故障的短信、语音与公众号发送尝试及厂商回执。"><Button variant="outline" onClick={() => setPolicyOpen(true)}>回执查询策略</Button><Button variant="outline" onClick={deliveries.refresh}><RefreshCw/>刷新</Button><DataTransferActions kind="NOTIFICATION_ATTEMPTS" label="导出发送尝试" filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(',') }}/><PageHelp title="受理、送达与接听"><p>“厂商已受理”只表示短信或语音服务商接受发送请求，不是运营商送达、用户接听或已经处置。</p><p>短信送达、语音听完/接通未听完/未接通、公众号完成事件分别展示；公众号 errcode 0 只表示受理，只有认证回调 success/failed 才写送达或失败，未收到回调保持未确认，不盲目重发。</p><p>查询回执只调用厂商只读详情接口，不重发通知、不清除报警或故障、不改变资源余额与设备状态。</p><p>历史尝试若缺少发送时的号码、账户、BizId/CallId 或日期快照，将保持未确认并显示具体原因。</p></PageHelp></PageHeading>
-    <Card className="list-card"><CardContent>{deliveries.loading ? <Loading/> : deliveries.error != null ? <ErrorNotice error={deliveries.error} retry={deliveries.refresh}/> : deliveries.data?.items.length ? <><Table className="notification-delivery-table"><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>事件 / 来源</TableHead><TableHead>设备 / 联系人</TableHead><TableHead>渠道</TableHead><TableHead>尝试</TableHead><TableHead>发送受理</TableHead><TableHead>送达 / 接听回执</TableHead><TableHead>最近回执</TableHead><TableHead>回执 ID</TableHead><TableHead>详情</TableHead></TableRow></TableHeader><TableBody>{deliveries.data.items.map(item => <DeliveryRow key={item.id} item={item} onOpen={() => { setSelectedId(item.id); setNotice('') }}/>)}</TableBody></Table><Pager page={deliveries.data.page} size={deliveries.data.size} total={deliveries.data.total} onChange={setPage}/></> : <Empty title="暂无真实发送记录"/>}</CardContent></Card>
-    {notice && <div role="status" className="notice">{notice}</div>}
+  return <>
+    <PageHeading eyebrow="NOTIFICATION · 发送记录" title="通知记录" description="查询火警、故障的短信、语音与公众号发送尝试及厂商回执。">
+      <PageHelp title="受理、送达与接听"><p>“厂商已受理”只表示短信或语音服务商接受发送请求，不是运营商送达、用户接听或已经处置。</p><p>短信送达、语音听完/接通未听完/未接通、公众号完成事件分别展示；公众号 errcode 0 只表示受理，只有认证回调 success/failed 才写送达或失败，未收到回调保持未确认，不盲目重发。</p><p>查询回执只调用厂商只读详情接口，不重发通知、不清除报警或故障、不改变资源余额与设备状态。</p><p>历史尝试若缺少发送时的号码、账户、BizId/CallId 或日期快照，将保持未确认并显示具体原因。</p></PageHelp>
+    </PageHeading>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>发送尝试与回执</h2>
+        <div className="list-toolbar management-list-actions">
+          <Button variant="outline" onClick={() => setPolicyOpen(true)}>回执查询策略</Button>
+          <DataTransferActions kind="NOTIFICATION_ATTEMPTS" label="导出发送尝试" filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(',') }}/>
+          <Button variant="outline" onClick={deliveries.refresh}><RefreshCw/>刷新</Button>
+        </div>
+      </div>
+      <p className="management-list-context">厂商受理不等于短信送达或语音接听，请分别查看发送状态与回执。</p>
+      {notice && <div role="status" className="notice">{notice}</div>}
+      {deliveries.loading ? <Loading/> : deliveries.error != null ? <ErrorNotice error={deliveries.error} retry={deliveries.refresh}/> : deliveries.data?.items.length ? <>
+        <Table className="notification-delivery-table"><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>事件 / 来源</TableHead><TableHead>设备 / 联系人</TableHead><TableHead>渠道</TableHead><TableHead>尝试</TableHead><TableHead>发送受理</TableHead><TableHead>送达 / 接听回执</TableHead><TableHead>最近回执</TableHead><TableHead>回执 ID</TableHead><TableHead>详情</TableHead></TableRow></TableHeader><TableBody>{deliveries.data.items.map(item => <DeliveryRow key={item.id} item={item} onOpen={() => { setSelectedId(item.id); setNotice('') }}/>)}</TableBody></Table>
+        <Pager page={deliveries.data.page} size={deliveries.data.size} total={deliveries.data.total} onChange={setPage}/>
+      </> : <Empty title="暂无真实发送记录"/>}
+    </CardContent></Card>
     <Sheet open={policyOpen} onOpenChange={setPolicyOpen}><SheetContent className="review-sheet sm:max-w-3xl">{policyOpen && <NotificationReceiptPolicyPanel canConfigure={canConfigure} onSaved={() => setNotice('已重新读取回执查询策略；实际生效值按环境安全上限展示，保存失败或 revision 冲突时不会写入。')}/>}</SheetContent></Sheet>
     <Sheet open={selectedId !== null} onOpenChange={open => { if (!open) setSelectedId(null) }}><SheetContent className="review-sheet sm:max-w-4xl">{selectedId && <NotificationDeliveryReceiptPanel id={selectedId} canReconcile={canReconcile} onChanged={() => { deliveries.refresh(); setNotice('已重新读取该发送尝试的回执状态与观测证据。') }}/>}</SheetContent></Sheet>
   </>

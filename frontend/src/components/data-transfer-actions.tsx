@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Alert, Card, Descriptions, Drawer, Dropdown, Select, Space, Table, Tag, Typography, type MenuProps, type TableColumnsType } from 'antd'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Download, Upload } from 'lucide-react'
 import { api } from '@/lib/api'
 import { dataTransferApi, dataTransferEffects, dataTransferLabels, type DataTransferCapability, type DataTransferExport, type DataTransferFile, type DataTransferFormat, type DataTransferJob, type DataTransferKind, type DataTransferPreview, type DataTransferPreviewRow } from '@/lib/data-transfer'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
+import { dateTime } from '@/lib/format'
 import { useMutationAction } from '@/components/identity-common'
 import { DataTransferDownload } from '@/components/data-transfer-download'
 import { DataTransferJobViewer } from '@/components/data-transfer-job'
@@ -16,10 +17,12 @@ import { ErrorNotice } from '@/components/common'
 export interface DataTransferActionsProps {
   kind: DataTransferKind
   label?: string
+  direct?: 'import' | 'export'
   tenantId?: string
   filters?: Record<string, string | number | boolean | null>
   selectedIds?: string[]
   onCompleted?: (result: DataTransferJob | DataTransferExport) => void
+  assetMenu?: { scopeReady: boolean; onSourceImport?: () => void }
 }
 
 export function DataTransferActions(props: DataTransferActionsProps) {
@@ -32,33 +35,89 @@ function ActionControl(props: DataTransferActionsProps) {
   const session = useSession()
   const [mode, setMode] = useState<'import' | 'export' | null>(null)
   const [selection, setSelection] = useState<string[]>([]), [jobId, setJobId] = useState<string | null>(null)
+  const [filters, setFilters] = useState<DataTransferActionsProps['filters']>()
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [assetSelection, setAssetSelection] = useState<'ALL' | 'SELECTED'>()
   const entitled = !!session.user && !session.user.must_change_password && session.permissions.some(permission => ['imports:read', 'imports:write', 'exports:read', 'exports:write'].includes(permission))
   const metadata = useResource(`transfer-capabilities:${session.generation}:${session.audience}`, signal => dataTransferApi.capabilities(signal), entitled)
   const capability = metadata.data?.kinds.find(item => item.kind === props.kind && item.audiences.includes(session.audience))
   const canImport = !!capability?.importable && session.permissions.includes('imports:write') && !!capability.write_permission && session.permissions.includes(capability.write_permission)
   const canTemplate = !!capability?.importable && session.permissions.includes('imports:read') && (session.permissions.includes(capability.read_permission) || !!capability.write_permission && session.permissions.includes(capability.write_permission))
   const canExport = !!capability?.exportable && session.permissions.includes('exports:write') && session.permissions.includes(capability.read_permission)
-  if (!entitled) return null
+  const canReadExports = session.permissions.includes('exports:read')
+  if (!entitled && !props.direct && !props.assetMenu?.onSourceImport) return null
+  function open(next: 'import' | 'export', selected?: 'ALL' | 'SELECTED') {
+    setAssetSelection(selected)
+    setSelection([...(props.selectedIds ?? [])])
+    setFilters(props.filters ? { ...props.filters } : undefined)
+    setMode(next)
+  }
   const items: NonNullable<MenuProps['items']> = []
   if (canImport || canTemplate) items.push({ key: 'import', label: `导入${dataTransferLabels[props.kind]}` })
   if (canExport) items.push({ key: 'export', label: `导出${dataTransferLabels[props.kind]}` })
   if (session.permissions.includes('imports:read') || session.permissions.includes('exports:read')) items.push({ key: 'records', label: '我的导入任务与导出文件' })
+  const direct = props.direct
+  const assetMenu = props.assetMenu
+  const assetImports: NonNullable<MenuProps['items']> = [
+    ...(canImport || canTemplate ? [{ key: 'import', label: '设备建档表格与模板' }] : []),
+    ...(assetMenu?.onSourceImport ? [{ key: 'source', label: '旧来源 / 海康存量关联' }] : []),
+  ]
+  const scopeSelected = !!(props.filters?.unit_ids || props.filters?.place_ids)
+  const canCreateAssetExport = canExport && !!assetMenu?.scopeReady && scopeSelected
+  const assetExports: NonNullable<MenuProps['items']> = [
+    ...(canExport ? [
+      { key: 'all', label: '导出当前筛选', disabled: !canCreateAssetExport },
+      { key: 'selected', label: `导出已勾选（${props.selectedIds?.length ?? 0}）`, disabled: !canCreateAssetExport || !props.selectedIds?.length },
+    ] : []),
+    ...(canReadExports ? [{ key: 'history', label: '设备导出记录' }] : []),
+  ]
   return <>
-    <Dropdown trigger={['click']} disabled={metadata.loading || items.length === 0} menu={{ items, onClick: ({ key }) => {
-      if (key === 'records') { useSession.getState().navigate('bulk-io'); return }
-      if (key === 'import' || key === 'export') { setSelection([...(props.selectedIds ?? [])]); setMode(key) }
-    } }}><Button variant="outline" disabled={metadata.loading || items.length === 0}>{metadata.loading ? '数据操作…' : props.label ?? '导入 / 导出'}<ChevronDown size={14}/></Button></Dropdown>
+    {assetMenu ? <>
+      {assetImports.length > 0 && <Dropdown trigger={['click']} menu={{ items: assetImports, onClick: ({ key }) => {
+        if (key === 'source') assetMenu.onSourceImport?.()
+        else open('import')
+      } }}><Button variant="ghost" size="sm"><Upload/>导入<ChevronDown size={13}/></Button></Dropdown>}
+      {assetExports.length > 0 && <Dropdown trigger={['click']} menu={{ items: assetExports, onClick: ({ key }) => {
+        if (key === 'history') setHistoryOpen(true)
+        else open('export', key === 'selected' ? 'SELECTED' : 'ALL')
+      } }}><Button variant="ghost" size="sm" title={canExport && !canCreateAssetExport ? '先在左侧选择读取范围' : undefined}><Download/>导出<ChevronDown size={13}/></Button></Dropdown>}
+    </> : direct ? <button type="button" className="legacy-device-button" disabled={metadata.loading || (direct === 'import' ? !canImport && !canTemplate : !canExport)}
+      onClick={() => open(direct)}>{props.label}</button> :
+      <Dropdown trigger={['click']} disabled={metadata.loading || items.length === 0} menu={{ items, onClick: ({ key }) => {
+        if (key === 'records') { useSession.getState().navigate('bulk-io'); return }
+        if (key === 'import' || key === 'export') open(key)
+      } }}><Button variant="outline" disabled={metadata.loading || items.length === 0}>{metadata.loading ? '数据操作…' : props.label ?? '导入 / 导出'}<ChevronDown size={14}/></Button></Dropdown>}
     {metadata.error != null && <ErrorNotice error={metadata.error} retry={metadata.refresh}/>}
-    {mode && capability && <TransferPanel key={mode} {...props} mode={mode} capability={capability} protectedStorageReady={metadata.data?.protected_storage_ready ?? false} selectedIds={selection} canImport={canImport} canTemplate={canTemplate} onClose={() => setMode(null)} onJobCreated={job => { setMode(null); if (session.permissions.includes('imports:read')) setJobId(job.id); props.onCompleted?.(job) }}/>}
+    {mode && capability && <TransferPanel key={mode} {...props} filters={filters} mode={mode} assetSelection={assetSelection} capability={capability} protectedStorageReady={metadata.data?.protected_storage_ready ?? false} selectedIds={selection} canImport={canImport} canTemplate={canTemplate} onClose={() => setMode(null)} onJobCreated={job => { setMode(null); if (session.permissions.includes('imports:read')) setJobId(job.id); props.onCompleted?.(job) }}/>}
+    {historyOpen && canReadExports && <DeviceExportHistory onClose={() => setHistoryOpen(false)}/>}
     {jobId && <DataTransferJobViewer jobId={jobId} onClose={() => setJobId(null)} onChanged={result => { if (!result) return; props.onCompleted?.(result) }}/>}
   </>
 }
 
-function TransferPanel({ kind, tenantId, filters, selectedIds = [], onCompleted, mode, capability, protectedStorageReady, canImport, canTemplate, onClose, onJobCreated }: DataTransferActionsProps & { mode: 'import' | 'export'; capability: DataTransferCapability; protectedStorageReady: boolean; canImport: boolean; canTemplate: boolean; onClose: () => void; onJobCreated: (job: DataTransferJob) => void }) {
+const deviceExportColumns: TableColumnsType<DataTransferExport> = [
+  { title: '生成时间', dataIndex: 'created_at', width: 164, render: dateTime },
+  { title: '格式', dataIndex: 'format', width: 75 },
+  { title: '实际行数', dataIndex: 'row_count', width: 86, align: 'right' },
+  { title: '可下载至', dataIndex: 'expires_at', width: 164, render: dateTime },
+  { title: '状态', dataIndex: 'status', width: 90, render: value => value === 'COMPLETED' ? <Tag color="green">已生成</Tag> : <Tag>已过期</Tag> },
+  { title: '操作', key: 'download', width: 90, fixed: 'right', render: (_, file) => <DataTransferDownload disabled={file.status === 'EXPIRED'} expectedDigest={file.content_sha256} load={signal => dataTransferApi.downloadExport(file.id, signal)}>下载</DataTransferDownload> },
+]
+
+function DeviceExportHistory({ onClose }: { onClose: () => void }) {
+  const [page, setPage] = useState(1)
+  const records = useResource(`device-export-history:${page}`, signal => dataTransferApi.exports(page, signal, 'DEVICES'))
+  return <Drawer open onClose={onClose} title="设备导出记录" size="min(780px, 100vw)">
+    {records.error != null ? <ErrorNotice error={records.error} retry={records.refresh}/> :
+      <Table<DataTransferExport> rowKey="id" size="small" columns={deviceExportColumns} dataSource={records.data?.items ?? []} loading={records.loading} locale={{ emptyText: '暂无设备导出记录' }} scroll={{ x: 669 }}
+        pagination={{ current: page, pageSize: records.data?.size ?? 20, total: records.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}/>}
+  </Drawer>
+}
+
+function TransferPanel({ kind, tenantId, filters, selectedIds = [], onCompleted, mode, assetSelection, capability, protectedStorageReady, canImport, canTemplate, onClose, onJobCreated }: DataTransferActionsProps & { mode: 'import' | 'export'; assetSelection?: 'ALL' | 'SELECTED'; capability: DataTransferCapability; protectedStorageReady: boolean; canImport: boolean; canTemplate: boolean; onClose: () => void; onJobCreated: (job: DataTransferJob) => void }) {
   const session = useSession(), action = useMutationAction()
-  const [format, setFormat] = useState<DataTransferFormat>('CSV')
+  const [format, setFormat] = useState<DataTransferFormat>(mode === 'export' && kind === 'DEVICES' ? 'XLSX' : 'CSV')
   const [target, setTarget] = useState(tenantId ?? '')
-  const [selectedOnly, setSelectedOnly] = useState(false)
+  const [selectedOnly, setSelectedOnly] = useState(assetSelection === 'SELECTED')
   const [file, setFile] = useState<DataTransferFile | null>(null), [fileEpoch, setFileEpoch] = useState(0)
   const [preview, setPreview] = useState<DataTransferPreview | null>(null)
   const [exported, setExported] = useState<DataTransferExport | null>(null)
@@ -157,7 +216,9 @@ function TransferPanel({ kind, tenantId, filters, selectedIds = [], onCompleted,
           <div className="provider-grid">
             <div className="field"><Label htmlFor="transfer-format">文件格式</Label><Select id="transfer-format" value={format} disabled={locked || !!preview} options={[{ value: 'CSV', label: 'CSV（UTF-8）' }, { value: 'XLSX', label: 'Excel XLSX' }]} onChange={changeFormat}/></div>
             {mode === 'import' && <div className="field"><Label htmlFor="transfer-target-unit">写入目标</Label>{!needUnit ? <Tag>全局主数据 / 配置</Tag> : session.audience === 'customer' || tenantId ? <Typography.Text id="transfer-target-unit">{session.audience === 'customer' ? session.user?.tenant_id : tenantId}</Typography.Text> : session.permissions.includes('tenants:read') ? <Select id="transfer-target-unit" placeholder="明确选择已授权单位" showSearch optionFilterProp="label" value={target || undefined} disabled={locked} loading={units.loading} options={(units.data?.items ?? []).map(unit => ({ value: unit.id, label: `${unit.name} · ${unit.id}` }))} onChange={value => { setTarget(value); setPreview(null); action.touch() }}/> : <Input id="transfer-target-unit" placeholder="输入已授权单位ID" value={target} disabled={locked} onChange={event => { setTarget(event.target.value); setPreview(null); action.touch() }}/>}</div>}
-            {mode === 'export' && <div className="field"><Label htmlFor="transfer-selection">导出范围</Label><Select id="transfer-selection" value={selectedOnly ? 'SELECTED' : 'ALL'} disabled={locked} options={[{ value: 'ALL', label: '当前页面范围与筛选' }, { value: 'SELECTED', label: `勾选记录（${selectedIds.length}）`, disabled: selectedIds.length === 0 }]} onChange={value => { setSelectedOnly(value === 'SELECTED'); action.touch(); frozenExport.current = null }}/></div>}
+            {mode === 'export' && <div className="field"><Label htmlFor="transfer-selection">导出范围</Label>{assetSelection ?
+              <Typography.Text id="transfer-selection">{selectedOnly ? `已勾选 ${selectedIds.length} 条设备` : '当前范围内全部匹配设备（不限页码）'}</Typography.Text> :
+              <Select id="transfer-selection" value={selectedOnly ? 'SELECTED' : 'ALL'} disabled={locked} options={[{ value: 'ALL', label: '当前页面范围与筛选' }, { value: 'SELECTED', label: `勾选记录（${selectedIds.length}）`, disabled: selectedIds.length === 0 }]} onChange={value => { setSelectedOnly(value === 'SELECTED'); action.touch(); frozenExport.current = null }}/>}</div>}
           </div>
           {units.error != null && <ErrorNotice error={units.error} retry={units.refresh}/>}
           {mode === 'export' && emptyScope && <Alert type="warning" title="尚未选择单位或位置范围；请返回页面选择范围" showIcon/>}

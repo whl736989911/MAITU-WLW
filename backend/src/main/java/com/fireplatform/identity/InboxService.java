@@ -39,11 +39,21 @@ public class InboxService {
     }
 
     public Page<Message> messages(AuthService.Identity identity,int page,Integer requestedSize,String status) {
+        return messages(identity,page,requestedSize,status,null,null,null);
+    }
+
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Page<Message> messages(AuthService.Identity identity,int page,Integer requestedSize,String status,String keyword,OffsetDateTime from,OffsetDateTime to) {
         var pagination=Pagination.of(page,requestedSize,20);
         String normalized=status==null?"":status.trim();
         if(!normalized.isEmpty() && !java.util.Set.of("UNREAD","READ","HANDLED").contains(normalized)) throw ApiError.bad("消息状态无效");
         String where="user_id=?"; List<Object> args=new ArrayList<>(); args.add(identity.user().id());
         if(!normalized.isEmpty()) { where+=" AND status=?"; args.add(normalized); }
+        if(from!=null && to!=null && !from.isBefore(to)) throw ApiError.bad("结束时间必须晚于开始时间");
+        String text=LiteralLike.normalizedKeyword(keyword);
+        if(!text.isEmpty()) { var like=LiteralLike.contains(text); where+=" AND (LOWER(title) LIKE LOWER(?) ESCAPE '!' OR LOWER(body) LIKE LOWER(?) ESCAPE '!')"; args.add(like); args.add(like); }
+        if(from!=null){where+=" AND created_at>=?";args.add(from);}
+        if(to!=null){where+=" AND created_at<?";args.add(to);}
         var total=jdbc.queryForObject("SELECT COUNT(*) FROM user_messages WHERE "+where,Long.class,args.toArray());
         args.add(pagination.size()); args.add(pagination.offset());
         var items=jdbc.query("SELECT id,kind,title,body,status,created_at,read_at,handled_at,revision FROM user_messages WHERE "+where+" ORDER BY created_at DESC,id LIMIT ? OFFSET ?",(rs,n)->new Message(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getObject(6,OffsetDateTime.class),rs.getObject(7,OffsetDateTime.class),rs.getObject(8,OffsetDateTime.class),rs.getLong(9)),args.toArray());

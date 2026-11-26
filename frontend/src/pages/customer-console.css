@@ -1,0 +1,70 @@
+@font-face { font-family: 'Legacy Digital'; src: url('../assets/legacy-customer/digital-7.ttf') format('truetype'); font-display: swap; }
+.legacy-console { position: relative; isolation: isolate; display: grid; grid-template-columns: minmax(235px, 320px) minmax(130px, 1fr) minmax(295px, 332px); gap: 16px; min-height: max(720px, 100dvh); padding: 130px 20px 16px; color: #eef6ff; }
+.legacy-map, .legacy-plan { position: absolute; inset: 0; z-index: -1; overflow: hidden; background: #002248; }
+.legacy-map { background: #466399; }
+.legacy-map[tabindex] { cursor: grab; touch-action: none; }
+.legacy-map[tabindex]:active { cursor: grabbing; }
+.legacy-map img { position: absolute; max-width: none; opacity: .5; filter: grayscale(1) invert(1); pointer-events: none; }
+.legacy-map-notice { position: absolute; top: 48%; left: 50%; margin: 0; padding: 8px 12px; transform: translate(-50%, -50%); border-radius: 4px; background: #0c315bd9; color: #c5dcf8; white-space: nowrap; }
+.legacy-map-zoom { position: absolute; top: 148px; left: calc(50% - 18px); display: grid; }
+.legacy-map-zoom button { display: grid; width: 37px; height: 35px; place-items: center; border: 1px solid #477bae; background: #0c315be6; color: #fff; cursor: pointer; }
+.legacy-map-zoom button:disabled { opacity: .5; cursor: default; }
+.legacy-map-attribution { position: absolute; bottom: 2px; left: 7px; padding: 0 4px; background: #000b; color: #fff; font-size: 11px; }
+.legacy-plan { display: grid; place-content: center; justify-items: center; gap: 8px; color: #c5dcf8; }
+.legacy-console-left, .legacy-console-right { display: flex; min-width: 0; flex-direction: column; gap: 10px; pointer-events: none; }
+.legacy-console-left > *, .legacy-console-right > * { pointer-events: auto; }
+.legacy-console-right { grid-column: 3; }
+.legacy-console-stats { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; min-height: 105px; margin: 0; padding: 9px 6px; border-radius: 4px; background: #01407acc; box-shadow: inset 0 0 40px #0048ff33; }
+.legacy-console-stats div { display: flex; min-width: 0; flex-direction: column-reverse; justify-content: center; align-items: center; gap: 3px; }
+.legacy-console-stats dt { color: #e2eeff; font-size: 12px; white-space: nowrap; }
+.legacy-console-stats dd { display: grid; width: 100%; min-height: 48px; place-items: center; margin: 0; background: url('../assets/legacy-customer/statistics.png') center / contain no-repeat; color: #68c7ff; font: 24px/1 'Legacy Digital', monospace; }
+.legacy-console-stats div:nth-child(2) dd { color: #54ebbd; }
+.legacy-console-stats div:nth-child(3) dd { color: #ff827c; }
+.legacy-console-stats div:nth-child(4) dd { color: #ffcc76; }
+.legacy-console-systems { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.legacy-console-systems button { display: flex; min-height: 65px; gap: 8px; align-items: center; padding: 8px 12px; border: 1px solid #235c94; background: #01407acc; color: #a9d7ff; box-shadow: inset 0 0 32px #0048ff33; cursor: pointer; }
+.legacy-console-systems button:hover { background: #0360a2; color: white; }
+.legacy-console-search { position: relative; display: grid; gap: 10px; }
+.legacy-searchbar, .legacy-console-filters, .legacy-console-results { display: flex; align-items: stretch; border-radius: 4px; background: #01407acc; box-shadow: inset 0 0 35px #0048ff33; }
+.legacy-searchbar label { min-width: 0; flex: 1; }
+.legacy-searchbar input, .legacy-console-filters :is(input, select) { width: 100%; min-width: 0; padding: 0 8px; border: none; border-right: 1px solid #64a7e54d; border-radius: 0; background: transparent; color: white; }
+.legacy-console-filters option { background: #143969; color: #fff; }
+.legacy-searchbar { min-height: 40px; }
+.legacy-searchbar input { height: 40px; }
+.legacy-console-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 32px; min-height: 36px; }
+.legacy-console :is(.legacy-searchbar, .legacy-console-filters, .legacy-console-results) button { display: inline-grid; min-width: 35px; place-items: center; padding: 0 8px; border: 0; background: transparent; color: #9bd1ff; cursor: pointer; }
+.legacy-console .legacy-searchbar button:hover, .legacy-console-filters button:hover { color: white; background: #12588d; }
+.legacy-console-results { position: absolute; top: calc(100% + 3px); right: 0; left: 0; z-index: 5; display: block; max-height: 320px; overflow: auto; padding: 8px; background: #103c6e; }
+.legacy-console-results :is(ul, p) { margin: 4px 0; padding: 0; list-style: none; }
+.legacy-console-results li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px; border-bottom: 1px solid #386797; }
+.legacy-console-results small { display: block; overflow-wrap: anywhere; color: #c5daf4; }
+.legacy-console-panel { min-width: 0; min-height: 98px; overflow: auto; border-radius: 4px; background: #01407acc; box-shadow: inset 0 0 40px #0048ff33; }
+.legacy-console-panel[aria-label='设备位置'] { flex: 0 1 400px; max-height: 43dvh; }
+.legacy-console-panel[aria-label='报警、故障处置情况'] { flex: 1; max-height: 31dvh; }
+.legacy-console-panel header { position: sticky; top: 0; display: flex; min-height: 46px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px; border-bottom: 1px solid #224f95; background: #073c73; }
+.legacy-console-panel h2 { margin: 0; color: white; font-size: 15px; font-weight: 600; }
+.legacy-console-panel button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 0; background: transparent; color: #a6d5ff; text-align: left; cursor: pointer; }
+.legacy-console-panel > button { margin: 8px 8px 0; }
+.legacy-console-panel button:hover, .legacy-console-panel button[aria-pressed='true'] { background: #1c5592; color: #fff; }
+.legacy-location-tree { margin: 3px 10px; padding-left: 13px; list-style: none; }
+.legacy-location-tree summary { padding: 4px 0; cursor: pointer; }
+.legacy-console-empty { margin: 0; padding: 15px; color: #b9cfea; }
+.legacy-console-events { margin: 0; padding: 2px 8px; list-style: none; }
+.legacy-console-events li:not(:last-child) { border-bottom: 1px solid #376395; }
+.legacy-console-events button { width: 100%; }
+.legacy-console-events small { display: block; color: #c8dcf4; }
+.legacy-mode-switch { position: absolute; bottom: 20px; left: 50%; display: flex; gap: 10px; transform: translateX(-50%); }
+.legacy-mode-switch button { display: grid; width: 90px; min-height: 66px; justify-items: center; align-content: center; gap: 5px; border: 1px solid #508dc1; background: #0b3767e6; color: #addbff; cursor: pointer; }
+.legacy-mode-switch button:is(:hover, [aria-pressed='true']) { border-color: #79d2fb; background: #13548ce6; color: #fff; box-shadow: inset 0 0 28px #2296ed62; }
+.legacy-home-detail { min-height: 100dvh; padding: 142px 20px 20px; background: #0c234b; }
+@media (max-width: 960px) {
+  .legacy-console { grid-template-columns: minmax(0, 1fr); gap: 10px; min-height: 0; padding: 12px; }
+  .legacy-map, .legacy-plan { position: relative; inset: auto; z-index: 0; min-height: 285px; border: 1px solid #224f95; }
+  .legacy-map-zoom { top: 10px; right: 10px; left: auto; }
+  .legacy-mode-switch { position: static; grid-row: 2; justify-self: center; transform: none; }
+  .legacy-mode-switch button { min-height: 42px; }
+  .legacy-console-right { grid-column: auto; }
+  .legacy-console-panel[aria-label='设备位置'] { flex-basis: auto; max-height: 240px; }
+  .legacy-console-panel[aria-label='报警、故障处置情况'] { flex: auto; max-height: 240px; }
+  .legacy-home-detail { min-height: 0; padding: 16px; }
+}

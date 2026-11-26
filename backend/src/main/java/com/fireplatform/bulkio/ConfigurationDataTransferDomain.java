@@ -154,7 +154,7 @@ public class ConfigurationDataTransferDomain implements DataTransferDomain {
         String op=required(c,"operation").toUpperCase(Locale.ROOT), scopeName=required(c,"scope"), id=required(c,"scope_id"), key=required(c,"parameter_key");
         if(!Set.of("SET","CLEAR").contains(op))throw ApiError.bad("operation仅支持SET或CLEAR");
         if(!"offline_threshold_minutes".equals(key))throw ApiError.bad("仅支持设备离线判定阈值");
-        if(!Set.of("TENANT","PLACE","DEVICE").contains(scopeName))throw ApiError.bad("scope仅支持TENANT、PLACE或DEVICE");
+        if(!Set.of("TENANT","PLACE","GROUP","DEVICE").contains(scopeName))throw ApiError.bad("scope仅支持TENANT、PLACE、GROUP或DEVICE");
         String stable=scopeName+":"+id+":"+key;
         if(!blank(c.get("id"))&&!stable.equals(c.get("id")))throw ApiError.bad("id与策略目标不匹配");
         parameterQueries.validate(actor.user().id(),tenant,scopeName,id,key,false);
@@ -262,6 +262,15 @@ public class ConfigurationDataTransferDomain implements DataTransferDomain {
         var units=scope.units(actor.user().id(),"t","id",tenant,selection);
         String unitSql="SELECT p.tenant_id,p.scope,p.scope_id,p.override_value,p.revision FROM parameter_overrides p JOIN tenants t ON t.id=p.tenant_id WHERE p.parameter_key='offline_threshold_minutes' AND p.scope='TENANT' AND p.override_value IS NOT NULL"+units.and()+" ORDER BY p.tenant_id,p.scope_id";
         for(var r:jdbc.queryForList(unitSql,units.bindings().toArray()))rows.add(Arrays.asList("TENANT:"+Objects.toString(r.get("scope_id"))+":offline_threshold_minutes","SET",Objects.toString(r.get("scope")),Objects.toString(r.get("scope_id")),"offline_threshold_minutes",Objects.toString(r.get("override_value")),Objects.toString(r.get("revision"))));
+        // A group policy governs the whole group, not only members of the selected place subtree.
+        var selectedUnits=new ScopeFilter.Selection(selection.tenantIds(),List.of(),!selection.placeIds().isEmpty() && selection.tenantIds().isEmpty());
+        if(!selectedUnits.empty()) {
+            var groupUnits=scope.units(actor.user().id(),"t","id",tenant,selectedUnits);
+            var groupAccess=deviceAccess.allPredicate(actor.user().id(),"p.tenant_id");
+            var groupArgs=new ArrayList<Object>(groupUnits.bindings());groupArgs.addAll(groupAccess.bindings());
+            String groupSql="SELECT p.scope_id,p.override_value,p.revision FROM parameter_overrides p JOIN tenants t ON t.id=p.tenant_id WHERE p.scope='GROUP' AND p.override_value IS NOT NULL"+groupUnits.and()+groupAccess.and()+" ORDER BY p.tenant_id,p.scope_id";
+            for(var r:jdbc.queryForList(groupSql,groupArgs.toArray()))rows.add(List.of("GROUP:"+r.get("scope_id")+":offline_threshold_minutes","SET","GROUP",r.get("scope_id").toString(),"offline_threshold_minutes",r.get("override_value").toString(),r.get("revision").toString()));
+        }
         var placeAccess=deviceAccess.placePredicate(actor.user().id(),"p.tenant_id","p.place_id");
         var placeTree=scope.devices(actor.user().id(),"p",tenant,selection);
         var placeArgs=new ArrayList<Object>();placeArgs.addAll(placeAccess.bindings());placeArgs.addAll(placeTree.bindings());

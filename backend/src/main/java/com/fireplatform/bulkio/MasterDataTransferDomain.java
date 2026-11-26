@@ -3,11 +3,13 @@ package com.fireplatform.bulkio;
 import com.fireplatform.configuration.DatabaseTime;
 import com.fireplatform.device.DeviceInputs;
 import com.fireplatform.device.DeviceManagementService;
+import com.fireplatform.device.DeviceModelDisplay;
 import com.fireplatform.identity.AuthService;
 import com.fireplatform.identity.DeviceScopes;
 import com.fireplatform.identity.ManagementGuard;
 import com.fireplatform.identity.UnitDirectoryCommands;
 import com.fireplatform.identity.UnitDirectoryModels;
+import com.fireplatform.legacyingest.facts.DeviceStatusComposer;
 import com.fireplatform.notification.ContactPhoneStorage;
 import com.fireplatform.notification.NotificationConfigCommands;
 import com.fireplatform.notification.NotificationInputs;
@@ -19,7 +21,12 @@ import com.fireplatform.shared.Limits;
 import com.fireplatform.shared.ScopeFilter;
 import com.fireplatform.simcard.SimCardCommands;
 import com.fireplatform.simcard.SimCardInputs;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -39,7 +46,10 @@ public class MasterDataTransferDomain implements DataTransferDomain {
     private static final List<String> PLACE_IMPORT=List.of("name","parent_place_id");
     private static final List<String> CONTACT_IMPORT=List.of("name","contact_type","phone","enabled");
     private static final List<String> SIM_IMPORT=List.of("id","iccid","carrier_name","replaceability","management_party","fee_responsibility","reported_operator_status","expires_on","evidence_at","source_note","expected_revision");
-    private static final List<String> DEVICE_EXPORT=List.of("id","name","device_eui","address","product_version_id","physical_state","last_message_at","revision","battery_status","system_type","device_category");
+    private static final List<String> DEVICE_EXPORT=List.of("设备名称","设备编号","设备型号","产品名称","产品版本",
+        "归属单位","归属位置","安装地址","所属系统","设备类别","链路诊断","来源火情","电池电量","电量状态","最后上报时间（北京时间）");
+    private static final DateTimeFormatter DEVICE_EXPORT_TIME=DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss",Locale.ROOT)
+        .withZone(ZoneId.of("Asia/Shanghai"));
     private static final List<String> UNIT_EXPORT=List.of("id","name","credit_code","region_id","unit_type","industry","map_address","detail_address","contact_name","contact_phone","remark","latitude","longitude","service_start","service_end","engineering_service_start","engineering_service_end","revision");
     private static final List<String> PLACE_EXPORT=List.of("id","name","parent_place_id","revision");
     private static final List<String> CONTACT_EXPORT=List.of("id","name","contact_type","phone_masked","enabled","revision");
@@ -58,9 +68,11 @@ public class MasterDataTransferDomain implements DataTransferDomain {
     private final DatabaseTime time;
     private final jakarta.validation.Validator validator;
     private final ContactPhoneStorage contactPhones;
-    public MasterDataTransferDomain(JdbcTemplate jdbc,DeviceManagementService devices,UnitDirectoryCommands units,PlaceCommands places,NotificationConfigCommands contacts,SimCardCommands simCards,ScopeFilter scope,DeviceScopes deviceScopes,com.fireplatform.configuration.OfflinePolicySql offlinePolicy,DatabaseTime time,jakarta.validation.Validator validator,ContactPhoneStorage contactPhones) {
+    private final DeviceStatusComposer deviceStatuses;
+    public MasterDataTransferDomain(JdbcTemplate jdbc,DeviceManagementService devices,UnitDirectoryCommands units,PlaceCommands places,NotificationConfigCommands contacts,SimCardCommands simCards,ScopeFilter scope,DeviceScopes deviceScopes,com.fireplatform.configuration.OfflinePolicySql offlinePolicy,DatabaseTime time,jakarta.validation.Validator validator,ContactPhoneStorage contactPhones,DeviceStatusComposer deviceStatuses) {
         this.jdbc=jdbc;this.devices=devices;this.units=units;this.places=places;this.contacts=contacts;this.simCards=simCards;this.scope=scope;this.deviceScopes=deviceScopes;this.offlinePolicy=offlinePolicy;this.time=time;this.validator=validator;
         this.contactPhones=contactPhones;
+        this.deviceStatuses=deviceStatuses;
     }
 
 
@@ -122,11 +134,17 @@ public class MasterDataTransferDomain implements DataTransferDomain {
     }
 
     @Override public ExportData export(String kind,AuthService.Identity actor,String tenant,Map<String,String> filters,List<String> selectedIds) {
-        Set<String> additional=switch(kind){case "UNITS"->Set.of("keyword","status");case "PLACES"->Set.of("keyword");case "DEVICES"->Set.of("keyword","field","place_id","tenant_id","connectivity","physical_state","integration_state","system_type","device_category","battery_status");default->Set.of();};
+        Set<String> additional=switch(kind){case "UNITS"->Set.of("keyword","status");case "PLACES"->Set.of("keyword");case "DEVICES"->Set.of("keyword","field","place_id","tenant_id","connectivity","physical_state","integration_state","system_type","device_category","battery_status","customer_status");default->Set.of();};
         ScopeFilter.Selection selection=DataTransferFilters.selection(filters,additional);List<String> columns=exportColumns(kind);
         if(selection.empty())return new ExportData(columns,List.of());
+        if("DEVICES".equals(kind)) {
+            var ids=DataTransferFilters.selectedIds(selectedIds);
+            if(selectedIds!=null&&ids.isEmpty())return new ExportData(columns,List.of());
+            var rows=exportDevices(actor.user().id(),tenant,selection,filters,ids);
+            if(selectedIds!=null&&rows.size()!=ids.size())throw ApiError.forbidden("勾选记录不存在或不在当前授权及筛选范围内");
+            return new ExportData(columns,rows);
+        }
         String actorId=actor.user().id();List<List<String>> rows=switch(kind){
-            case "DEVICES"->exportDevices(actorId,tenant,selection,filters);
             case "UNITS"->exportUnits(actorId,tenant,selection,filters);
             case "PLACES"->exportPlaces(actorId,tenant,selection,filters);
             case "CONTACTS"->exportContacts(actorId,tenant,selection);
@@ -136,19 +154,69 @@ public class MasterDataTransferDomain implements DataTransferDomain {
         return DataTransferFilters.selected(new ExportData(columns,rows),selectedIds);
     }
 
-    private List<List<String>> exportDevices(String actor,String tenant,ScopeFilter.Selection selection,Map<String,String> filters){
+    private List<List<String>> exportDevices(String actor,String tenant,ScopeFilter.Selection selection,Map<String,String> filters,List<String> selectedIds){
         var access=deviceScopes.predicate(actor,"d.tenant_id","d.id");var tree=scope.devices(actor,"d",tenant,selection);var args=new ArrayList<Object>();args.add(time.now());args.addAll(access.bindings());args.addAll(tree.bindings());var extra=new StringBuilder();
         String keyword=filter(filters,"keyword");String field=filter(filters,"field");if(field!=null&&!Set.of("eui","name","model","address").contains(field))throw ApiError.bad("设备搜索字段无效");
-        if(keyword!=null){if(keyword.length()>200)throw ApiError.bad("设备关键字过长");String like="%"+keyword.trim().replace("!","!!").replace("%","!%").replace("_","!_")+"%";String[] fields=field==null?new String[]{"d.name","d.device_eui","d.model","d.address"}:new String[]{switch(field){case "eui"->"d.device_eui";case "name"->"d.name";case "model"->"d.model";default->"d.address";}};extra.append(" AND (");for(int i=0;i<fields.length;i++){if(i>0)extra.append(" OR ");extra.append("LOWER(COALESCE(").append(fields[i]).append(",'')) LIKE LOWER(?) ESCAPE '!'");args.add(like);}extra.append(")");}
+        if(keyword!=null){if(keyword.length()>200)throw ApiError.bad("设备关键字过长");String like="%"+keyword.trim().replace("!","!!").replace("%","!%").replace("_","!_")+"%";String[] fields=field==null?new String[]{"d.name","d.device_eui",DeviceModelDisplay.SQL,"d.address"}:new String[]{switch(field){case "eui"->"d.device_eui";case "name"->"d.name";case "model"->DeviceModelDisplay.SQL;default->"d.address";}};extra.append(" AND (");for(int i=0;i<fields.length;i++){if(i>0)extra.append(" OR ");extra.append("LOWER(COALESCE(").append(fields[i]).append(",'')) LIKE LOWER(?) ESCAPE '!'");args.add(like);}extra.append(")");}
         addEquality(extra,args,filters,"tenant_id","d.tenant_id",256);addEquality(extra,args,filters,"place_id","d.place_id",256);
         addEnum(extra,args,filters,"connectivity",offlinePolicy.connectivity(),Set.of("ONLINE","OFFLINE","UNKNOWN","UNACTIVATED"));
         addEnum(extra,args,filters,"physical_state","d.physical_state",Set.of("FIRE","NORMAL","UNKNOWN"));
         addEnum(extra,args,filters,"integration_state","d.integration_state",Set.of("CONNECTED","PENDING_INTEGRATION","LEGACY_UNVERIFIED","RETIRED_SIMULATION"));
         addMetadata(extra,args,filters,"system_type","d.system_type");addMetadata(extra,args,filters,"device_category","d.device_category");
+        if(!selectedIds.isEmpty()){
+            extra.append(" AND d.id IN (").append(String.join(",",java.util.Collections.nCopies(selectedIds.size(),"?"))).append(')');
+            args.addAll(selectedIds);
+        }
         String threshold="COALESCE(dbo.threshold,pv.battery_low_threshold)",comparator="COALESCE(dbo.comparator,pv.battery_low_comparator)";
         String battery="CASE WHEN "+threshold+" IS NULL THEN 'NOT_CONFIGURED' WHEN d.battery_percent IS NULL THEN 'NO_DATA' WHEN (("+comparator+"='LT' AND d.battery_percent<"+threshold+") OR ("+comparator+"='LTE' AND d.battery_percent<="+threshold+")) THEN 'LOW' ELSE 'NORMAL' END";
         String batteryStatus=filter(filters,"battery_status");if(batteryStatus!=null){if(!Set.of("LOW","NORMAL","NO_DATA","NOT_CONFIGURED").contains(batteryStatus))throw ApiError.bad("电量状态筛选无效");extra.append(" AND (").append(battery).append(")=?");args.add(batteryStatus);}
-        return jdbc.query("SELECT d.id,d.name,d.device_eui,d.address,d.product_version_id,d.physical_state,d.last_message_at,d.revision,"+battery+" AS battery_status,d.system_type,d.device_category FROM devices d"+offlinePolicy.connectivityJoins()+" LEFT JOIN product_versions pv ON pv.id=d.product_version_id LEFT JOIN device_battery_threshold_overrides dbo ON dbo.device_id=d.id WHERE d.is_simulated=FALSE AND d.archived_at IS NULL"+access.and()+tree.and()+extra+" ORDER BY d.id LIMIT 10001",(rs,n)->Arrays.asList(text(rs.getString(1)),text(rs.getString(2)),text(rs.getString(3)),text(rs.getString(4)),text(rs.getString(5)),text(rs.getString(6)),text(rs.getString(7)),Long.toString(rs.getLong(8)),text(rs.getString(9)),text(rs.getString(10)),text(rs.getString(11))),args.toArray());
+        var statuses=DeviceStatusComposer.parseCustomerStatuses(filter(filters,"customer_status"));
+        String fields="""
+            d.id,d.name,d.device_eui,d.address,d.product_name,d.version_number,d.physical_state,
+            d.last_message_at,d.battery_percent,d.system_type,d.device_category,t.name AS unit_name,p.name AS place_name,
+            """+DeviceModelDisplay.SQL+" AS display_model,"+offlinePolicy.connectivity()+" AS computed_connectivity,"+battery+" AS battery_status";
+        String from=" FROM devices d"+offlinePolicy.connectivityJoins()+"""
+             LEFT JOIN product_versions pv ON pv.id=d.product_version_id
+             LEFT JOIN device_battery_threshold_overrides dbo ON dbo.device_id=d.id
+             JOIN tenants t ON t.id=d.tenant_id
+             LEFT JOIN places p ON p.tenant_id=d.tenant_id AND p.id=d.place_id
+             WHERE d.is_simulated=FALSE AND d.archived_at IS NULL
+            """+access.and()+tree.and()+extra;
+        String sql=statuses.isEmpty() ? "SELECT "+fields+from+" ORDER BY d.id LIMIT 10001"
+            : "SELECT q.* FROM (SELECT "+fields+deviceStatuses.columns()+from+") q"
+                +DeviceStatusComposer.customerStatusWhere(statuses)+" ORDER BY q.id LIMIT 10001";
+        args.addAll(statuses);
+        return jdbc.query(sql,(rs,n)->deviceExportRow(rs),args.toArray());
+    }
+
+    private static List<String> deviceExportRow(ResultSet rs) throws SQLException {
+        Long version=rs.getObject("version_number",Long.class);
+        var battery=rs.getBigDecimal("battery_percent");
+        var reportTime=rs.getObject("last_message_at",OffsetDateTime.class);
+        String connectivity=switch(rs.getString("computed_connectivity")){
+            case "ONLINE" -> "在线";
+            case "OFFLINE" -> "离线";
+            case "UNACTIVATED" -> "未激活";
+            default -> "状态未确认";
+        };
+        String fireState=switch(rs.getString("physical_state")){
+            case "FIRE" -> "火警";
+            case "NORMAL" -> "正常";
+            case null, default -> "未确认";
+        };
+        String batteryStatus=switch(rs.getString("battery_status")){
+            case "LOW" -> "低电量";
+            case "NORMAL" -> "电量正常";
+            case "NO_DATA" -> "无电量数据";
+            case "NOT_CONFIGURED" -> "未配置阈值";
+            default -> "未确认";
+        };
+        return List.of(text(rs.getString("name")),text(rs.getString("device_eui")),text(rs.getString("display_model")),
+            text(rs.getString("product_name")),version==null?"未绑定":"v"+version,rs.getString("unit_name"),
+            Objects.toString(rs.getString("place_name"),"未指定位置"),text(rs.getString("address")),
+            text(rs.getString("system_type")),text(rs.getString("device_category")),connectivity,fireState,
+            battery==null?"未上报":battery.stripTrailingZeros().toPlainString()+"%",batteryStatus,
+            reportTime==null?"未上报":DEVICE_EXPORT_TIME.format(reportTime));
     }
     private static String filter(Map<String,String> filters,String key){if(filters==null)return null;String value=filters.get(key);return value==null||value.isBlank()?null:value.trim();}
     private static void addEquality(StringBuilder sql,List<Object> args,Map<String,String> filters,String key,String column,int max){String value=filter(filters,key);if(value!=null){DataTransferFilters.selectedIds(List.of(value));if(value.length()>max)throw ApiError.bad("设备范围筛选无效");sql.append(" AND ").append(column).append("=?");args.add(value);}}

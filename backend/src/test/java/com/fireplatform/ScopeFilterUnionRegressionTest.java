@@ -7,8 +7,10 @@ import java.sql.DriverManager;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 class ScopeFilterUnionRegressionTest {
     @Test void unitAndOtherUnitPlaceSubtreeAreUnionedForDevicesAndAlarms() throws Exception {
@@ -38,7 +40,9 @@ class ScopeFilterUnionRegressionTest {
             var jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
             jdbc.execute("CREATE TABLE tenants(id VARCHAR PRIMARY KEY, enabled BOOLEAN)");
             jdbc.execute("CREATE TABLE user_tenant_grants(user_id VARCHAR,tenant_id VARCHAR)");
-            jdbc.execute("CREATE TABLE app_users(id VARCHAR PRIMARY KEY,user_type VARCHAR,tenant_id VARCHAR,enabled BOOLEAN)");
+            jdbc.execute("CREATE TABLE app_users(id VARCHAR PRIMARY KEY,user_type VARCHAR,tenant_id VARCHAR,enabled BOOLEAN,is_protected BOOLEAN DEFAULT FALSE)");
+            jdbc.execute("CREATE TABLE user_device_scopes(user_id VARCHAR,tenant_id VARCHAR,mode VARCHAR,revision BIGINT)");
+            new ResourceDatabasePopulator(new ClassPathResource("db/migration/V97_1__client_platform_operator_scope.sql")).populate(connection);
             jdbc.execute("CREATE TABLE places(id VARCHAR PRIMARY KEY,tenant_id VARCHAR,parent_place_id VARCHAR)");
             jdbc.execute("CREATE TABLE devices(id VARCHAR PRIMARY KEY,tenant_id VARCHAR,place_id VARCHAR)");
             jdbc.update("INSERT INTO tenants VALUES ('a',TRUE),('b',TRUE),('disabled',FALSE),('hidden',TRUE)");
@@ -56,7 +60,7 @@ class ScopeFilterUnionRegressionTest {
             assertThat(jdbc.queryForList("SELECT d.id FROM devices d WHERE " + none.sql(), String.class, none.bindings().toArray())).isEmpty();
             var forged = filter.units("reader", "d", "tenant_id", null, new ScopeFilter.Selection(List.of("hidden", "disabled"), List.of()));
             assertThat(jdbc.queryForList("SELECT d.id FROM devices d WHERE " + forged.sql(), String.class, forged.bindings().toArray())).isEmpty();
-            jdbc.update("INSERT INTO app_users VALUES ('customer','CUSTOMER','b',TRUE)");
+            jdbc.update("INSERT INTO app_users(id,user_type,tenant_id,enabled) VALUES ('customer','CUSTOMER','b',TRUE)");
             var customer = filter.devices("customer", "d", "b", ScopeFilter.Selection.all());
             assertThat(jdbc.queryForList("SELECT d.id FROM devices d WHERE " + customer.sql(), String.class, customer.bindings().toArray()))
                 .containsExactlyInAnyOrder("b-device", "b-other");

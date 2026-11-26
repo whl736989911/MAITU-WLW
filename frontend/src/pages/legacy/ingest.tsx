@@ -62,13 +62,13 @@ export function LegacyIngestPage() {
   }
   const exportFilters = exportKind === 'MESSAGES' ? { state, platform } : { run_id: runId }
 
-  return <main className="space-y-6 p-6">
-    <header><h1 className="text-2xl font-semibold">接入镜像</h1><p className="text-muted-foreground">旧平台报文接收、标准化与旧数据管理。</p></header>
-    {activeTab === 'messages' && <section aria-label="当前页报文状态">
+  return <section className="legacy-ingest-workspace space-y-6 p-6" aria-label="接入镜像">
+    <header className="ingest-workspace-heading"><h1 className="text-2xl font-semibold">接入镜像</h1><p className="text-muted-foreground">旧平台报文接收、标准化与旧数据管理。</p></header>
+    {activeTab === 'messages' && <section aria-label="当前页报文状态" className="ingest-workspace-counts">
       <h2 className="text-sm font-medium text-muted-foreground">当前页状态 · 最多 {pageSize} 条（非全量统计）</h2>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{states.map(value => <Card key={value}><CardHeader><CardTitle className="text-sm font-medium">{stateLabels[value]}</CardTitle></CardHeader><CardContent className="text-2xl font-semibold">{messagesLoaded ? counts[value] : '—'}</CardContent></Card>)}</div>
     </section>}
-    <div className="flex flex-wrap gap-2">
+    <div className="ingest-workspace-tabs flex flex-wrap gap-2">
       <Button variant={activeTab === 'messages' ? 'default' : 'outline'} onClick={() => setActiveTab('messages')}>报文</Button>
       <Button variant={activeTab === 'differences' ? 'default' : 'outline'} onClick={() => setActiveTab('differences')}>对账差异</Button>
       <Button variant={activeTab === 'dictionary' ? 'default' : 'outline'} onClick={() => setActiveTab('dictionary')}>字典导入</Button>
@@ -112,7 +112,7 @@ export function LegacyIngestPage() {
       <section><h2 className="mb-2 font-semibold">事件列表（{detail.events.length}）</h2>{detail.events.length ? <ul className="space-y-2">{detail.events.map((event, index) => <li key={event.id ?? index} className="rounded border p-3"><p>{event.kind} · {text(event.method)}</p><p>{text(event.observed_at)}</p><pre className="whitespace-pre-wrap">{typeof event.params_json === 'string' ? event.params_json : JSON.stringify(event.params_json ?? {}, null, 2)}</pre></li>)}</ul> : <p>暂无事件</p>}</section>
     </div>}</SheetContent></Sheet>
     {exportKind && <ExportSheet kind={exportKind} filters={exportFilters} tenantIds={scopeTenantIds} placeIds={scopePlaceIds} disabled={!scopeInitialized} onClose={() => setExportKind(null)}/>}
-  </main>
+  </section>
 }
 
 function ExportSheet({ kind, filters, tenantIds, placeIds, disabled, onClose }: { kind: LegacyExportKind; filters: { state?: string; platform?: string; run_id?: string }; tenantIds: string[]; placeIds: string[]; disabled: boolean; onClose: () => void }) {

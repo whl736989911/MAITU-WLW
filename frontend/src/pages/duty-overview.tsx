@@ -31,7 +31,7 @@ export function DutyOverviewPage() {
       <PageHelp title="值守统计口径"><div className="form-stack"><p>报警按实际发生时间（ALARM_OCCURRED_AT）统计；接收时间不会替代事件时间。</p><p>报告故障仅含已存 FAULT 事实。观察时间未知的事件单独计数，不纳入日趋势。</p><p>当前离线策略命中、明确上报的 OFFLINE 事件、未上报设备彼此独立；设备列表页不会被用来推算总量。</p><p>物理状态、人工处置与来源报告是不同事实；人工处理不代表硬件恢复。</p></div></PageHelp>
       <Button type="button" variant="outline" disabled={!enabled} onClick={refresh}>刷新概览</Button>
     </PageHeading>
-    <div className="list-toolbar"><div role="group" aria-label="值守概览时间范围">{([7, 30] as const).map(n => <Button key={n} type="button" disabled={!!authorityError} variant={days === n ? 'default' : 'outline'} onClick={() => setDays(n)}>近{n}天</Button>)}</div>
+    <div className={management ? 'list-toolbar overview-query' : 'list-toolbar'}><div role="group" aria-label="值守概览时间范围">{([7, 30] as const).map(n => <Button key={n} type="button" disabled={!!authorityError} aria-pressed={days === n} variant={days === n ? 'default' : 'outline'} onClick={() => setDays(n)}>近{n}天</Button>)}</div>
       {data && <span className="muted-note">事件区间 {data.from} 至 {data.to} · {data.timezone} · 报警按实际发生时间统计</span>}
     </div>
     {empty ? <Empty title="当前范围未选择">清空单位 / 位置范围后不读取或显示其他单位的历史结果。</Empty> : !session.scopeInitialized ? <Loading /> : !enabled ? <Empty title="无概览读取权限" /> : authorityError ? <ErrorNotice error={authorityError} retry={refresh} /> : <>

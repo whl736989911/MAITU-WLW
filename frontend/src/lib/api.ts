@@ -1,5 +1,7 @@
+import { setCustomerResumeTag } from './portal-entry'
 import { useSession } from './store'
 import type { DevicePlaceHistory } from './types'
+import { applyDeviceSort, type DeviceSort } from './device-sort'
 import { alarmHistoryResponse, alarmResponse, alarmsResponse, alarmWorkbenchResponse } from './alarm-json'
 import { changesResponse, changeResponse, definitionsResponse, effectiveResponse, integerToken, policyResponse, revisionInteger, targetsResponse } from './parameter-json'
 import { devicesResponse, taskDetailResponse, tasksResponse } from './processing-json'
@@ -31,7 +33,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     }
   }
   let response: Response
-  try { response = await fetch(`/api${path}`, { ...init, headers, credentials: 'omit', cache: 'no-store' }) }
+  try { response = await fetch(`/api${path}`, { ...init, headers, credentials: init.credentials ?? 'omit', cache: 'no-store' }) }
   catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new ApiError(0, 'NETWORK_ERROR', '无法连接服务端，请检查网络或后端服务；未生成替代数据')
@@ -48,8 +50,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
   return payload as T
 }
-function meResponse(text: string): Pick<AuthResponse, 'user' | 'permissions'> {
-  const payload: unknown = JSON.parse(text)
+function decodeIdentity(payload: unknown): Pick<AuthResponse, 'user' | 'permissions'> {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('会话核验响应格式无效')
   const result = payload as Record<string, unknown>
   if (Object.keys(result).length !== 2 || !Object.hasOwn(result, 'user') || !Object.hasOwn(result, 'permissions') || !Array.isArray(result.permissions) || result.permissions.some(permission => typeof permission !== 'string')) throw new Error('会话核验响应格式无效')
@@ -59,6 +60,21 @@ function meResponse(text: string): Pick<AuthResponse, 'user' | 'permissions'> {
   const userKeys = ['id', 'username', 'name', 'user_type', 'tenant_id', 'must_change_password']
   if (Object.keys(user).length !== userKeys.length || userKeys.some(key => !Object.hasOwn(user, key)) || userKeys.slice(0, 3).some(key => typeof user[key] !== 'string') || (user.user_type !== 'PLATFORM' && user.user_type !== 'CUSTOMER') || (user.tenant_id !== null && typeof user.tenant_id !== 'string') || typeof user.must_change_password !== 'boolean') throw new Error('会话核验响应格式无效')
   return { user: rawUser as AuthResponse['user'], permissions: [...result.permissions] as string[] }
+}
+
+function resumeResponse(text: string): AuthResponse {
+  const payload: unknown = JSON.parse(text)
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('会话恢复响应格式无效')
+  const { access_token, ...identity } = payload as Record<string, unknown>
+  const confirmed = decodeIdentity(identity)
+  if (typeof access_token !== 'string' || !/^[a-zA-Z0-9_-]{43}$/.test(access_token) ||
+      confirmed.user.user_type !== 'CUSTOMER' || !confirmed.user.tenant_id || confirmed.user.must_change_password)
+    throw new Error('用户端会话未获服务端确认')
+  return { access_token, ...confirmed }
+}
+
+function customerAuthCookie() {
+  return useSession.getState().audience === 'customer' ? 'same-origin' : 'omit'
 }
 const json = (value: unknown) => JSON.stringify(value)
 // Customer balance/ledger projections are read-only; reject any shape that is not the agreed array/page.
@@ -85,7 +101,7 @@ export function scopeQuery(path: string, tenantIds?: string[], placeIds?: string
   return `${path}${path.includes('?') ? '&' : '?'}${query}`
 }
 function parameterPath(scope: ParameterScope, scopeId: string, key: string, tenantId?: string) {
-  if (scope !== 'TENANT' && scope !== 'PLACE' && scope !== 'DEVICE') throw new ApiError(400, 'PARAMETER_SCOPE_INVALID', '覆盖层级只允许单位、位置或单设备，全局仍用设置接口')
+  if (scope !== 'TENANT' && scope !== 'PLACE' && scope !== 'GROUP' && scope !== 'DEVICE') throw new ApiError(400, 'PARAMETER_SCOPE_INVALID', '覆盖层级只允许单位、位置、设备分组或单设备，全局仍用设置接口')
   const session = useSession.getState()
   if (session.audience !== 'management') throw new ApiError(403, 'PARAMETERS_MANAGEMENT_ONLY', '客户仅可读取自有设备的安全有效策略')
   const targetUnit = tenantId
@@ -95,23 +111,36 @@ function parameterPath(scope: ParameterScope, scopeId: string, key: string, tena
 }
 export const api = {
   health: (signal?: AbortSignal) => request<Health>('/health', { public: true, signal }),
-  login: (username: string, password: string, audience: Audience) => request<AuthResponse>('/auth/login', { public: true, method: 'POST', body: json({ username, password, audience }) }),
-  me: (signal?: AbortSignal) => request<Pick<AuthResponse, 'user' | 'permissions'>>('/auth/me', { signal, decode: meResponse }),
-  logout: () => request<void>('/auth/logout', { method: 'POST' }),
-  changePassword: (current_password: string, new_password: string) => request<void>('/auth/change-password', { method: 'POST', body: json({ current_password, new_password }) }),
+  login: (username: string, password: string, audience: Audience, tab?: string) => request<AuthResponse>('/auth/login', {
+    public: true, method: 'POST', body: json({ username, password, audience }),
+    ...(audience === 'customer' && tab ? { credentials: 'same-origin', headers: { 'X-Customer-Session': tab } } : {}),
+  }),
+  resumeCustomerSession: (tab: string, signal?: AbortSignal) => request<AuthResponse>('/auth/customer-session', {
+    public: true, method: 'POST', credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
+    headers: { 'X-Customer-Session': tab }, decode: resumeResponse, signal,
+  }),
+  me: (signal?: AbortSignal) => request<Pick<AuthResponse, 'user' | 'permissions'>>('/auth/me', { signal, decode: raw => decodeIdentity(JSON.parse(raw)) }),
+  logout: () => {
+    const credentials = customerAuthCookie()
+    if (credentials === 'same-origin') setCustomerResumeTag(null)
+    return request<void>('/auth/logout', { method: 'POST', credentials, keepalive: true })
+  },
+  changePassword: (current_password: string, new_password: string) => request<void>('/auth/change-password', { method: 'POST', credentials: customerAuthCookie(), body: json({ current_password, new_password }) }),
   tenants: (signal?: AbortSignal) => request<{ items: Tenant[] }>('/management/tenants', { signal }),
   summary: (signal?: AbortSignal, tenantIds?: string[], placeIds?: string[]) => request<Summary>(scopeQuery(`${prefix()}/summary`, tenantIds, placeIds), { tenantScoped: true, tenantOptional: true, signal }),
-  devices: async (page: number, keyword = '', size?: number, signal?: AbortSignal, field?: string, placeId?: string, tenantId?: string, scopeTenantIds?: string[], scopePlaceIds?: string[], filters?: { connectivity?: string; physical_state?: string; integration_state?: string; system_type?: string; device_category?: string }) => {
+  devices: async (page: number, keyword = '', size?: number, signal?: AbortSignal, field?: string, placeId?: string, tenantId?: string, scopeTenantIds?: string[], scopePlaceIds?: string[], filters?: { connectivity?: string; physical_state?: string; integration_state?: string; system_type?: string; device_category?: string; customer_status?: string }, sort?: DeviceSort) => {
     // Keep the new threshold decoder off the eager API bundle; the device route loads it only when reading device rows.
     const battery = await import('./battery-json')
     const params = listQuery(page, size, keyword); if (field) params.set('field', field); if (placeId) params.set('place_id', placeId); if (tenantId) params.set('tenant_id', tenantId)
     if (filters) for (const [key, value] of Object.entries(filters)) if (value !== undefined && value !== '') params.set(key, String(value))
+    applyDeviceSort(params, sort)
     return request<Paginated<Device>>(scopeQuery(`${prefix()}/devices?${params}`, scopeTenantIds, scopePlaceIds), { tenantScoped: true, tenantOptional: true, signal, decode: raw => devicesResponse(raw, battery.batteryRawForRow) })
   },
   alarms: (page: number, size?: number, signal?: AbortSignal, tenantIds?: string[], placeIds?: string[]) => request<Paginated<Alarm>>(scopeQuery(`${prefix()}/alarms?${listQuery(page, size)}`, tenantIds, placeIds), { tenantScoped: true, tenantOptional: true, signal, decode: alarmsResponse }),
-  alarmWorkbench: (filters: AlarmWorkbenchFilters, page: number, size?: number, signal?: AbortSignal, scopeTenantIds?: string[], scopePlaceIds?: string[]) => {
+  alarmWorkbench: (filters: AlarmWorkbenchFilters, page: number, size?: number, signal?: AbortSignal, scopeTenantIds?: string[], scopePlaceIds?: string[], systemType?: string) => {
     if (!Number.isSafeInteger(page) || page < 1 || (size !== undefined && (!Number.isSafeInteger(size) || size < 1))) throw new ApiError(400, 'WORKBENCH_PAGINATION_INVALID', '分页参数未确认')
     const query = new URLSearchParams({ page: String(page) }); if (size !== undefined) query.set('size', String(size))
+    if (systemType) query.set('system_type', systemType)
     for (const key of ['keyword', 'physical_state', 'response_state', 'conclusion', 'occurred_from', 'occurred_to'] as const) { const value = filters[key]; if (value !== null && value !== '') { if (typeof value !== 'string') throw new ApiError(400, 'WORKBENCH_FILTER_INVALID', '查询条件未确认'); query.set(key, value) } }
     return request<AlarmWorkbench>(scopeQuery(`${prefix()}/alarm-workbench?${query}`, scopeTenantIds, scopePlaceIds), { tenantScoped: true, tenantOptional: true, signal, decode: alarmWorkbenchResponse })
   },

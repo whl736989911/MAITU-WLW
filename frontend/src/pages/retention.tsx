@@ -186,6 +186,18 @@ function Content({ permissions, scopeTenantIds, scopePlaceIds }: { permissions: 
     </section>}
     {localError != null && <ErrorNotice error={localError}/>}
 
+    <Card><CardContent>
+      <h2>选择单位配置策略</h2>
+      <p className="muted-note">{canWrite ? '选定单位后可配置三种保留策略、试算和清理。尚未配置的类型不会自动清理。' : '当前账号只有查看权限；选定单位后可查看全部三种策略。'} 本页目标不继承左侧读取范围。</p>
+      {units.loading ? <Loading/> : units.error != null ? <ErrorNotice error={units.error} retry={units.refresh}/> : <div className="field">
+        <Label htmlFor="retention-target-unit">目标单位</Label>
+        <Select id="retention-target-unit" aria-label="目标单位" showSearch optionFilterProp="label" value={target || undefined}
+          placeholder="搜索并明确选择本次操作单位" disabled={locked}
+          options={(units.data ?? []).map(item => ({ value: item.id, label: `${item.name} · ${item.id}` }))}
+          onChange={value => chooseTarget(value ? String(value) : '')}/>
+      </div>}
+      {target && <p className="muted-note">当前操作单位：{targetName}。切换单位会清除未执行的试算；冻结中的请求键和参数不会随单位切换改变。</p>}
+    </CardContent></Card>
     <section className="dashboard-stat-strip" aria-label="保留范围概览">
       <div><span>授权范围单位</span><strong>{scopePage?.authorized_units ?? '未知'}</strong></div>
       <div><span>已配置策略</span><strong>{scopePage?.configured_policies ?? '未知'}</strong></div>
@@ -202,19 +214,6 @@ function Content({ permissions, scopeTenantIds, scopePlaceIds }: { permissions: 
         </TableRow>)}</TableBody></Table>
         <Pager page={scopePage.page} size={scopePage.size} total={scopePage.total} onChange={setOverviewPage}/>
       </> : <Empty title="当前范围没有已配置策略">默认未配置即不启用；没有自动清理。</Empty>}
-    </CardContent></Card>
-
-    <Card><CardContent>
-      <h2>明确操作目标</h2>
-      <p className="muted-note">操作目标只由本页选择，不继承左侧读取范围，也不会自动选择第一行。写入/试算/执行前服务端再次校验单位授权。</p>
-      {units.loading ? <Loading/> : units.error != null ? <ErrorNotice error={units.error} retry={units.refresh}/> : <div className="field">
-        <Label htmlFor="retention-target-unit">目标单位</Label>
-        <Select id="retention-target-unit" aria-label="目标单位" showSearch optionFilterProp="label" value={target || undefined}
-          placeholder="搜索并明确选择本次操作单位" disabled={locked}
-          options={(units.data ?? []).map(item => ({ value: item.id, label: `${item.name} · ${item.id}` }))}
-          onChange={value => chooseTarget(value ? String(value) : '')}/>
-      </div>}
-      {target && <p className="muted-note">当前操作单位：{targetName}。切换单位会清除未执行的试算；冻结中的请求键和参数不会随单位切换改变。</p>}
     </CardContent></Card>
 
     {target && <Card><CardContent>

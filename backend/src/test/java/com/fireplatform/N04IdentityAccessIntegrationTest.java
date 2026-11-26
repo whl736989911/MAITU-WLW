@@ -44,7 +44,7 @@ class N04IdentityAccessIntegrationTest {
         // Child tables first; scope rows reference both identity users and units.
         jdbc.update("DELETE FROM identity_user_metadata");
         for(String table:List.of("duty_fault_handling_history","duty_fault_handlings","legacy_ingest_events","user_device_scope_places","user_device_scope_devices","user_device_scopes","access_user_roles","access_role_permissions","access_roles",
-            "identity_command_records","idempotency_records","alarm_configuration_outcomes","alarm_reminder_schedule","resource_linkage_outcomes","real_device_battery_observations","device_profile_snapshots","profile_rules","device_battery_observations","device_events","alarms","sessions","user_permissions","user_tenant_grants","app_users","devices","places","tenants","audit_log"))
+            "identity_command_records","idempotency_records","alarm_configuration_outcomes","alarm_reminder_schedule","resource_linkage_outcomes","real_device_battery_observations","device_profile_snapshots","profile_rules","device_battery_observations","device_events","alarm_trace_entries","alarms","sessions","user_permissions","user_tenant_grants","app_users","devices","places","tenants","audit_log"))
             jdbc.update("DELETE FROM "+table);
         jdbc.update("UPDATE numeric_settings SET setting_value=20,revision=0 WHERE setting_key='default_page_size'");
         bootstrap.run(new DefaultApplicationArguments());
@@ -467,9 +467,10 @@ class N04IdentityAccessIntegrationTest {
         }).when(deviceReads).devices(org.mockito.ArgumentMatchers.eq(id),org.mockito.ArgumentMatchers.eq("tenant-a"),
             org.mockito.ArgumentMatchers.nullable(String.class),org.mockito.ArgumentMatchers.anyInt(),org.mockito.ArgumentMatchers.nullable(Integer.class),
             org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.nullable(String.class),org.mockito.ArgumentMatchers.nullable(String.class),org.mockito.ArgumentMatchers.nullable(String.class),
-            org.mockito.ArgumentMatchers.any(com.fireplatform.shared.ScopeFilter.Selection.class),org.mockito.ArgumentMatchers.any(com.fireplatform.device.DeviceListFilter.class));
+            org.mockito.ArgumentMatchers.any(com.fireplatform.shared.ScopeFilter.Selection.class),org.mockito.ArgumentMatchers.any(com.fireplatform.device.DeviceListFilter.class),
+            org.mockito.ArgumentMatchers.any(com.fireplatform.device.DeviceListOrder.class));
         try(var executor=Executors.newSingleThreadExecutor()) {
-            var read=executor.submit(()->call(HttpMethod.GET,"/api/management/devices",token,"tenant-a",null,null).andReturn().getResponse());
+            var read=executor.submit(()->call(HttpMethod.GET,"/api/management/devices?sort=last&direction=desc",token,"tenant-a",null,null).andReturn().getResponse());
             try {
                 assertThat(queried.await(15,TimeUnit.SECONDS)).isTrue();
                 call(HttpMethod.PUT,scopePath,root,"tenant-a","output-revoked-scope",assignScope("DEVICE_SET",List.of(),1)).andExpect(status().isOk());
@@ -564,6 +565,45 @@ class N04IdentityAccessIntegrationTest {
         JsonNode listed=body(call(HttpMethod.GET,"/api/management/identity/users?page=1&keyword=n04-validity",root,"tenant-a",null,null).andExpect(status().isOk()));
         assertThat(listed.at("/items/0/valid_until").asText()).isNotBlank();
         assertThat(listed.at("/items/0").has("duty_personnel")).isFalse();
+    }
+
+    @Test void clientPlatformOperatorSeesNewUnitsAndHandlesFaultsWithoutManagementAccess() throws Exception {
+        String root=root();
+        call(HttpMethod.POST,"/api/management/client-platform-operator",root,null,"client-operator-create",
+            Map.of("username","client-admin","name","Client platform operator","initial_password",TARGET))
+            .andExpect(status().isOk());
+        loginResult("client-admin",TARGET,"management").andExpect(status().isUnauthorized());
+        String token=activate("client-admin",TARGET,UPDATED,"customer");
+        call(HttpMethod.GET,"/api/management/tenants",token,null,null,null).andExpect(status().isForbidden());
+
+        jdbc.update("INSERT INTO tenants(id,name) VALUES ('tenant-c','New unit after account creation')");
+        jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,integration_state) VALUES ('device-c','tenant-c','N04 fixture C','n04-c','fixture','C','NORMAL',FALSE,'LEGACY_UNVERIFIED')");
+        var devices=body(call(HttpMethod.GET,"/api/customer/devices?page=1&size=20",token,null,null,null)
+            .andExpect(status().isOk())).path("items");
+        assertThat(devices.findValuesAsText("id")).contains("device-a","device-b","device-c");
+        assertThat(body(call(HttpMethod.GET,"/api/customer/scope-tree",token,null,null,null)
+            .andExpect(status().isOk())).findValuesAsText("id")).contains("tenant-a","tenant-b","tenant-c");
+        var filtered=body(call(HttpMethod.GET,"/api/customer/devices?scope_selected=true&scope_tenant_ids=tenant-c",token,null,null,null)
+            .andExpect(status().isOk())).path("items");
+        assertThat(filtered.findValuesAsText("id")).containsExactly("device-c");
+        String alarmId=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarms(id,tenant_id,device_id,device_name,address,event_type,occurred_at,physical_state,response_state,revision,is_simulated) VALUES (?,'tenant-c','device-c','Fixture C','C','FIRE',CURRENT_TIMESTAMP,'FIRE','UNHANDLED',0,FALSE)",alarmId);
+        var alarm=body(call(HttpMethod.POST,"/api/customer/alarms/"+alarmId+"/review",token,"tenant-c","client-operator-review",
+            Map.of("expected_revision",0,"conclusion","TEST","remark","Controlled review")).andExpect(status().isOk()));
+        assertThat(alarm.path("physical_state").asText()).isEqualTo("FIRE");
+        assertThat(alarm.path("response_state").asText()).isEqualTo("HANDLED");
+        String eventId=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,device_id,kind,method,params_json,observed_at,created_at) VALUES (?,'tenant-c','device-c','FAULT','thing.event.fault','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",eventId);
+        call(HttpMethod.POST,"/api/customer/duty/faults/"+eventId+"/handling",token,"tenant-a","client-operator-wrong-unit",
+            Map.of("expected_revision",0,"handled",true,"note","Wrong unit")).andExpect(status().isNotFound());
+        JsonNode handled=body(call(HttpMethod.POST,"/api/customer/duty/faults/"+eventId+"/handling",token,"tenant-c","client-operator-handle",
+            Map.of("expected_revision",0,"handled",true,"note","Controlled fault")).andExpect(status().isOk()));
+        assertThat(handled.path("tenant_id").asText()).isEqualTo("tenant-c");
+        assertThat(jdbc.queryForObject("SELECT physical_state FROM devices WHERE id='device-c'",String.class)).isEqualTo("NORMAL");
+        jdbc.update("UPDATE tenants SET enabled=FALSE WHERE id='tenant-c'");
+        var remaining=body(call(HttpMethod.GET,"/api/customer/devices",token,null,null,null).andExpect(status().isOk()));
+        assertThat(remaining.path("items").findValuesAsText("id")).doesNotContain("device-c");
+        call(HttpMethod.GET,"/api/customer/alarms/"+alarmId,token,"tenant-c",null,null).andExpect(status().isForbidden());
     }
 
     @Test void customerLocalFaultDispositionRequiresItsOwnPermissionAndCurrentDeviceScope() throws Exception {

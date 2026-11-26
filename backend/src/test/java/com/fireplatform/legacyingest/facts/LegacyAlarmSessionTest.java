@@ -12,7 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 class LegacyAlarmSessionTest {
     private final JdbcTemplate jdbc = LegacyFactSchema.migrate("legacy-alarm-session");
-    private final LegacyFactApplier applier = new LegacyFactApplier(jdbc, new ObjectMapper(), org.mockito.Mockito.mock(com.fireplatform.identity.CoordinationFence.class), new LegacyAlarmLifecycleFixture(jdbc), org.mockito.Mockito.mock(com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer.class), org.mockito.Mockito.mock(com.fireplatform.integration.BusinessFactPublisher.class));
+    private final LegacyFactApplier applier = new LegacyFactApplier(jdbc, new ObjectMapper(), org.mockito.Mockito.mock(com.fireplatform.identity.CoordinationFence.class), new LegacyAlarmLifecycleFixture(jdbc), org.mockito.Mockito.mock(com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer.class));
     private final com.fireplatform.configuration.RuntimeConfig runtime=runtimeConfig();
     private final com.fireplatform.configuration.DatabaseTime scannerTime=new com.fireplatform.configuration.DatabaseTime(jdbc,runtime);
     private final OfflineEventTask offlineTask=new OfflineEventTask(jdbc,new com.fireplatform.configuration.OfflinePolicySql(runtime),scannerTime);

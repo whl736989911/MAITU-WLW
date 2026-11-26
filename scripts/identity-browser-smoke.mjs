@@ -29,11 +29,11 @@ const server = spawn(java, ['-Djava.io.tmpdir=' + env.TMPDIR, '-jar', jar], { cw
 let browser
 const checks = [], errors = []
 async function login(page, username, password, customer = false) {
-  await page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
-  await page.getByRole('button', { name: customer ? '客户端' : '管理端', exact: true }).click()
+  const entry = customer ? '/customer/login' : '/management/login'
+  if (new URL(page.url()).pathname !== entry) await page.goto(new URL(entry, url).href)
   await page.getByLabel('账户', { exact: true }).fill(username)
   await page.getByLabel('密码', { exact: true }).fill(password)
-  await page.getByRole('button', { name: customer ? '登录客户端' : '登录管理端', exact: true }).click()
+  await page.getByRole('button', { name: '登录', exact: true }).click()
 }
 async function changeInitial(page, current, updated) {
   await page.getByRole('heading', { name: '更新您的初始密码' }).waitFor()
@@ -41,7 +41,7 @@ async function changeInitial(page, current, updated) {
   await page.getByLabel('新密码', { exact: true }).fill(updated)
   await page.getByLabel('确认新密码', { exact: true }).fill(updated)
   await page.getByRole('button', { name: '更新密码并重新登录', exact: true }).click()
-  await page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
+  await page.getByLabel('账户', { exact: true }).waitFor()
 }
 function responseFor(page, ending, method) { return page.waitForResponse(r => r.url().endsWith(ending) && r.request().method() === method) }
 try {
@@ -137,7 +137,8 @@ try {
   checks.push('stale account revision returns 409; UI blocks overwrite and requires refresh/reopen')
   await page.getByRole('dialog').waitFor({ state: 'hidden' })
   await client.getByRole('button', { name: '刷新数据', exact: true }).click()
-  await client.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
+  await client.getByRole('button', { name: '登录', exact: true }).waitFor()
+  assert.equal(new URL(client.url()).pathname, '/customer/login')
   await login(client, 'browser-client', resetPassword, true)
   await client.getByRole('heading', { name: '更新您的初始密码' }).waitFor()
   checks.push('admin credential reset revokes an already-open client session and forces another password change')

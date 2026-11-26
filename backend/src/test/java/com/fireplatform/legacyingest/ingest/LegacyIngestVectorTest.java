@@ -53,6 +53,30 @@ class LegacyIngestVectorTest {
         assertEquals(13, telemetry.path("snr").asInt());
     }
     @Test void tyyVectorExtractsHexPayloadAndCompactUtcTime()throws Exception{String raw="{\"notifyType\":\"deviceDataChanged\",\"service\":{\"serviceType\":\"ServiceAPI\",\"data\":{\"payload\":\"7e016ae7ac2807fa004001006508\"},\"eventTime\":\"20261101T211632Z\",\"serviceId\":\"ServiceAPI\"},\"deviceId\":\"aep-device\"}";var parsed=new TyyTurboNormalizer(mapper).parse(mapper.readTree(raw),"tyy_turbo",null);assertTrue(parsed.pendingDecoder());assertEquals("2026-11-01T21:16:32Z",parsed.observedAt().toString());assertTrue(parsed.events().getFirst().paramsJson().contains("7e016ae7ac28"));}
+
+    @Test void lorawanBatterySentinelDoesNotSupplyABatteryReading() throws Exception {
+        var body = mapper.readTree("""
+            {"deveui":"0000000000000001","battery":255,"fcnt":250,"rssi":-129,"datetime":"2026-11-01T20:28:12Z"}""");
+        var normalizer = new LorawanTurboNormalizer(mapper);
+        var parsed = normalizer.parse(body, "lorawan_turbo", null);
+        assertNull(parsed.battery());
+        var params = mapper.readTree(parsed.events().getFirst().paramsJson());
+        assertFalse(params.hasNonNull("battery"));
+        assertEquals(-129, params.required("rssi").intValue());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) body).put("battery", 0);
+        assertEquals(0, normalizer.parse(body, "lorawan_turbo", null).battery().intValueExact());
+    }
+
+    @Test void tyyUsesNestedServiceIdentityAndDataTimestampWhenEnvelopeOmitsThem() throws Exception {
+        var body = mapper.readTree("""
+            {"notifyType":"deviceDataChanged","service":{"serviceType":"ServiceAPI",
+             "data":{"payload":"7e0100","eventTime":"20261101T211632Z"},
+             "deviceId":"tyy-terminal","gatewayId":"tyy-gateway"}}""");
+        var parsed = new TyyTurboNormalizer(mapper).parse(body, "tyy_turbo", null);
+        assertEquals("tyy-terminal", parsed.vendorDeviceId());
+        assertEquals("2026-11-01T21:16:32Z", parsed.observedAt().toString());
+        assertTrue(parsed.pendingDecoder());
+    }
     @Test void ttlVectorUsesHeartbeatAndUtcPlusEightTime()throws Exception{var parsed=new FormTtlNormalizer(mapper).parse(vector("ttl_to_tsf"),"formttl","telemetry");assertFalse(parsed.pendingDecoder());assertEquals("HEARTBEAT",parsed.kind());assertEquals(1,parsed.events().size());assertEquals("2026-10-30T06:44:16Z",parsed.observedAt().toString());assertEquals("100",parsed.battery().toPlainString());}
     @Test void formTtlFaultWithoutSourceTimeRemainsFaultWithUnknownObservationTime() throws Exception {
         var parsed = new FormTtlNormalizer(mapper).parse(
@@ -62,6 +86,26 @@ class LegacyIngestVectorTest {
         assertNull(parsed.events().getFirst().observedAt());
         assertNull(parsed.observedAt());
     }
+
+    @Test void cat1GenericAlarmsPathDoesNotTurnAnUntypedReportIntoAnAlarm() throws Exception {
+        var parsed = new FormTtlNormalizer(mapper).parse(
+            mapper.readTree("""
+                {"deviceId":"sample","params":{"temperature_value":26,"battery":100}}"""),
+            "formttl", "alarms");
+        assertEquals("OTHER", parsed.events().getFirst().kind());
+        assertEquals(26, mapper.readTree(parsed.events().getFirst().paramsJson()).required("temperature_value").intValue());
+        assertNull(parsed.observedAt());
+    }
+
+    @Test void cat1LegacyHearBeatTypeTakesPrecedenceOverTheGenericAlarmsPath() throws Exception {
+        var parsed = new FormTtlNormalizer(mapper).parse(
+            mapper.readTree("""
+                {"deviceId":"sample","messageType":"HearBeat","ts":"2026-11-20T17:53:00+08:00","params":{"battery":100}}"""),
+            "formttl", "alarms");
+        assertEquals("HEARTBEAT", parsed.events().getFirst().kind());
+        assertEquals("2026-11-20T09:53:00Z", parsed.observedAt().toInstant().toString());
+    }
+
     private record Fixture(LegacyIngestService service,JdbcTemplate jdbc,LegacyDecodeService decoder,LegacyEventSink sink) { }
     private Fixture fixture(String legacyProductId,boolean decode)throws Exception{
         JdbcTemplate jdbc=mock(JdbcTemplate.class);LegacyDecodeService decoder=mock(LegacyDecodeService.class);LegacyEventSink sink=mock(LegacyEventSink.class);

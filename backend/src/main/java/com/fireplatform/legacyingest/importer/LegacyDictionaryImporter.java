@@ -36,6 +36,13 @@ public class LegacyDictionaryImporter {
     private record Place(String id,String name) { }
     private record VersionCandidate(String id,String productId,String productName,long version,String legacyProductId,int attributes) { }
     private record Tsv(List<String> headers,List<List<String>> rows,int emptyLines) { }
+    private static final Tsv EMPTY_TSV = new Tsv(List.of(),List.of(),0);
+    private static final String EXCEL_PLATFORMS = "excel-product-platform.tsv";
+    // Source catalogs also contain identifiers, service arguments and control flags. Only
+    // known measurement fields may become telemetry; keep all other archive rows by ID.
+    private static final Set<String> LEGACY_MEASUREMENT_FLAGS = Set.of(
+        "heartbeat","temperature","temperature_value","smoke_value","smoke_concentration","battery",
+        "humidity","rssi","rsrp","snr","sinr");
     private record PlaceImport(int imported,int differences,String hierarchySha256,int hierarchyApplied,int hierarchySkipped) { }
     private record HierarchyImport(int differences,int applied,int skipped,String sourceSha256) { }
     private record ProductImport(int products,Map<String,String> versionsByLegacyId,int differences) { }
@@ -60,20 +67,24 @@ public class LegacyDictionaryImporter {
         Tsv products=read(root.resolve("legacy/products.tsv"));
         Tsv attributes=read(root.resolve("legacy/product_attrs.tsv"));
 
-        Set<String> placeIds=new HashSet<>();
-        for(List<String> row:places.rows()) placeIds.add(value(places,row,"p_id").trim());
+        Set<List<String>> placeKeys=new HashSet<>();
+        for(List<String> row:places.rows()) placeKeys.add(List.of(value(places,row,"p_cid").trim(),value(places,row,"p_id").trim()));
 
         Map<String,Integer> attributeCounts=new HashMap<>();
         for(List<String> row:attributes.rows()) {
             String productId=value(attributes,row,"pa_pid").trim();
             if(!productId.isEmpty()) attributeCounts.merge(productId,1,Integer::sum);
         }
+        boolean explicitProducts=devices.headers().contains("d_product_id");
+        Set<String> productIds=new HashSet<>();
         Map<String,Map<String,Integer>> candidatesByModel=new HashMap<>();
         for(List<String> row:products.rows()) {
             String pId=value(products,row,"p_id").trim(), model=value(products,row,"p_model").trim();
-            if(!pId.isEmpty()&&!model.isEmpty())
+            if(!pId.isEmpty()&&!model.isEmpty()) {
+                productIds.add(pId);
                 candidatesByModel.computeIfAbsent(model,ignored->new HashMap<>())
                     .merge(pId,attributeCounts.getOrDefault(pId,0),Math::max);
+            }
         }
 
         Map<String,Integer> deviceIdCounts=new HashMap<>(), euiCounts=new HashMap<>();
@@ -90,8 +101,14 @@ public class LegacyDictionaryImporter {
             if(deviceId.isEmpty()||eui.isEmpty()||deviceIdCounts.getOrDefault(deviceId,0)>1||euiCounts.getOrDefault(eui,0)>1) {
                 identityInvalid.add(example); continue;
             }
-            if(!placeIds.contains(value(devices,row,"d_pid").trim())) {
+            if(!placeKeys.contains(List.of(value(devices,row,"d_company_id").trim(),value(devices,row,"d_pid").trim()))) {
                 placeMissing.add(example); continue;
+            }
+            if(explicitProducts) {
+                String productId=value(devices,row,"d_product_id").trim();
+                if(productIds.contains(productId)) importable.add(new PreviewExample(pId,model,productId));
+                else modelUnmatched.add(example);
+                continue;
             }
             Map<String,Integer> candidates=candidatesByModel.getOrDefault(model,Map.of());
             if(candidates.isEmpty()) { modelUnmatched.add(example); continue; }
@@ -108,7 +125,12 @@ public class LegacyDictionaryImporter {
         Path root=appendix();
         try {
             MessageDigest digest=MessageDigest.getInstance("SHA-256");
-            for(String name:List.of("legacy/companies.tsv","legacy/places.tsv","legacy/products.tsv","legacy/product_attrs.tsv")) {
+            boolean organizations=includesOrganizations(root);
+            var sources=new ArrayList<String>();
+            if(organizations) sources.addAll(List.of("legacy/companies.tsv","legacy/places.tsv"));
+            sources.addAll(List.of("legacy/products.tsv","legacy/product_attrs.tsv"));
+            if(Files.isRegularFile(root.resolve(EXCEL_PLATFORMS))) sources.add(EXCEL_PLATFORMS);
+            for(String name:sources) {
                 digest.update(name.getBytes(StandardCharsets.UTF_8)); digest.update((byte)0);
                 digest.update(Files.readAllBytes(root.resolve(name)));
             }
@@ -119,7 +141,7 @@ public class LegacyDictionaryImporter {
                     digest.update(Files.readAllBytes(file));
                 }
             }
-            Path hierarchy=hierarchyPath();
+            Path hierarchy=organizations?hierarchyPath():null;
             if(hierarchy!=null&&Files.isRegularFile(hierarchy)) {
                 digest.update("hierarchy".getBytes(StandardCharsets.UTF_8)); digest.update((byte)0);
                 digest.update(Files.readAllBytes(hierarchy));
@@ -141,8 +163,11 @@ public class LegacyDictionaryImporter {
     /** Counts the source and existing conflicts without mutating any table. */
     public DictionaryPreview previewDictionaries() {
         Path root=appendix(); String sha=sourceDigest();
-        Tsv companies=read(root.resolve("legacy/companies.tsv")), places=read(root.resolve("legacy/places.tsv"));
+        boolean organizations=includesOrganizations(root);
+        Tsv companies=organizations?read(root.resolve("legacy/companies.tsv")):EMPTY_TSV;
+        Tsv places=organizations?read(root.resolve("legacy/places.tsv")):EMPTY_TSV;
         Tsv products=read(root.resolve("legacy/products.tsv")), attributes=read(root.resolve("legacy/product_attrs.tsv"));
+        readExcelPlatforms(root,products);
         int damaged=0,duplicateModels=0; Set<String> uniqueProducts=new HashSet<>();
         for(List<String> row:products.rows()) {
             String pId=value(products,row,"p_id").trim(), model=value(products,row,"p_model").trim();
@@ -165,10 +190,12 @@ public class LegacyDictionaryImporter {
             else if(!tenantId.equals(row2[0])||!legacyId.equals(row2[1])) placesIdentityConflict++;
         }
         int decoderFiles=0; Path codecs=root.resolve("codecs");
-        if(Files.isDirectory(codecs)) try(var files=Files.list(codecs)) { decoderFiles=(int)files.filter(Files::isRegularFile).count(); } catch(IOException e) { throw ApiError.bad("旧平台解码器目录不可读取"); }
+        if(Files.isDirectory(codecs)) try(var files=Files.list(codecs)) {
+            decoderFiles=(int)files.filter(f->f.getFileName().toString().endsWith(".js")&&Files.isRegularFile(f)).count();
+        } catch(IOException e) { throw ApiError.bad("旧平台解码器目录不可读取"); }
         int versionsExisting=count("SELECT COUNT(DISTINCT legacy_product_id) FROM product_versions WHERE legacy_product_id IS NOT NULL");
         int decodersExisting=count("SELECT COUNT(DISTINCT legacy_product_id) FROM legacy_product_decoders WHERE revision=1");
-        LegacyPlaceHierarchy hierarchy=placeHierarchy();
+        LegacyPlaceHierarchy hierarchy=organizations?placeHierarchy():null;
         int hierarchyRows=hierarchy==null?0:hierarchy.places().size();
         int legacyUnits=count("SELECT COUNT(*) FROM tenants WHERE id LIKE 'LEGACY-%'");
         int newCompanies=(int)sourceCompanyIds.stream().filter(id->{
@@ -176,7 +203,7 @@ public class LegacyDictionaryImporter {
         return new DictionaryPreview(sha,companies.rows().size(),places.rows().size(),uniqueProducts.size(),attributes.rows().size(),
             decoderFiles,damaged,duplicateModels,companies.emptyLines()+places.emptyLines()+products.emptyLines()+attributes.emptyLines(),
             placesTenantMissing,placesIdentityConflict,placesArchived,versionsExisting,decodersExisting,
-            hierarchy!=null,hierarchyRows,legacyUnits+newCompanies);
+            hierarchy!=null,hierarchyRows,organizations?legacyUnits+newCompanies:0);
     }
 
     /** Read-only device classification; categories describe conflicts and may overlap where import stops at the first one. */
@@ -189,6 +216,7 @@ public class LegacyDictionaryImporter {
         Set<String> placeKeys=new HashSet<>();
         jdbc.query("SELECT tenant_id,legacy_place_id FROM places WHERE archived_at IS NULL",(rs,rowNum)->placeKeys.add(rs.getString(1)+"\u0000"+rs.getString(2)));
         Map<String,List<VersionCandidate>> candidateCache=new HashMap<>();
+        boolean explicitProducts=devices.headers().contains("d_product_id");
         Map<String,Object[]> existingDevices=new HashMap<>(),euiOwners=new HashMap<>();
         jdbc.query("SELECT id,tenant_id,device_eui,archived_at IS NOT NULL FROM devices WHERE id LIKE 'LEGACY-TSF-%'",(rs,rowNum)->{
             Object[] value=new Object[]{rs.getString(2),rs.getString(3),rs.getBoolean(4)};
@@ -213,9 +241,13 @@ public class LegacyDictionaryImporter {
             String model=value(devices,row,"d_model").trim();
             if(vendorId.isEmpty()||!claimedIds.add(deviceId)) { identityInvalid++; continue; }
             if(!placeKeys.contains(tenantId+"\u0000"+legacyPlace)) { placeMissing++; continue; }
-            List<VersionCandidate> candidates=candidateCache.computeIfAbsent(model,this::versionCandidates);
+            String productKey=explicitProducts?value(devices,row,"d_product_id").trim():model;
+            List<VersionCandidate> candidates=candidateCache.computeIfAbsent(productKey,key->versionCandidates(key,explicitProducts));
             if(candidates.isEmpty()) { modelUnmatched++; continue; }
-            if(candidates.size()>1) modelAmbiguous++; else modelSingle++;
+            if(candidates.size()>1) {
+                modelAmbiguous++;
+                if(explicitProducts) continue;
+            } else modelSingle++;
             Object[] current=existingDevices.get(deviceId);
             if(current!=null) {
                 if(Boolean.TRUE.equals(current[2])) { archived++; continue; }
@@ -268,21 +300,25 @@ public class LegacyDictionaryImporter {
      */
     public ImportStats importDictionaries(String actorId) {
         String runId=UUID.randomUUID().toString(); Path root=appendix();
-        Tsv companies=read(root.resolve("legacy/companies.tsv")); Tsv places=read(root.resolve("legacy/places.tsv"));
+        boolean organizations=includesOrganizations(root);
+        Tsv companies=organizations?read(root.resolve("legacy/companies.tsv")):EMPTY_TSV;
+        Tsv places=organizations?read(root.resolve("legacy/places.tsv")):EMPTY_TSV;
         Tsv products=read(root.resolve("legacy/products.tsv")); Tsv attributes=read(root.resolve("legacy/product_attrs.tsv"));
+        var excelPlatforms=readExcelPlatforms(root,products);
         int differences=0;
         differences+=importCompanies(companies,runId);
-        PlaceImport placeImport=importPlaces(places,runId,placeHierarchy());
+        PlaceImport placeImport=organizations?importPlaces(places,runId,placeHierarchy()):new PlaceImport(0,0,null,0,0);
         differences+=placeImport.differences();
         ProductImport imported=importProducts(products,runId);
         differences+=imported.differences();
+        saveExcelPlatforms(excelPlatforms,imported.versionsByLegacyId());
         int attributeCount=importAttributes(attributes,imported.versionsByLegacyId(),runId);
         int decoderCount=importDecoders(root,imported.versionsByLegacyId().keySet(),runId);
         differences+=emptyLineDifference(runId,"companies.tsv",companies.emptyLines());
         differences+=emptyLineDifference(runId,"places.tsv",places.emptyLines());
         differences+=emptyLineDifference(runId,"products.tsv",products.emptyLines());
         differences+=emptyLineDifference(runId,"product_attrs.tsv",attributes.emptyLines());
-        grantLegacyTenants(actorId,"legacy-dictionaries");
+        if(organizations) grantLegacyTenants(actorId,"legacy-dictionaries");
         return new ImportStats(count("SELECT COUNT(*) FROM tenants WHERE id LIKE 'LEGACY-%'"),placeImport.imported(),imported.products(),count("SELECT COUNT(*) FROM product_versions WHERE legacy_product_id IS NOT NULL"),attributeCount,decoderCount,differences,placeImport.hierarchySha256()==null?null:runId,placeImport.hierarchySha256(),placeImport.hierarchyApplied(),placeImport.hierarchySkipped());
     }
     @Transactional
@@ -317,6 +353,8 @@ public class LegacyDictionaryImporter {
         Path root=appendix(); Tsv devices=read(root.resolve("legacy/devices_tsf.tsv"));
         Set<String> selectedCompanies=new HashSet<>(); for(String id:companyIds) if(id!=null&&!id.isBlank()) selectedCompanies.add(id.trim());
         if(selectedCompanies.isEmpty()) for(List<String> row:devices.rows()) selectedCompanies.add(value(devices,row,"d_company_id").trim());
+        boolean explicitProducts=devices.headers().contains("d_product_id");
+        Map<String,List<VersionCandidate>> candidateCache=new HashMap<>();
         int importedDevices=0,importedAliases=0,differences=0;
         for(List<String> row:devices.rows()) {
             if(!selectedCompanies.contains(value(devices,row,"d_company_id").trim())) continue;
@@ -326,8 +364,13 @@ public class LegacyDictionaryImporter {
             String model=value(devices,row,"d_model").trim();
             List<Place> places=jdbc.query("SELECT id,name FROM places WHERE tenant_id=? AND legacy_place_id=? AND archived_at IS NULL",(rs,rowNum)->new Place(rs.getString(1),rs.getString(2)),tenantId,legacyPlace);
             if(places.isEmpty()) { differences+=differenceKind(runId,"TENANT_UNASSIGNED","PILOT_PLACE_MISSING",legacyId,null,"场所未在租户 "+tenantId+" 下找到，d_pid="+legacyPlace+"；设备未导入"); continue; }
-            List<VersionCandidate> candidates=versionCandidates(model);
-            if(candidates.isEmpty()) { differences+=difference(runId,"PILOT_PRODUCT_UNMAPPED",legacyId,null,"d_model="+model+" 未匹配到旧产品版本；设备未导入"); continue; }
+            String productKey=explicitProducts?value(devices,row,"d_product_id").trim():model;
+            List<VersionCandidate> candidates=candidateCache.computeIfAbsent(productKey,key->versionCandidates(key,explicitProducts));
+            if(candidates.isEmpty()||(explicitProducts&&candidates.size()!=1)) {
+                differences+=difference(runId,"PILOT_PRODUCT_UNMAPPED",legacyId,null,
+                        (explicitProducts?"d_product_id=":"d_model=")+productKey+" 无法唯一绑定旧产品版本；设备未导入");
+                continue;
+            }
             boolean ambiguous=candidates.size()>1;
             String candidateIds=candidates.stream().map(VersionCandidate::legacyProductId).toList().toString();
             Place place=places.get(0); String specific=value(devices,row,"d_address").trim();
@@ -344,7 +387,7 @@ public class LegacyDictionaryImporter {
                 if(eui.isBlank()) { differences+=difference(runId,"PILOT_DEVICE_EUI_MISSING",legacyId,null,"设备缺少 d_eui，未导入"); continue; }
                 List<String> euiOwner=jdbc.query("SELECT id FROM devices WHERE device_eui=?",(rs,rowNum)->rs.getString(1),eui);
                 if(!euiOwner.isEmpty()) { differences+=difference(runId,"PILOT_EUI_CONFLICT",legacyId,euiOwner.getFirst(),"d_eui 已属于其他设备，未导入且未重绑定"); continue; }
-                String state="3".equals(value(devices,row,"d_status").trim())?"FIRE":"UNKNOWN";
+                String state=!explicitProducts&&"3".equals(value(devices,row,"d_status").trim())?"FIRE":"UNKNOWN";
                 if(ambiguous) {
                     differences+=difference(runId,"PILOT_MODEL_AMBIGUOUS",legacyId,null,"d_model="+model+" 命中候选 "+candidateIds+"，候选数 "+candidates.size()+"；未自动绑定产品版本，创建设备并保留待绑定状态");
                     jdbc.update("INSERT INTO devices(id,tenant_id,name,device_eui,model,address,physical_state,is_simulated,place_id,product_id,product_version_id,product_name,version_number,revision,integration_state) VALUES (?,?,?,?,?,?,?,FALSE,?,NULL,NULL,NULL,NULL,0,'PENDING_INTEGRATION')",
@@ -362,9 +405,11 @@ public class LegacyDictionaryImporter {
         return new PilotDeviceImportStats(importedDevices,importedAliases,differences);
     }
 
-    private List<VersionCandidate> versionCandidates(String model) {
-        return jdbc.query("SELECT pv.id,pv.product_id,p.name,pv.version_number,pv.legacy_product_id,COUNT(a.attribute_key) AS attribute_count FROM product_versions pv JOIN products p ON p.id=pv.product_id LEFT JOIN product_version_attributes a ON a.product_version_id=pv.id WHERE p.model=? AND pv.legacy_product_id IS NOT NULL AND pv.schema_format='LEGACY_ATTR_JS_V1' GROUP BY pv.id,pv.product_id,p.name,pv.version_number,pv.legacy_product_id ORDER BY COUNT(a.attribute_key) DESC,pv.version_number,pv.legacy_product_id",
-            (rs,rowNum)->new VersionCandidate(rs.getString(1),rs.getString(2),rs.getString(3),rs.getLong(4),rs.getString(5),rs.getInt(6)),model);
+    private List<VersionCandidate> versionCandidates(String key,boolean explicitProduct) {
+        if(key.isBlank()) return List.of();
+        String match=explicitProduct?"pv.legacy_product_id":"p.model";
+        return jdbc.query("SELECT pv.id,pv.product_id,p.name,pv.version_number,pv.legacy_product_id,COUNT(a.attribute_key) AS attribute_count FROM product_versions pv JOIN products p ON p.id=pv.product_id LEFT JOIN product_version_attributes a ON a.product_version_id=pv.id WHERE "+match+"=? AND pv.legacy_product_id IS NOT NULL AND pv.schema_format='LEGACY_ATTR_JS_V1' GROUP BY pv.id,pv.product_id,p.name,pv.version_number,pv.legacy_product_id ORDER BY COUNT(a.attribute_key) DESC,pv.version_number,pv.legacy_product_id",
+            (rs,rowNum)->new VersionCandidate(rs.getString(1),rs.getString(2),rs.getString(3),rs.getLong(4),rs.getString(5),rs.getInt(6)),key);
     }
 
     private int insertAlias(String runId,String tenantId,String deviceId,String legacyId,String kind,String value) {
@@ -535,13 +580,16 @@ public class LegacyDictionaryImporter {
             if(!existingVersions.isEmpty()) {
                 Object[] existing=existingVersions.getFirst();
                 versions.put(pId,(String)existing[0]);
+                jdbc.update("UPDATE product_versions SET legacy_product_name=? WHERE id=? AND (legacy_product_name IS NULL OR legacy_product_name<>?)",
+                    p.name(),existing[0],p.name());
                 boolean differs=((Long)existing[1]).longValue()!=versionNumber
                     || !"LEGACY_ATTR_JS_V1".equals(existing[2])
                     || existing[3]==null || ((Long)existing[3]).longValue()!=1L;
                 if(differs) differences+=difference(runId,"VERSION_METADATA_PRESERVED",pId,(String)existing[0],"产品版本字段与来源不同，保留本地版本号/格式/解码器修订");
             } else {
                 String versionId=stableId("LEGACY-VERSION",pId); versions.put(pId,versionId);
-                jdbc.update("INSERT INTO product_versions(id,product_id,version_number,status,schema_json,capabilities_json,created_at,schema_format,legacy_product_id,legacy_decoder_revision) VALUES (?,?,?,'DRAFT','{}','{}',?,'LEGACY_ATTR_JS_V1',?,1)",versionId,id,versionNumber,Timestamp.from(Instant.now()),pId);
+                jdbc.update("INSERT INTO product_versions(id,product_id,version_number,status,schema_json,capabilities_json,created_at,schema_format,legacy_product_id,legacy_decoder_revision,legacy_product_name) VALUES (?,?,?,'DRAFT','{}','{}',?,'LEGACY_ATTR_JS_V1',?,1,?)",
+                    versionId,id,versionNumber,Timestamp.from(Instant.now()),pId,p.name());
             }
             if(isDirtyManufacturer(value(data,row,"p_manufacturer"))) { difference(runId,"DIRTY_MANUFACTURER",pId,null,"manufacturer 已归一为 未标注"); differences++; }
         }
@@ -556,13 +604,25 @@ public class LegacyDictionaryImporter {
         for(List<String> row:data.rows()) {
             String productId=value(data,row,"pa_pid").trim(), versionId=versions.get(productId); if(versionId==null) continue;
             String attrId=value(data,row,"pa_id").trim(); if(attrId.isBlank()) { difference(runId,"DAMAGED_ATTRIBUTE",productId,null,"属性缺少 pa_id，记录未导入"); continue; }
-            String type=value(data,row,"pa_data_type").trim(); if(type.isBlank()||type.equalsIgnoreCase("NULL")) type="unknown";
+            String sourceType=value(data,row,"pa_data_type").trim();
+            if(sourceType.isBlank()||sourceType.equalsIgnoreCase("NULL")) sourceType="unknown";
+            String flag=value(data,row,"pa_flag").trim();
+            boolean measurement="1".equals(value(data,row,"pa_type").trim()) && LEGACY_MEASUREMENT_FLAGS.contains(flag)
+                && switch(sourceType) { case "1","2","3","6" -> true; default -> false; };
+            String key=measurement?flag:attrId, type=measurement?"LEGACY_NUMBER":sourceType;
             String range=value(data,row,"pa_data_range").trim(), enumJson=null; BigDecimal min=null,max=null;
             try { if(range.startsWith("[")||range.startsWith("{")) enumJson=range; else { String[] bounds=range.split("\\s*(?:\\.\\.|,|~)\\s*",-1); if(bounds.length==2) { min=new BigDecimal(bounds[0]); max=new BigDecimal(bounds[1]); } } } catch(NumberFormatException ignored) { min=null; max=null; }
             String attrName=value(data,row,"pa_name").isBlank()?attrId:value(data,row,"pa_name"), unit=nullable(value(data,row,"pa_unit"));
             var existingRows=jdbc.query("SELECT name,unit,data_type,enum_json,num_min,num_max,legacy_attr_id FROM product_version_attributes WHERE product_version_id=? AND attribute_key=?",
-                (rs,rowNum)->new Object[]{rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getBigDecimal(5),rs.getBigDecimal(6),rs.getString(7)},versionId,attrId);
-            if(existingRows.isEmpty()) jdbc.update("INSERT INTO product_version_attributes(product_version_id,attribute_key,name,unit,data_type,enum_json,num_min,num_max,legacy_attr_id) VALUES (?,?,?,?,?,?,?,?,?)",versionId,attrId,attrName,unit,type,enumJson,min,max,attrId);
+                (rs,rowNum)->new Object[]{rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getBigDecimal(5),rs.getBigDecimal(6),rs.getString(7)},versionId,key);
+            if(existingRows.isEmpty()) {
+                // Re-import moves the former ID-keyed row without overwriting its local label/unit.
+                int moved=measurement?jdbc.update("""
+                    UPDATE product_version_attributes SET attribute_key=?,data_type=?
+                    WHERE product_version_id=? AND attribute_key=? AND legacy_attr_id=? AND data_type=?
+                    """,key,type,versionId,attrId,attrId,sourceType):0;
+                if(moved==0) jdbc.update("INSERT INTO product_version_attributes(product_version_id,attribute_key,name,unit,data_type,enum_json,num_min,num_max,legacy_attr_id) VALUES (?,?,?,?,?,?,?,?,?)",versionId,key,attrName,unit,type,enumJson,min,max,attrId);
+            }
             else {
                 Object[] existing=existingRows.getFirst();
                 boolean same=Objects.equals(existing[0],attrName)&&Objects.equals(existing[1],unit)&&Objects.equals(existing[2],type)
@@ -573,6 +633,45 @@ public class LegacyDictionaryImporter {
             count++;
         }
         return count;
+    }
+
+    private static boolean includesOrganizations(Path root) {
+        boolean companies=Files.isRegularFile(root.resolve("legacy/companies.tsv"));
+        boolean places=Files.isRegularFile(root.resolve("legacy/places.tsv"));
+        if(companies!=places || (!companies&&!Files.isRegularFile(root.resolve(EXCEL_PLATFORMS))))
+            throw ApiError.bad("旧平台组织归档不完整；仅产品归档须提供 Excel 产品与平台映射");
+        return companies;
+    }
+
+    private static Map<String,Set<String>> readExcelPlatforms(Path root,Tsv products) {
+        Path path=root.resolve(EXCEL_PLATFORMS);
+        if(!Files.isRegularFile(path)) return Map.of();
+        var mapping=read(path);
+        if(!mapping.headers().equals(List.of("p_id","product_name","excel_platform_name","evidence"))||mapping.rows().isEmpty())
+            throw ApiError.bad("旧 Excel 产品与平台映射表头不正确或没有数据");
+        var names=new HashMap<String,String>();
+        for(var row:products.rows()) if(!value(products,row,"p_model").isBlank())
+            names.put(value(products,row,"p_id").trim(),value(products,row,"p_name").trim());
+        var platforms=new LinkedHashMap<String,Set<String>>();
+        for(var row:mapping.rows()) {
+            String id=row.get(0).trim(),name=row.get(1).trim(),platform=row.get(2).trim();
+            if(id.isEmpty()||name.isEmpty()||!name.equals(names.get(id))||platform.isEmpty()||platform.length()>200)
+                throw ApiError.bad("旧 Excel 产品与平台映射无法与产品字典核对："+id);
+            platforms.computeIfAbsent(id,ignored->new LinkedHashSet<>()).add(platform);
+        }
+        return platforms;
+    }
+
+    private void saveExcelPlatforms(Map<String,Set<String>> platforms,Map<String,String> versions) {
+        for(var entry:platforms.entrySet()) {
+            String version=versions.get(entry.getKey());
+            if(version==null) throw ApiError.bad("旧 Excel 平台映射引用了未导入的产品："+entry.getKey());
+            var current=jdbc.queryForList("SELECT platform_name FROM legacy_excel_product_platforms WHERE product_version_id=?",String.class,version);
+            if(entry.getValue().equals(new HashSet<>(current))) continue;
+            jdbc.update("DELETE FROM legacy_excel_product_platforms WHERE product_version_id=?",version);
+            for(String platform:entry.getValue())
+                jdbc.update("INSERT INTO legacy_excel_product_platforms(product_version_id,platform_name) VALUES (?,?)",version,platform);
+        }
     }
 
     private int importDecoders(Path root,Set<String> productIds,String runId) {

@@ -39,9 +39,10 @@ describe('frontend core regression behavior', () => {
     await screen.findByText('设备-p1')
     fireEvent.click(screen.getByRole('button', { name: 'Next Page' }))
     await screen.findByText('设备-p2')
+    fireEvent.click(screen.getByRole('button', { name: '条件筛选' }))
     fireEvent.change(screen.getByLabelText('搜索字段'), { target: { value: 'eui' } })
-    await waitFor(() => expect(devices.mock.calls.at(-1)?.[0]).toBe(1))
-    expect(screen.getByText('设备-p1')).toBeInTheDocument()
+    await waitFor(() => expect(devices.mock.calls.at(-1)).toMatchObject({ 0: 1, 4: 'eui' }))
+    expect(await screen.findByText('设备-p1')).toBeInTheDocument()
   })
 
   it('rejects blank and out-of-range distribution coordinates before writing', async () => {

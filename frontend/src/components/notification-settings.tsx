@@ -28,11 +28,15 @@ export function NotificationConfiguration() {
   const refresh = () => { setEditor(null); rows.refresh(); publishObjectChange('notifications') }
   return <>
     <PageHeading eyebrow="NOTIFICATION · 联系人" title="通知联系人" description="维护短信、语音通知的联系人及启用状态。">
-      <RefreshButton onClick={rows.refresh}/>
-      {canWrite && <Button onClick={() => setEditor({ id: null })}>创建通知联系人</Button>}
       <PageHelp title="联系人与通知规则"><p>这里维护联系人资料；实际短信、语音收件人和升级间隔在“报警与故障通知规则”页签配置。保存联系人不代表已发送通知。</p><p>号码加密保存，仅展示服务端返回的遮罩，不支持按完整号码搜索。编辑留空保留原号码，不回填明文。</p><p>授权范围栏只缩小读取范围，具体编辑仍绑定一个明确单位。联系方式格式合法不表示号码有效、能接通或通知已送达。</p></PageHelp>
     </PageHeading>
-    <Card className="list-card"><CardContent>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar"><h2>联系人列表</h2>
+        <div className="list-toolbar management-list-actions">
+          <RefreshButton onClick={rows.refresh}/>
+          {canWrite && <Button onClick={() => setEditor({ id: null })}>创建通知联系人</Button>}
+        </div>
+      </div>
       <IdentitySearch aria-label="搜索通知联系人" placeholder="按名称或ID查询" onSearch={value => { setPage(1); setKeyword(value) }}/>
       {rows.loading ? <p>正在读取联系人…</p> : rows.error != null ? <ErrorNotice error={rows.error} retry={rows.refresh}/> : rows.data ? <>
         {rows.data.items.length ? <Table><TableHeader><TableRow><TableHead>单位</TableHead><TableHead>名称 / ID</TableHead><TableHead>类型 / 号码</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>

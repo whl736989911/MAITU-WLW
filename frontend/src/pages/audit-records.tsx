@@ -61,15 +61,21 @@ function Content() {
   return <section className="replica-page" aria-label="授权单位操作审计" data-audit-records-as-of={data?.as_of}>
     <PageHeading eyebrow="系统管理 / 日志管理" title="日志管理" description="按授权单位检索已记录的操作与审计结果。">
       <PageHelp title="审计数据说明"><div className="form-stack"><p>仅展示授权单位的持久记录，不补造历史；可用详情查看当前查询返回的记录。</p><p>请求端是描述性标记，不证明调用者身份。原始请求、凭据及自由文本原因不公开。</p></div></PageHelp>
-      <Button variant="outline" onClick={() => query(applied, search, page)}><RefreshCw size={15}/>刷新审计记录</Button>
-      {session.permissions.includes('exports:read') && <Button variant="outline" disabled={exporting || read.loading} onClick={() => void download()}><Download size={15}/>{exporting ? '正在导出' : '导出筛选结果'}</Button>}
-      {read.loading && <Button variant="outline" onClick={read.cancel}>取消本次读取</Button>}
-      {exporting && <Button variant="outline" onClick={() => { exportRun.current?.abort(); exportRun.current = null; setExporting(false) }}>取消导出</Button>}
     </PageHeading>
     <div className="replica-directory-layout">
       <Card className="replica-module-tree"><CardContent><h2>功能模块</h2><nav aria-label="日志功能模块"><Button variant={search.module === null ? 'secondary' : 'ghost'} onClick={() => moduleFilter(null)}>全部模块</Button>{Object.entries(auditModules).map(([code, label]) => <Button key={code} variant={search.module === code ? 'secondary' : 'ghost'} onClick={() => moduleFilter(code as keyof typeof auditModules)}>{label}</Button>)}</nav></CardContent></Card>
       <div className="replica-directory-main">
-        <Card><CardContent><form onSubmit={apply} className="form-stack"><div className="replica-filter-grid">
+        <Card className="list-card management-list-panel"><CardContent>
+          <div className="management-list-bar">
+            <h2>查询与导出</h2>
+            <div className="list-toolbar management-list-actions">
+              <Button variant="outline" onClick={() => query(applied, search, page)}><RefreshCw size={15}/>刷新审计记录</Button>
+              {session.permissions.includes('exports:read') && <Button variant="outline" disabled={exporting || read.loading} onClick={() => void download()}><Download size={15}/>{exporting ? '正在导出' : '导出筛选结果'}</Button>}
+              {read.loading && <Button variant="outline" onClick={read.cancel}>取消本次读取</Button>}
+              {exporting && <Button variant="outline" onClick={() => { exportRun.current?.abort(); exportRun.current = null; setExporting(false) }}>取消导出</Button>}
+            </div>
+          </div>
+          <form onSubmit={apply} className="form-stack"><div className="replica-filter-grid">
           <div className="field"><Label htmlFor="audit-keyword">操作关键字</Label><Input id="audit-keyword" maxLength={100} value={searchDraft.keyword} onChange={event => updateSearch('keyword', event.target.value)} placeholder="单位名称、操作代码、记录编号"/></div>
           <div className="field"><Label htmlFor="audit-username">用户名</Label><Input id="audit-username" maxLength={100} disabled={!canNames} value={searchDraft.username} onChange={event => updateSearch('username', event.target.value)} placeholder={canNames ? '按当前可读用户目录查询' : '需要相应用户目录读取权限'}/></div>
           <div className="field"><Label htmlFor="audit-action">审计动作</Label><select id="audit-action" className="native-select" value={draft.action} onChange={event => update('action', event.target.value)}><option value="">全部动作分类</option>{auditActionDefinitions.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select></div>
@@ -81,8 +87,9 @@ function Content() {
           <div className="version-actions"><Button type="submit"><Search size={15}/>应用审计筛选</Button><Button type="button" variant="outline" onClick={clear}><X size={15}/>清空审计条件</Button></div>
         </form></CardContent></Card>
         {error != null && <ErrorNotice error={error}/>}{notice && <p role="status" className="notice">{notice}</p>}
-        <Card className="list-card"><CardContent>{read.loading ? <Loading/> : read.error != null ? <ErrorNotice error={read.error} retry={() => query(applied, search, page)}/> : read.cancelled ? <Empty title="本次审计读取已取消，可显式刷新"/> : data ? <>
-          <div className="list-toolbar"><h2>操作记录 <span className="muted-note">{data.total} 条</span></h2><span className="muted-note">{data.scope.tenant_ids.length} 个授权单位 · {search.module ? auditModules[search.module] : '全部模块'}</span></div>
+        <Card className="list-card management-list-panel"><CardContent>
+          <div className="management-list-bar"><h2>操作记录{data && <span className="muted-note"> · {data.total} 条</span>}</h2>{data && <span className="muted-note">{data.scope.tenant_ids.length} 个授权单位 · {search.module ? auditModules[search.module] : '全部模块'}</span>}</div>
+          {read.loading ? <Loading/> : read.error != null ? <ErrorNotice error={read.error} retry={() => query(applied, search, page)}/> : read.cancelled ? <Empty title="本次审计读取已取消，可显式刷新"/> : data ? <>
           {data.items.length ? <Table><TableHeader><TableRow><TableHead>发生时间（UTC）</TableHead><TableHead>单位</TableHead><TableHead>用户名</TableHead><TableHead>功能模块</TableHead><TableHead>操作</TableHead><TableHead>结果</TableHead><TableHead>请求端</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{data.items.map(item => { const meta = data.details[item.id]; return <TableRow key={item.id} data-audit-record-id={item.id}><TableCell className="mono">{item.occurred_at}</TableCell><TableCell>{item.tenant_name}</TableCell><TableCell>{meta.actor_username ?? '不公开或未记录'}</TableCell><TableCell>{auditModules[meta.module]}</TableCell><TableCell><div>{auditActionLabels[item.action]}</div><small className="mono">{item.id}</small></TableCell><TableCell>{auditOutcomeLabels[item.outcome]}</TableCell><TableCell>{auditPlatforms[meta.platform]}</TableCell><TableCell><Button variant="ghost" size="sm" onClick={() => setSelected(item)}><FileSearch size={14}/>查看记录</Button></TableCell></TableRow> })}</TableBody></Table> : <Empty title="当前条件暂无审计记录"/>}
           <Pager page={data.page} size={data.size} total={data.total} onChange={next => query(applied, search, next)}/>
         </> : null}</CardContent></Card>

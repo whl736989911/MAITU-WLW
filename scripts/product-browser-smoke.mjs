@@ -53,11 +53,10 @@ try {
     if (await dialog.getByRole('checkbox').count()) await dialog.getByRole('checkbox').check()
     return confirmWrite(`/api/management/product-versions/${version.id}/publish`, 'POST', true)
   }
-  await page.goto(context.url)
-  await page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
+  await page.goto(new URL('/management/login', context.url).href)
   await page.getByLabel('账户', { exact: true }).fill(context.username)
   await page.getByLabel('密码', { exact: true }).fill(context.password)
-  await page.getByRole('button', { name: '登录管理端', exact: true }).click()
+  await page.getByRole('button', { name: '登录', exact: true }).click()
   await navigatePage('单位位置', '单位与场所')
   await page.getByRole('combobox', { name: '选择租户' }).selectOption(context.tenant_id)
   await navigatePage('产品模板', '设备资源')

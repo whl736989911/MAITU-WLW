@@ -7,8 +7,10 @@ import java.util.Map;
 /** Central policy: only the explicitly listed business settings are user-editable. */
 public final class Limits {
     private Limits() { }
-    public static final int MIN_PASSWORD_LENGTH = 12;
+    public static final int MIN_PASSWORD_LENGTH = 6;
     public static final int MAX_PASSWORD_LENGTH = 128;
+    public static final String PASSWORD_REQUIREMENTS = "密码须为 " + MIN_PASSWORD_LENGTH + "–" + MAX_PASSWORD_LENGTH
+        + " 个字符，数字、字母、符号至少使用两类（空格不计为符号）";
     public static final int MAX_PAGE_SIZE = 100;
     public static final int MAX_PAGE = 1_000_000;
     public static final int MAX_KEYWORD_LENGTH = 100;
@@ -55,7 +57,23 @@ public final class Limits {
             "设备及报警列表未指定size时的默认条数。单次请求硬上限由服务端策略控制。")
     );
     public static boolean validPassword(String password) {
-        return password != null && password.length() >= MIN_PASSWORD_LENGTH && password.length() <= MAX_PASSWORD_LENGTH
-            && !password.isBlank();
+        if (password == null || password.length() > MAX_PASSWORD_LENGTH
+            || password.codePointCount(0, password.length()) < MIN_PASSWORD_LENGTH) return false;
+        boolean letter = false, digit = false, symbol = false;
+        for (int offset = 0; offset < password.length();) {
+            int character = password.codePointAt(offset);
+            offset += Character.charCount(character);
+            if (Character.isLetter(character)) letter = true;
+            else if (Character.isDigit(character)) digit = true;
+            else if (switch (Character.getType(character)) {
+                case Character.CONNECTOR_PUNCTUATION, Character.DASH_PUNCTUATION, Character.START_PUNCTUATION,
+                    Character.END_PUNCTUATION, Character.INITIAL_QUOTE_PUNCTUATION, Character.FINAL_QUOTE_PUNCTUATION,
+                    Character.OTHER_PUNCTUATION, Character.MATH_SYMBOL, Character.CURRENCY_SYMBOL,
+                    Character.MODIFIER_SYMBOL, Character.OTHER_SYMBOL -> true;
+                default -> false;
+            }) symbol = true;
+            if (letter && digit || letter && symbol || digit && symbol) return true;
+        }
+        return false;
     }
 }

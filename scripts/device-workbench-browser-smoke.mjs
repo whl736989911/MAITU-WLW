@@ -142,13 +142,11 @@ async function explicitScope(page, tenant, { expectList = true, status = 200 } =
 }
 async function login(page, principal) {
   const { customer } = owner(page)
-  await page.goto(ctx.url)
-  await page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
-  if (customer) await page.getByRole('button', { name: '客户端', exact: true }).click()
+  await page.goto(new URL(customer ? '/customer/login' : '/management/login', ctx.url).href)
   await page.getByLabel('账户', { exact: true }).fill(principal.username)
   await page.getByLabel('密码', { exact: true }).fill(principal.password)
   const authenticated = next(page, '/api/auth/login', {}, undefined, 'POST')
-  await page.getByRole('button', { name: customer ? '登录客户端' : '登录管理端', exact: true }).click()
+  await page.getByRole('button', { name: '登录', exact: true }).click()
   assert.equal((await authenticated).status(), 200)
   await page.getByRole('button', { name: '退出登录', exact: true }).waitFor()
   assert.equal(await page.getByRole('combobox', { name: '选择租户', exact: true }).count(), 0, 'Minimum reader must not load a tenant directory')

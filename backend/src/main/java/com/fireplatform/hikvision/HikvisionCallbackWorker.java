@@ -96,7 +96,7 @@ public class HikvisionCallbackWorker {
                 records.add(record);
             }
             if(!records.isEmpty()){
-                ingestion.accept(stream,records,receipt.received(),receipt.model(),"HIKVISION_PUSH",receipt.reparseCount()==0);
+                ingestion.accept(stream,records,receipt.received(),receipt.model(),"HIKVISION_PUSH");
                 submitted+=records.size();
             }
         }

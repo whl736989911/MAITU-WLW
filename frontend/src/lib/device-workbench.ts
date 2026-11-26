@@ -4,6 +4,7 @@ import { parseJsonDocument, jsonFieldText, jsonArrayItems } from './json-documen
 import { integerToken } from './parameter-json'
 import { canonicalAlarmInstant } from './alarm-workbench'
 import { readSafeDeviceRow, type SafeDeviceRow } from './device-row'
+import { applyDeviceSort, type DeviceSort } from './device-sort'
 export const deviceFilterEnums = { connectivity: ['ONLINE', 'OFFLINE', 'UNACTIVATED', 'UNKNOWN'], physical_state: ['FIRE', 'NORMAL', 'UNKNOWN'] } as const
 export interface DeviceFilters { keyword: string; connectivity: string | null; physical_state: string | null; system_type: string | null; device_category: string | null }
 export type DeviceDraft = Record<keyof DeviceFilters, string>
@@ -56,11 +57,12 @@ export function readDeviceWorkbench(raw: string, applied: DeviceFilters, page: n
   if (deviceMetricKeys.some(k => observed[k] > m[k] || (data.items.length === data.total && observed[k] !== m[k]))) return fail()
   return data
 }
-export function getDeviceWorkbench(applied: DeviceFilters, page: number, size?: number, signal?: AbortSignal): Promise<DeviceWorkbench> {
+export function getDeviceWorkbench(applied: DeviceFilters, page: number, size?: number, signal?: AbortSignal, sort?: DeviceSort): Promise<DeviceWorkbench> {
   try {
     const filters = normalized(applied); if (!Number.isSafeInteger(page) || page < 1 || (size !== undefined && (!Number.isSafeInteger(size) || size < 1))) throw new Error('设备分页未确认')
     const session = useSession.getState(), tenantId = session.audience === 'management' ? null : session.user?.tenant_id ?? null, query = new URLSearchParams({ page: String(page) })
     if (size !== undefined) query.set('size', String(size)); for (const key of Object.keys(emptyDeviceFilters) as (keyof DeviceFilters)[]) { const value = filters[key]; if (value !== null && value !== '') query.set(key, String(value)) }
+    applyDeviceSort(query, sort)
     const path = scopeQuery(`/${session.audience}/device-workbench?${query}`, session.scopeTenantIds, session.scopePlaceIds)
     return request<DeviceWorkbench>(path, { tenantScoped: true, tenantOptional: session.audience === 'management', signal, decode: raw => readDeviceWorkbench(raw, filters, page, size, tenantId) }).catch(error => { if (error instanceof ApiError && error.code === 'INVALID_RESPONSE') return fail(); throw error })
   } catch (error) { return Promise.reject(error) }

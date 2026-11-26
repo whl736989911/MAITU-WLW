@@ -27,7 +27,7 @@ class HikvisionConfigNoKeyTest {
 
     @Test void databaseCredentialWriteIsRejectedWithoutIndependentMasterKey() {
         var actor=new AuthService.Identity(new AuthService.UserView("fixture","fixture","Fixture","PLATFORM",null,false),List.of("integrations:write"),"management","fixture-token");
-        var input=new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","fixture-key","fixture-secret",false,30,"800235");
+        var input=new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","fixture-key","fixture-secret",false,30,"800235",null);
         assertThatThrownBy(()->configuration.update(actor,"hikvision-no-key",input,"request-no-key"))
             .isInstanceOfSatisfying(ApiError.class,error -> {
                 assertThat(error.status).isEqualTo(503);

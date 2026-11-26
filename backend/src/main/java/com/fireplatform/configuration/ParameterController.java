@@ -13,6 +13,12 @@ public class ParameterController {
     public ParameterController(RequestSecurity security,ParameterQueries queries,ParameterCommands commands,ParameterTargets targets) { this.security=security; this.queries=queries; this.commands=commands; this.targets=targets; }
     @GetMapping("/parameter-definitions") public Map<String,List<ParameterModels.Definition>> definitions(HttpServletRequest request) { security.require(request,"parameters:read","management"); return Map.of("items",queries.definitions()); }
     @GetMapping("/parameter-targets") public Page<ParameterTargets.Target> targets(@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(defaultValue="") String keyword,HttpServletRequest request) { var actor=security.require(request,"parameters:read","management"); return targets.list(actor.user().id(),security.optionalTenant(request),security.readSelection(request),page,size,keyword); }
+    @GetMapping("/parameter-groups")
+    public Page<ParameterQueries.GroupTarget> groups(@RequestParam(defaultValue="1") int page,
+            @RequestParam(required=false) Integer size, HttpServletRequest request) {
+        var actor=security.require(request,"parameters:read","management");
+        return queries.groups(actor.user().id(),security.tenant(request),page,size);
+    }
     @GetMapping("/parameter-values/{scope}/{id}/{key}") public ParameterModels.PolicyView view(@PathVariable String scope,@PathVariable String id,@PathVariable String key,HttpServletRequest request) { var actor=security.require(request,"parameters:read","management"); return queries.view(actor.user().id(),security.tenant(request),scope,id,key); }
     @GetMapping("/parameter-values/{scope}/{id}/{key}/history") public Page<ParameterModels.Change> history(@PathVariable String scope,@PathVariable String id,@PathVariable String key,@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,HttpServletRequest request) { var actor=security.require(request,"parameters:read","management"); return queries.history(actor.user().id(),security.tenant(request),scope,id,key,page,size); }
     private AuthService.Identity writer(HttpServletRequest request) { security.require(request,"parameters:read","management"); return security.require(request,"parameters:write","management"); }

@@ -3,6 +3,7 @@ import { KeyRound, Pencil, Plus, ShieldCheck, UserRound, Fingerprint } from 'luc
 import { accessApi } from '@/lib/access-roles'
 import { identityDirectoryApi, type IdentityUserProfile } from '@/lib/identity-directory'
 import { useSession } from '@/lib/store'
+import { accountPasswordHint, validAccountPassword } from '@/lib/account-password'
 import { api } from '@/lib/api'
 import { useResource } from '@/lib/use-resource'
 import { allowedPage, type ManagedUser, type PermissionCatalog, type PermissionItem } from '@/lib/types'
@@ -22,7 +23,8 @@ import { authorizationCloseAllowed, authorizationPage, useAuthorizationWrite } f
 import { UserDeleteAction } from '@/components/user-delete-action'
 import { UserAccessBatch } from '@/components/user-access-batch'
 import { DataTransferActions } from '@/components/data-transfer-actions'
-import { PageHelp } from '@/components/page-tools'
+import { PageHelp, RowActions } from '@/components/page-tools'
+import { CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable } from '@/components/customer-records'
 import { DeviceScopePicker, PlaceSubtreePicker } from '@/components/device-scope-picker'
 import { TargetUnitSelect } from '@/components/asset-picker'
 type Editor = { mode: 'create'; target: null } | { mode: 'edit' | 'reset'; target: ManagedUser }
@@ -44,6 +46,7 @@ function UsersContent({ platform }: { platform: boolean }) {
   const [accessTarget, setAccessTarget] = useState<ManagedUser | null>(() => authorization.intent && authorization.intent.kind !== 'ROLE' && authorization.intent.platform === platform ? authorization.intent.target : null)
   const visibleAccessTarget = authorization.intent && authorization.intent.kind !== 'ROLE' && authorization.intent.platform === platform ? authorization.intent.target : accessTarget
   const [page, setPage] = useState(1), [keyword, setKeyword] = useState('')
+  const [draft, setDraft] = useState('')
   const users = useResource(`users:${platform}:${session.generation}:${page}:${keyword}:${JSON.stringify(session.scopeTenantIds)}:${JSON.stringify(session.scopePlaceIds)}`, signal => api.users(platform, page, keyword, signal, session.scopeTenantIds, session.scopePlaceIds, !platform && session.audience === 'management'))
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   useEffect(() => setSelectedIds([]), [users.data])
@@ -63,18 +66,68 @@ function UsersContent({ platform }: { platform: boolean }) {
     users.refresh(); setNotice('授权变更已收到有效回执；目标账号版本与授权明细须重新读取。')
   }, [authorization.completion])
   function saved() { const created = editor?.mode === 'create'; close(); users.refresh(); setNotice(created ? '账号已创建。初始密码不在响应中返回，首次登录必须修改；请通过安全渠道告知目标用户。' : '变更已保存，目标账号全部旧会话已撤销。重新启用不恢复旧会话；重置密码后首次登录必须修改。') }
+  const legacy = session.audience === 'customer'
+  const visibleUsers = users.data?.items ?? []
+  const allVisibleSelected = visibleUsers.length > 0 && visibleUsers.every(item => selectedIds.includes(item.id))
   return <>
+    {legacy ? <section className="legacy-record-page" aria-label="用户管理">
+      <CustomerRecordsSearch field="用户名或姓名" keyword={draft} onKeyword={setDraft}
+        onSearch={event => { event.preventDefault(); setPage(1); setKeyword(draft.trim()) }}
+        onReset={() => { setDraft(''); setKeyword(''); setPage(1) }}
+        actions={<>
+          {canWrite && <button type="button" className="legacy-device-button" disabled={!catalog.data || catalog.loading}
+            onClick={() => { setNotice(''); setEditor({ mode: 'create', target: null }) }}>添加用户</button>}
+          {visibleUsers.length > 0 && <button type="button" className="legacy-device-button" aria-pressed={allVisibleSelected}
+            onClick={() => setSelectedIds(allVisibleSelected ? [] : visibleUsers.map(item => item.id))}>选择本页账号</button>}
+          <DataTransferActions kind="USERS" tenantId={customerTenant || undefined} filters={{ unit_ids: customerTenant, place_ids: session.scopePlaceIds.join(','), keyword }}
+            selectedIds={selectedIds} onCompleted={users.refresh}/>
+          {(canWrite || session.permissions.includes('users:assign-roles') || session.permissions.includes('users:assign-scope')) &&
+            <button type="button" className="legacy-device-link" onClick={() => setToolsOpen(true)}>账号维护工具</button>}
+        </>}/>
+      {notice && <p role="status" className="notice">{notice}</p>}
+      {catalog.error != null && <ErrorNotice error={catalog.error} retry={catalog.refresh}/>}
+      <CustomerRecordTable name="用户管理" columns={['选择', '用户名', '昵称', '状态', '权限', '操作']}
+        loading={users.loading} error={users.error} retry={refresh} rows={visibleUsers.map(item => ({
+          key: item.id, cells: [
+            <input type="checkbox" aria-label={`选择账号 ${item.username}`} checked={selectedIds.includes(item.id)}
+              onChange={event => setSelectedIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))}/>,
+            item.username, item.name, `${item.enabled ? '已启用' : '已停用'}${item.must_change_password ? ' · 需改密' : ''}`,
+            item.permissions.length ? `${item.permissions.length} 项` : '无',
+            <RowActions label={`${item.username} 操作`} text="操作">
+              <button type="button" className="legacy-device-link" disabled={!!authorization.intent} onClick={() => setAccessTarget(item)}>角色 / 设备范围</button>
+              {!item.is_protected && item.id !== session.user?.id && <>
+                {canWrite && <button type="button" className="legacy-device-link" disabled={!catalog.data}
+                  onClick={() => setEditor({ mode: 'edit', target: item })}>编辑</button>}
+                {canReset && <button type="button" className="legacy-device-link" disabled={!catalog.data}
+                  onClick={() => setEditor({ mode: 'reset', target: item })}>重置密码</button>}
+                <UserDeleteAction user={item} platform={false} onSaved={() => { users.refresh(); setNotice('账号已删除。') }}/>
+              </>}
+            </RowActions>],
+        }))}/>
+      {users.data && <CustomerRecordPager page={users.data.page} size={users.data.size} total={users.data.total} onPage={setPage}/>}
+    </section> : <>
     <PageHeading eyebrow={platform ? 'PLATFORM USERS · 平台用户' : 'UNIT USERS · 单位用户'} title={platform ? '平台用户' : '单位用户'}>
       <PageHelp title="账号与权限说明">平台账号独立管理，无需选择当前租户。单位用户默认查看全部授权单位，左侧树可收窄列表；创建必须明确写入单位。编辑或重置固定到目标账号所属单位。超出当前管理权限时服务端拒绝，不会修改目标；403 会保留有效登录并显示原因。</PageHelp>
-      {(platform || session.scopeInitialized) && <DataTransferActions kind={platform ? 'PLATFORM_USERS' : 'USERS'} tenantId={platform ? undefined : customerTenant || undefined} filters={platform ? { keyword } : { unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword }} selectedIds={selectedIds} onCompleted={result => { if ('plan_id' in result) users.refresh() }}/>}
-      <RefreshButton onClick={refresh}/>{canWrite && <Button disabled={!catalog.data || catalog.loading} onClick={() => { setNotice(''); setEditor({ mode: 'create', target: null }) }}><Plus/>创建{platform ? '平台' : '单位'}用户</Button>}
-      {(!platform && canWrite || users.data && (session.permissions.includes(platform ? 'platform-users:assign-roles' : 'users:assign-roles') || session.permissions.includes(platform ? 'platform-users:assign-scope' : 'users:assign-scope'))) && <Button variant="outline" onClick={() => setToolsOpen(true)}>账号维护工具</Button>}
     </PageHeading>
-    <div className="identity-scope"><ShieldCheck size={17}/>{platform ? '全局平台账号目录 · 需专门的平台用户权限' : <>全部授权单位账号目录 · 本页写入目标：{session.audience === 'customer' ? customerTenant || '会话未提供单位' : targetUnit || '尚未明确选择'}</>}<span>自我与受保护根账户只读</span></div>{notice && <div role="status" className="notice">{notice}</div>}{catalog.error != null && <ErrorNotice error={catalog.error} retry={catalog.refresh}/>}
-    <Card className="list-card"><CardContent><IdentitySearch onSearch={value => { setPage(1); setKeyword(value) }}/>{users.loading ? <Loading/> : users.error != null ? <ErrorNotice error={users.error} retry={users.refresh}/> : users.data?.items.length ? <><Table><TableHeader><TableRow><><TableHead><input type="checkbox" aria-label="选择本页账号" checked={!!users.data?.items.length && users.data.items.every(item => selectedIds.includes(item.id))} onChange={event => setSelectedIds(event.target.checked ? users.data?.items.map(item => item.id) ?? [] : [])}/></TableHead><TableHead>账号 / 姓名</TableHead></>{!platform && <TableHead>单位</TableHead>}<TableHead>状态</TableHead><TableHead>权限</TableHead>{platform && <TableHead>单位授权</TableHead>}<TableHead>版本</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.data.items.map(item => {
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>{platform ? '平台账号列表' : '单位账号列表'}</h2>
+        <div className="list-toolbar management-list-actions">
+          {(!platform && canWrite || users.data && (session.permissions.includes(platform ? 'platform-users:assign-roles' : 'users:assign-roles') || session.permissions.includes(platform ? 'platform-users:assign-scope' : 'users:assign-scope'))) && <Button variant="outline" onClick={() => setToolsOpen(true)}>账号维护工具</Button>}
+          {(platform || session.scopeInitialized) && <DataTransferActions kind={platform ? 'PLATFORM_USERS' : 'USERS'} tenantId={platform ? undefined : customerTenant || undefined} filters={platform ? { keyword } : { unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword }} selectedIds={selectedIds} onCompleted={result => { if ('plan_id' in result) users.refresh() }}/>}
+          <RefreshButton onClick={refresh}/>
+          {canWrite && <Button disabled={!catalog.data || catalog.loading} onClick={() => { setNotice(''); setEditor({ mode: 'create', target: null }) }}><Plus/>创建{platform ? '平台' : '单位'}用户</Button>}
+        </div>
+      </div>
+      <div className="management-list-context"><ShieldCheck size={15} aria-hidden="true"/>{platform ? '全局平台账号目录 · 需专门的平台用户权限' : <>全部授权单位账号目录 · 本页写入目标：{targetUnit || '尚未明确选择'}</>}<span>自我与受保护根账户只读</span></div>
+      {notice && <div role="status" className="notice">{notice}</div>}
+      {catalog.error != null && <ErrorNotice error={catalog.error} retry={catalog.refresh}/>}
+      <IdentitySearch onSearch={value => { setPage(1); setKeyword(value) }}/>
+      {users.loading ? <Loading/> : users.error != null ? <ErrorNotice error={users.error} retry={users.refresh}/> : users.data?.items.length ? <><Table><TableHeader><TableRow><><TableHead><input type="checkbox" aria-label="选择本页账号" checked={allVisibleSelected} onChange={event => setSelectedIds(event.target.checked ? visibleUsers.map(item => item.id) : [])}/></TableHead><TableHead>账号 / 姓名</TableHead></>{!platform && <TableHead>单位</TableHead>}<TableHead>状态</TableHead><TableHead>权限</TableHead>{platform && <TableHead>单位授权</TableHead>}<TableHead>版本</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader><TableBody>{users.data.items.map(item => {
       const readonly = item.is_protected || item.id === session.user?.id
       return <TableRow key={item.id}><TableCell><input type="checkbox" aria-label={`选择账号 ${item.username}`} checked={selectedIds.includes(item.id)} onChange={event => setSelectedIds(current => event.target.checked ? [...current, item.id] : current.filter(id => id !== item.id))}/></TableCell><TableCell><div className="table-primary"><span className="device-symbol"><UserRound size={17}/></span><div><strong>{item.name}</strong><div className="table-sub mono">{item.username}</div>{readonly && <Badge variant="outline" className="mt-2 text-[9px]">{item.is_protected ? '受保护账号 · 只读' : '当前账号 · 请使用自助改密'}</Badge>}</div></div></TableCell>{!platform && <TableCell>{item.tenant_name ?? item.tenant_id}</TableCell>}<TableCell><div className="identity-status"><Badge variant="outline" className={`status ${item.enabled ? 'status-success' : 'status-neutral'}`}>{item.enabled ? '已启用' : '已停用'}</Badge>{item.must_change_password && <Badge variant="outline" className="source-badge">首次需改密</Badge>}</div></TableCell><TableCell><div className="identity-permission-summary">{item.permissions.length ? item.permissions.map(key => <span key={key}>{catalog.data?.items.find(p => p.key === key)?.label ?? key}</span>) : '未授予直接权限'}</div></TableCell>{platform && <TableCell><div className="identity-permission-summary mono">{item.tenant_ids.length ? item.tenant_ids.join(' · ') : '无单位授权'}</div></TableCell>}<TableCell>{item.revision}</TableCell><TableCell className="text-right"><Button variant="ghost" size="sm" disabled={!!authorization.intent} onClick={() => setAccessTarget(item)}><Fingerprint/>角色 / 设备范围</Button>{readonly ? <span className="muted-note">只读</span> : <div className="identity-row-actions">{canWrite && <Button variant="ghost" size="sm" disabled={!catalog.data} onClick={() => setEditor({ mode: 'edit', target: item })}><Pencil/>编辑 / 直接权限</Button>}{canReset && <Button variant="ghost" size="sm" disabled={!catalog.data} onClick={() => setEditor({ mode: 'reset', target: item })}><KeyRound/>重置密码</Button>}<UserDeleteAction user={item} platform={platform} onSaved={() => { users.refresh(); setNotice('账号已删除；该账号无任何业务或审计历史引用。') }}/>{!canWrite && !canReset && <span className="muted-note">只读</span>}</div>}</TableCell></TableRow>
     })}</TableBody></Table><Pager page={users.data.page} size={users.data.size} total={users.data.total} onChange={setPage}/></> : <Empty title="暂无账号记录">真实开户从「创建用户」开始，账号密码不预填、不返回。</Empty>}</CardContent></Card>
+    </>}
     <Sheet open={!!editor} onOpenChange={open => { if (!open) close() }}><SheetContent className="review-sheet sm:max-w-xl">{editor && catalog.data && <UserEditor key={`${editor.mode}:${editor.target?.id ?? 'new'}`} platform={platform} editor={editor} catalog={catalog.data} defaultTargetUnit={targetUnit} onSaved={saved} onRefresh={() => { close(); refresh() }}/>}</SheetContent></Sheet>
     <Sheet open={!!visibleAccessTarget} onOpenChange={open => { if (!open && authorizationCloseAllowed() && authorization.edit()) setAccessTarget(null) }}><SheetContent className="review-sheet sm:max-w-2xl">{visibleAccessTarget && <AccountAccessPanel key={`${platform}:${visibleAccessTarget.id}:${session.generation}`} platform={platform} target={visibleAccessTarget} onReload={() => { setAccessTarget(null); users.refresh() }}/>}</SheetContent></Sheet>
     <Sheet open={toolsOpen} onOpenChange={setToolsOpen}><SheetContent className="review-sheet sm:max-w-2xl"><SheetHeader className="review-header"><SheetTitle>账号维护工具</SheetTitle><SheetDescription>低频组织资料与批量授权工具；列表与账号状态保持在主页面。</SheetDescription></SheetHeader><div className="review-body">
@@ -114,7 +167,10 @@ function UserEditor({ platform, editor, catalog, defaultTargetUnit, onSaved, onR
   const title = resetting ? '重置账号密码' : creating ? `创建${platform ? '平台' : '单位'}用户` : '编辑账号与授权'
   function submit(event: FormEvent) {
     event.preventDefault()
-    if ((creating || resetting) && (password !== confirmation || password.length < policy.min_length || password.length > policy.max_length)) { action.setError(new Error(`两次密码须一致，且长度为 ${policy.min_length}–${policy.max_length} 个字符`)); return }
+    if (creating || resetting) {
+      if (password !== confirmation) { action.setError(new Error('两次密码须一致')); return }
+      if (!validAccountPassword(password, policy)) { action.setError(new Error(accountPasswordHint(policy))); return }
+    }
     if (creating && !platform && !createUnit) { action.setError(new Error('请先明确本次创建账号的目标单位')); return }
     if (!action.confirming) { action.setError(undefined); action.setConfirming(true); return }
     void action.run((key, signal) => {
@@ -123,7 +179,7 @@ function UserEditor({ platform, editor, catalog, defaultTargetUnit, onSaved, onR
       return api.updateUser(platform, target!.id, { name: name.trim(), enabled, permissions, expected_revision: target!.revision, ...(platform ? { tenant_ids: tenantIds } : {}) }, key, signal, platform ? undefined : target!.tenant_id ?? undefined)
     }, () => { setPassword(''); setConfirmation(''); onSaved() })
   }
-  return <><SheetHeader className="review-header"><div className="eyebrow">IDENTITY · {platform ? '平台账号' : '单位账号'}</div><SheetTitle>{title}</SheetTitle><SheetDescription>{creating ? '新账号首次登录必须改密。初始密码不会由服务端响应返回。创建目标只影响本次开户，不改变左侧筛选。' : '保存启停、权限、授权或密码变更均撤销目标全部会话；自我与受保护账号禁止管理。'}</SheetDescription></SheetHeader><div className="review-body"><form aria-label="账号授权维护" className="form-stack" onSubmit={submit}>{!action.confirming ? <>{creating && !platform && <TargetUnitSelect audience={session.audience} permissions={session.permissions} value={createUnit} onChange={unit => { setCreateUnit(unit); action.touch() }} disabled={action.busy}/>}{!resetting && <><div className="field"><Label htmlFor="managed-username">用户名</Label><Input id="managed-username" name="username" value={username} autoComplete="off" required maxLength={100} disabled={!creating} onChange={e => { setUsername(e.target.value); action.touch() }}/></div><div className="field"><Label htmlFor="managed-name">姓名</Label><Input id="managed-name" value={name} required maxLength={200} onChange={e => { setName(e.target.value); action.touch() }}/></div>{!creating && <label className="confirmation"><input type="checkbox" checked={enabled} onChange={e => { setEnabled(e.target.checked); action.touch() }}/>启用账号（取消勾选即停用，保存后撤销旧会话）</label>}<PermissionPicker items={items} value={permissions} change={next => { setPermissions(next); action.touch() }}/>{platform && <GrantPicker value={tenantIds} change={next => { setTenantIds(next); action.touch() }}/>}</>}{(creating || resetting) && <><div className="field"><Label htmlFor="managed-password">{creating ? '初始密码' : '新密码'}</Label><Input id="managed-password" type="password" autoComplete="new-password" value={password} required minLength={policy.min_length} maxLength={policy.max_length} onChange={e => { setPassword(e.target.value); action.touch() }}/><p className="muted-note">服务端密码策略：{policy.min_length}–{policy.max_length} 字符；不预填、不持久化。</p></div><div className="field"><Label htmlFor="managed-password-confirm">确认{creating ? '初始密码' : '新密码'}</Label><Input id="managed-password-confirm" type="password" autoComplete="new-password" value={confirmation} required onChange={e => { setConfirmation(e.target.value); action.touch() }}/></div></>}{target && <div className="identity-readonly">目标：{target.username} · {target.id} · revision {target.revision}</div>}{action.error != null && <ErrorNotice error={action.error}/>}<Button type="submit">核对并继续</Button></> : <OperationConfirmation action={action} title={`二次确认 · ${title}`} submitLabel={creating ? '确认创建账号' : resetting ? '确认重置并撤销会话' : '确认保存并撤销会话'} refresh={onRefresh} warning={creating ? '新账号首次登录必须修改初始密码，密码不会在结果中回显。' : resetting ? '将撤销目标全部会话，要求首次登录改密；旧密码立即失效。' : '将撤销目标全部旧会话。停用阻止登录，重新启用也不恢复旧会话。'}><p>目标：{username} · {name}{target ? ` · revision ${target.revision}` : ' · 新账号'}</p>{!resetting && <><p>启用状态：{enabled ? '启用' : '停用'}</p><p>权限：{permissions.length ? permissions.map(key => items.find(item => item.key === key)?.label ?? key).join('、') : '未授予'}</p>{platform && <p>单位授权：{tenantIds.length ? tenantIds.join('、') : '无'}</p>}</>}{creating && !platform && <p>创建目标单位：{createUnit || '尚未明确选择'}</p>}<p>密码：{creating || resetting ? '已输入，不回显' : '本次不变更'}</p></OperationConfirmation>}</form></div></>
+  return <><SheetHeader className="review-header"><div className="eyebrow">IDENTITY · {platform ? '平台账号' : '单位账号'}</div><SheetTitle>{title}</SheetTitle><SheetDescription>{creating ? '新账号首次登录必须改密。初始密码不会由服务端响应返回。创建目标只影响本次开户，不改变左侧筛选。' : '保存启停、权限、授权或密码变更均撤销目标全部会话；自我与受保护账号禁止管理。'}</SheetDescription></SheetHeader><div className="review-body"><form aria-label="账号授权维护" className="form-stack" onSubmit={submit}>{!action.confirming ? <>{creating && !platform && <TargetUnitSelect audience={session.audience} permissions={session.permissions} value={createUnit} onChange={unit => { setCreateUnit(unit); action.touch() }} disabled={action.busy}/>}{!resetting && <><div className="field"><Label htmlFor="managed-username">用户名</Label><Input id="managed-username" name="username" value={username} autoComplete="off" required maxLength={100} disabled={!creating} onChange={e => { setUsername(e.target.value); action.touch() }}/></div><div className="field"><Label htmlFor="managed-name">姓名</Label><Input id="managed-name" value={name} required maxLength={200} onChange={e => { setName(e.target.value); action.touch() }}/></div>{!creating && <label className="confirmation"><input type="checkbox" checked={enabled} onChange={e => { setEnabled(e.target.checked); action.touch() }}/>启用账号（取消勾选即停用，保存后撤销旧会话）</label>}<PermissionPicker items={items} value={permissions} change={next => { setPermissions(next); action.touch() }}/>{platform && <GrantPicker value={tenantIds} change={next => { setTenantIds(next); action.touch() }}/>}</>}{(creating || resetting) && <><div className="field"><Label htmlFor="managed-password">{creating ? '初始密码' : '新密码'}</Label><Input id="managed-password" type="password" autoComplete="new-password" value={password} required minLength={policy.min_length} maxLength={policy.max_length} aria-describedby="managed-password-policy" onChange={e => { setPassword(e.target.value); action.touch() }}/><p id="managed-password-policy" className="muted-note">{accountPasswordHint(policy)}。</p></div><div className="field"><Label htmlFor="managed-password-confirm">确认{creating ? '初始密码' : '新密码'}</Label><Input id="managed-password-confirm" type="password" autoComplete="new-password" value={confirmation} required onChange={e => { setConfirmation(e.target.value); action.touch() }}/></div></>}{target && <div className="identity-readonly">目标：{target.username} · {target.id} · revision {target.revision}</div>}{action.error != null && <ErrorNotice error={action.error}/>}<Button type="submit">核对并继续</Button></> : <OperationConfirmation action={action} title={`二次确认 · ${title}`} submitLabel={creating ? '确认创建账号' : resetting ? '确认重置并撤销会话' : '确认保存并撤销会话'} refresh={onRefresh} warning={creating ? '新账号首次登录必须修改初始密码，密码不会在结果中回显。' : resetting ? '将撤销目标全部会话，要求首次登录改密；旧密码立即失效。' : '将撤销目标全部旧会话。停用阻止登录，重新启用也不恢复旧会话。'}><p>目标：{username} · {name}{target ? ` · revision ${target.revision}` : ' · 新账号'}</p>{!resetting && <><p>启用状态：{enabled ? '启用' : '停用'}</p><p>权限：{permissions.length ? permissions.map(key => items.find(item => item.key === key)?.label ?? key).join('、') : '未授予'}</p>{platform && <p>单位授权：{tenantIds.length ? tenantIds.join('、') : '无'}</p>}</>}{creating && !platform && <p>创建目标单位：{createUnit || '尚未明确选择'}</p>}<p>密码：{creating || resetting ? '已输入，不回显' : '本次不变更'}</p></OperationConfirmation>}</form></div></>
 }
 function AccountAccessPanel({ platform, target, onReload }: { platform: boolean; target: ManagedUser; onReload: () => void }) {
   const session = useSession(), prefix = platform ? 'platform-users' : 'users', command = useAuthorizationWrite(), handled = useRef(0)

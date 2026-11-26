@@ -26,9 +26,10 @@ function MessagesContent({ health }: { health?: Health }) {
   const messages = useResource(`messages:${page}:${keyword}:${sourceId}:${scopeKey}`, signal => api.messages(page, keyword, sourceId, signal, scopeTenantIds, scopePlaceIds), scopeInitialized)
   const selectedTenantId = messages.data?.items.find(message => message.id === selectedId)?.tenant_id ?? ''
   return <>
-    <PageHeading eyebrow="MESSAGES · 消息追踪" title="接收与真实处理状态" description="查看已接收来源消息、解析状态与实际应用结果。"><PageHelp title="消息与预览说明"><div className="form-stack"><p>列表时间为平台接收时间；来源时间原文不等同于确认的事件发生时间。</p><p>原文访问需独立权限。人工预览不会应用数据；真实重解析或应用始终使用捕获时固定版本，保留服务端冲突与错误状态。</p><p>未绑定的历史消息不会因当前设备目录变化而回填绑定。</p></div></PageHelp><RefreshButton onClick={messages.refresh}/></PageHeading>
+    <PageHeading eyebrow="MESSAGES · 消息追踪" title="通用 HTTP 消息追踪" description="查看通用接入报文的接收、设备绑定、解析与实际应用结果。"><PageHelp title="各类报文去哪里查"><div className="form-stack"><p>这里不是全部设备的报文总表。旧设备到「接入镜像」查看原始接收记录，海康设备到「海康云接入」查看回调和拉取记录。</p><p>列表时间为平台接收时间；来源时间原文不等同于确认的事件发生时间。</p><p>原文访问需独立权限。人工预览不会应用数据；真实重解析或应用始终使用捕获时固定版本，保留服务端冲突与错误状态。</p><p>未绑定的历史消息不会因当前设备目录变化而回填绑定。</p></div></PageHelp></PageHeading>
     <IngestionBoundary health={health}/>
-    <Card className="list-card"><CardContent>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar"><h2>接收记录</h2><div className="list-toolbar management-list-actions"><RefreshButton onClick={messages.refresh}/></div></div>
       <IdentitySearch aria-label="搜索接收消息" placeholder="按消息标识、来源设备标识查询（字面匹配）" onSearch={value => { setPage(1); setKeyword(value) }}>{canSources && <SourceFilter value={sourceId} onChange={id => { setSourceId(id); setPage(1) }}/>}</IdentitySearch>
       {messages.loading ? <Loading/> : messages.error != null ? <ErrorNotice error={messages.error} retry={messages.refresh}/> : messages.data?.items.length ? <>
         <Table><TableHeader><TableRow><TableHead>消息 / 来源</TableHead><TableHead>绑定 / 捕获版本</TableHead><TableHead>平台接收 / 来源时间原文</TableHead><TableHead>原文字节 / 重复</TableHead><TableHead>解析 / 真实处理状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
@@ -41,7 +42,7 @@ function MessagesContent({ health }: { health?: Health }) {
             <TableCell><Button variant="ghost" size="sm" onClick={() => setSelectedId(message.id)}><FileText/>查看追踪</Button></TableCell>
           </TableRow>)}</TableBody>
         </Table><Pager page={messages.data.page} size={messages.data.size} total={messages.data.total} onChange={setPage}/>
-      </> : <Empty title="暂无捕获消息">列表仅反映服务端已接收的来源消息；不存在的或未授权来源数据不会显示。</Empty>}
+      </> : <Empty title="当前范围暂无通用 HTTP 报文">接入来源仅登记、尚无外部发送时，这里不会生成记录。旧设备的「接入镜像」和海康的回调／拉取记录不计入本页。</Empty>}
     </CardContent></Card>
     <Sheet open={!!selectedId} onOpenChange={open => { if (!open) setSelectedId('') }}><SheetContent className="review-sheet sm:max-w-xl">{selectedId && <MessageInspector key={selectedId} id={selectedId} tenantId={selectedTenantId} changed={messages.refresh}/>}</SheetContent></Sheet>
   </>

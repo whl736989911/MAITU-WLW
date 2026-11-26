@@ -6,12 +6,9 @@ import com.fireplatform.legacyingest.LegacyEventSink;
 import com.fireplatform.legacyingest.LegacyNormalizedEvent;
 import com.fireplatform.alarm.AlarmLifecycle;
 import com.fireplatform.identity.CoordinationFence;
-import com.fireplatform.integration.BusinessFactPublisher;
-import com.fireplatform.integration.NormalizedBusinessFact;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.OffsetDateTime;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -21,24 +18,22 @@ import org.springframework.transaction.annotation.Transactional;
 @Component
 public class LegacyFactApplier implements LegacyEventSink {
     private record Device(String tenantId, String name, String address, OffsetDateTime lastMessageAt) { }
-    private record Identity(String productVersionId,String legacyProductId,String productDigest) { }
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final CoordinationFence coordination;
     private final AlarmLifecycle alarms;
     private final com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration;
-    private final BusinessFactPublisher facts;
     private final long dedupSeconds;
 
-    public LegacyFactApplier(JdbcTemplate jdbc, ObjectMapper json, CoordinationFence coordination, AlarmLifecycle alarms, com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration, BusinessFactPublisher facts) {
-        this(jdbc, json, coordination, alarms, configuration, facts, 180);
+    public LegacyFactApplier(JdbcTemplate jdbc, ObjectMapper json, CoordinationFence coordination, AlarmLifecycle alarms, com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration) {
+        this(jdbc, json, coordination, alarms, configuration, 180);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public LegacyFactApplier(JdbcTemplate jdbc, ObjectMapper json, CoordinationFence coordination, AlarmLifecycle alarms,
-            com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration, BusinessFactPublisher facts,
+            com.fireplatform.configuration.AlarmBaseConfigurationEventConsumer configuration,
             @org.springframework.beans.factory.annotation.Value("${fire.legacy.alarm-dedup-seconds:180}") long dedupSeconds) {
-        this.jdbc = jdbc; this.json = json; this.coordination = coordination; this.alarms = alarms; this.configuration = configuration; this.facts = facts; this.dedupSeconds = Math.max(0,dedupSeconds);
+        this.jdbc = jdbc; this.json = json; this.coordination = coordination; this.alarms = alarms; this.configuration = configuration; this.dedupSeconds = Math.max(0,dedupSeconds);
     }
 
 
@@ -63,9 +58,6 @@ public class LegacyFactApplier implements LegacyEventSink {
         OffsetDateTime received = jdbc.queryForObject("SELECT received_at FROM legacy_ingest_messages WHERE id=?", OffsetDateTime.class, messageId);
         boolean hikvision="hikvision_firecloud".equalsIgnoreCase(event.platform());
         boolean knownObservation=event.observedAt()!=null || (event.events()!=null && event.events().stream().anyMatch(item->item.observedAt()!=null));
-        boolean outputs=!hikvision && facts!=null && jdbc.queryForObject("SELECT COUNT(*) FROM application_outputs WHERE tenant_id=? AND enabled=TRUE",Long.class,device.tenantId())>0;
-        Identity identity=outputs?identity(event.deviceId()):null;
-        String rawBase64=outputs?rawPayload(messageId):null;
         if(!event.pendingDecoder()&&event.events()!=null&&!event.events().isEmpty()&&(!hikvision||knownObservation))jdbc.update("UPDATE devices SET integration_state='CONNECTED' WHERE id=?",event.deviceId());
         if (!hikvision) {
             OffsetDateTime sourceObservation=event.observedAt();
@@ -75,9 +67,7 @@ public class LegacyFactApplier implements LegacyEventSink {
                 else jdbc.update("UPDATE devices SET last_message_at=?,battery_percent=? WHERE id=?",sourceObservation,event.battery(),event.deviceId());
             }
         }
-        int eventIndex=0;
         if (event.events() != null) for (var e : event.events()) {
-            int index=eventIndex++;
             String kind = e.kind() == null ? "OTHER" : e.kind();
             String params = e.paramsJson() == null ? "{}" : e.paramsJson();
             OffsetDateTime observed = e.observedAt() == null ? event.observedAt() : e.observedAt();
@@ -106,57 +96,28 @@ public class LegacyFactApplier implements LegacyEventSink {
             }
             String eventId = UUID.randomUUID().toString();
             jdbc.update("INSERT INTO legacy_ingest_events(id,tenant_id,message_id,device_id,kind,method,params_json,observed_at,created_at,business_key,business_code) VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?,?)", eventId, device.tenantId(), messageId, event.deviceId(), storedKind, storedMethod, params, observed, businessKey, businessCode);
-            // Preserve the report, but missing source chronology cannot clear fires or publish recovery facts.
+            // Preserve the report, but missing source chronology cannot clear fires.
             if (recovery && observed == null) continue;
-            String factAlarm=null;
             if (!recovery && storedKind.equals("FAULT")) configuration.onLegacyFaultEvidence(device.tenantId(), eventId, event.deviceId(), businessCode, eventTime);
             if (recovery) {
                 var active = jdbc.query("SELECT id FROM alarms WHERE tenant_id=? AND device_id=? AND is_simulated=FALSE AND physical_state='FIRE' AND (source_time_known=FALSE OR COALESCE(last_event_at,occurred_at)<=?) ORDER BY COALESCE(last_event_at,occurred_at),id FOR UPDATE", (r,n)->r.getString(1), device.tenantId(), event.deviceId(), observed);
                 for (String alarmId : active) alarms.recoverAlarm(device.tenantId(),event.deviceId(),alarmId,observed);
                 jdbc.update("UPDATE devices SET physical_state=? WHERE id=?",alarms.hasActiveFire(device.tenantId(),event.deviceId())?"FIRE":"NORMAL",event.deviceId());
             } else if (kind.equals("ALARM") && fireSemantic(e.method(),params)) {
-                factAlarm=applyFireOccurrence(device,event.deviceId(),eventTime,observed);
+                applyFireOccurrence(device,event.deviceId(),eventTime,observed);
             }
-            if(outputs) publishFact(messageId,index,event,e,kind,observed,received,factAlarm,identity,rawBase64,params,recovery);
         }
     }
-    private Identity identity(String deviceId) {
-        var rows=jdbc.query("SELECT d.product_version_id,pv.legacy_product_id FROM devices d LEFT JOIN product_versions pv ON pv.id=d.product_version_id WHERE d.id=?",(r,n)->new String[]{r.getString(1),r.getString(2)},deviceId);
-        if(rows.isEmpty())return null;
-        String productVersionId=rows.getFirst()[0],legacyProductId=rows.getFirst()[1],digest=null;
-        if(legacyProductId!=null) {
-            var values=jdbc.queryForList("SELECT source_sha256 FROM legacy_product_decoders WHERE legacy_product_id=? ORDER BY revision DESC LIMIT 1",String.class,legacyProductId);
-            if(!values.isEmpty())digest=values.getFirst();
-        }
-        return new Identity(productVersionId,legacyProductId,digest);
-    }
-    private String rawPayload(String messageId) {
-        var rows=jdbc.queryForList("SELECT payload_raw FROM legacy_ingest_messages WHERE id=?",String.class,messageId);
-        if(rows.isEmpty()||rows.getFirst()==null)return null;
-        byte[] bytes=rows.getFirst().getBytes(StandardCharsets.UTF_8);
-        return bytes.length==0||bytes.length>1_048_576?null:Base64.getEncoder().encodeToString(bytes);
-    }
-    private void publishFact(String messageId,int index,LegacyNormalizedEvent event,LegacyNormalizedEvent.LegacyEvent item,String kind,OffsetDateTime observed,OffsetDateTime received,String alarmId,Identity identity,String rawBase64,String params,boolean recovery) {
-        if(facts==null)return;
-        String factType=recovery?"RECOVERY":kind.equals("ALARM")&&fireSemantic(item.method(),params)?"FIRE":kind;
-        String legacyProductId=identity==null?null:identity.legacyProductId();
-        facts.publish(new NormalizedBusinessFact("LEGACY:"+messageId+":"+index,event.tenantId(),event.deviceId(),
-            identity==null?null:identity.productVersionId(),legacyProductId,event.platform(),
-            legacyProductId==null?null:NormalizedBusinessFact.LEGACY_PRODUCT,legacyProductId,event.platform(),
-            identity==null?null:identity.productDigest(),messageId,factType,observed,received,alarmId,
-            params,rawBase64,"application/json",true,true));
-    }
-    private String applyFireOccurrence(Device device,String deviceId,OffsetDateTime eventTime,OffsetDateTime sourceObservedAt) {
+    private void applyFireOccurrence(Device device,String deviceId,OffsetDateTime eventTime,OffsetDateTime sourceObservedAt) {
         jdbc.update("UPDATE devices SET physical_state='FIRE' WHERE id=?",deviceId);
         var open=sourceObservedAt==null?java.util.List.<String>of():jdbc.query("SELECT a.id FROM alarms a WHERE a.tenant_id=? AND a.device_id=? AND a.is_simulated=FALSE AND a.response_state='UNHANDLED' AND a.event_type='FIRE' AND a.physical_state='FIRE' AND a.source_time_known IS NOT FALSE AND a.last_event_at>=? ORDER BY a.last_event_at DESC,a.id DESC FOR UPDATE",
             (r,n)->r.getString(1),device.tenantId(),deviceId,eventTime.minusSeconds(dedupSeconds));
         if(open.isEmpty()) {
             String alarmId=alarms.fire(device.tenantId(),deviceId,device.name(),device.address(),sourceObservedAt);
             jdbc.update("UPDATE alarms SET last_event_at=? WHERE id=?",eventTime,alarmId);
-            return alarmId;
+            return;
         }
         jdbc.update("UPDATE alarms SET last_event_at=CASE WHEN last_event_at<? THEN ? ELSE last_event_at END,occurrence_count=occurrence_count+1 WHERE id=?",eventTime,eventTime,open.getFirst());
-        return open.getFirst();
     }
     private String businessCode(String method, String params, String kind) {
         try {

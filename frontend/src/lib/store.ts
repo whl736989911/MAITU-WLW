@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { allowedPage, pagePermission, type Audience, type AuthResponse, type PageName } from './types'
+import { setCustomerResumeTag } from './portal-entry'
 
 const landingPages = Object.keys(pagePermission) as PageName[]
 
-// Deliberately no persist middleware, localStorage, sessionStorage, cookies or token logging.
+// The live bearer, identity and permissions stay in memory; no Web Storage.
 interface Session {
   token: string | null
   user: AuthResponse['user'] | null
@@ -34,7 +35,10 @@ export const useSession = create<Session>((set, get) => ({
   setScope: (tenantIds, placeIds, initialized = true) => set({ scopeTenantIds: [...tenantIds], scopePlaceIds: [...placeIds], scopeInitialized: initialized }),
   resetScope: () => set({ scopeTenantIds: [], scopePlaceIds: [], scopeInitialized: false }),
   login: (auth, audience) => set(s => ({ token: auth.access_token, user: auth.user, permissions: auth.permissions, audience, page: landingPages.find(page => allowedPage(page, audience, auth.permissions)) ?? 'summary', generation: s.generation + 1, authGeneration: s.authGeneration + 1, scopeTenantIds: audience === 'customer' && auth.user.tenant_id ? [auth.user.tenant_id] : [], scopePlaceIds: [], scopeInitialized: audience === 'customer' && !!auth.user.tenant_id, notice: null })),
-  clear: (notice) => set(s => ({ token: null, user: null, permissions: [], page: 'summary', generation: s.generation + 1, authGeneration: s.authGeneration + 1, scopeTenantIds: [], scopePlaceIds: [], scopeInitialized: false, notice: notice ?? null })),
+  clear: (notice) => {
+    if (get().audience === 'customer') setCustomerResumeTag(null)
+    set(s => ({ token: null, user: null, permissions: [], page: 'summary', generation: s.generation + 1, authGeneration: s.authGeneration + 1, scopeTenantIds: [], scopePlaceIds: [], scopeInitialized: false, notice: notice ?? null }))
+  },
   navigate: (page) => set({ page }),
   revalidate: (token, authGeneration, user, permissions) => {
     const current = get()

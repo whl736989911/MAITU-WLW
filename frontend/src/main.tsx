@@ -9,6 +9,7 @@ import 'antd/dist/reset.css'
 import './index.css'
 import './workspace-theme.css'
 import './components/dashboard-charts.css'
+import './legacy-customer.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

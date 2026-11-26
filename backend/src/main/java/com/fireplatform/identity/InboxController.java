@@ -30,8 +30,13 @@ public class InboxController {
 
     @PostMapping("/api/me/sessions/revoke-others") public java.util.Map<String,Object> revokeOthers(HttpServletRequest request) { return java.util.Map.of("revoked",inbox.revokeOtherSessions(self(request,"inbox:read"))); }
 
-    @GetMapping("/api/me/messages") public Page<InboxService.Message> messages(@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(defaultValue="") String status,HttpServletRequest request) {
-        return inbox.messages(self(request,"inbox:read"),page,size==null?20:size,status);
+    @GetMapping("/api/me/messages") public Page<InboxService.Message> messages(@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(defaultValue="") String status,@RequestParam(required=false) String keyword,@RequestParam(required=false) String from,@RequestParam(required=false) String to,HttpServletRequest request) {
+        return inbox.messages(self(request,"inbox:read"),page,size,status,keyword,messageTime(from),messageTime(to));
+    }
+    private static java.time.OffsetDateTime messageTime(String value) {
+        if(value==null||value.isEmpty()) return null;
+        try { return java.time.OffsetDateTime.parse(value); }
+        catch(java.time.DateTimeException e) { throw ApiError.bad("消息时间需要明确时区"); }
     }
 
     @PostMapping("/api/me/messages/{id}/read") public InboxService.Message read(@PathVariable String id,@Valid @RequestBody StateChange body,HttpServletRequest request) {

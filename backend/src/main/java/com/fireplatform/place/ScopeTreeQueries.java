@@ -23,7 +23,7 @@ public class ScopeTreeQueries {
     @Transactional(readOnly = true)
     public List<UnitNode> tree(String userId) {
         var units = jdbc.query(
-            "SELECT t.id,t.name FROM tenants t JOIN user_tenant_grants g ON g.tenant_id=t.id " +
+            "SELECT t.id,t.name FROM tenants t JOIN effective_user_tenant_grants g ON g.tenant_id=t.id " +
             "WHERE g.user_id=? AND t.enabled=TRUE ORDER BY t.name,t.id",
             (rs, n) -> new Unit(rs.getString(1), rs.getString(2)), userId);
         var authorizedTenantIds=units.stream().map(Unit::id).toList();

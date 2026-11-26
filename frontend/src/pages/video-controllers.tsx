@@ -13,14 +13,14 @@ export function VideoControllersPage() {
   const s = useSession()
   const canVideo = s.permissions.includes('video:read')
   const canControllers = s.permissions.includes('controller:read')
-  if (!s.token || s.user?.must_change_password || String(s.page) !== PAGE || (!canVideo && !canControllers))
+  if (!s.token || s.user?.must_change_password || String(s.page) !== PAGE || !(canVideo || (s.audience === 'management' && canControllers)))
     return <Empty title="当前无视频或控制器读取权限"/>
   const canPlay = canVideo && s.permissions.includes('video:play')
   if (s.audience === 'customer') {
     const tenantId = s.user?.tenant_id
     if (!tenantId) return <Empty title="当前账户未绑定单位"/>
     return <Content key={`${s.authGeneration}:${tenantId}:read`} tenantId={tenantId}
-      canVideo={canVideo} canControllers={canControllers} canPlay={canPlay}
+      canVideo={canVideo} canControllers={false} canPlay={canPlay}
       videoWrite={false} controllerWrite={false}
       canReadDevices={s.permissions.includes('device:read')} canReadPlaces={s.permissions.includes('units:read')}/>
   }
@@ -34,9 +34,10 @@ function Content({ tenantId, canVideo, canControllers, canPlay, videoWrite, cont
   tenantId: string; canVideo: boolean; canControllers: boolean; canPlay: boolean; videoWrite: boolean; controllerWrite: boolean
   canReadDevices: boolean; canReadPlaces: boolean
 }) {
+  const legacyVideoOnly = useSession(s => s.audience === 'customer') && canVideo && !canControllers
   const [tab, setTab] = useState<'VIDEO' | 'CONTROLLER'>(canVideo ? 'VIDEO' : 'CONTROLLER')
   return <>
-    <PageHeading eyebrow="设备与产品 · 视频与联动控制器" title="视频资源与联动控制器"
+    {!legacyVideoOnly && <PageHeading eyebrow="设备与产品 · 视频与联动控制器" title="视频资源与联动控制器"
       description="保留真实视频资源、关联和控制器自动/声光联动配置；播放和动作只按真实协议、授权与能力执行，不用空壳或假成功替代。">
       <PageHelp title="能力与边界">
         <div className="form-stack">
@@ -45,7 +46,7 @@ function Content({ tenantId, canVideo, canControllers, canPlay, videoWrite, cont
           <p>入队命令不代表设备已执行；物理结果以设备服务队列的厂商回执为准。</p>
         </div>
       </PageHelp>
-    </PageHeading>
+    </PageHeading>}
     {(canVideo && canControllers) && <div className="list-toolbar" role="tablist" aria-label="视频与控制器标签">
       <Button type="button" role="tab" aria-selected={tab === 'VIDEO'} variant={tab === 'VIDEO' ? 'default' : 'outline'} onClick={() => setTab('VIDEO')}>视频资源</Button>
       <Button type="button" role="tab" aria-selected={tab === 'CONTROLLER'} variant={tab === 'CONTROLLER' ? 'default' : 'outline'} onClick={() => setTab('CONTROLLER')}>联动控制器</Button>

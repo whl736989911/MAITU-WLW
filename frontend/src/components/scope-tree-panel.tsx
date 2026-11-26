@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Checkbox, Tree, type TreeDataNode } from 'antd'
-import { Building2, MapPin, RefreshCw } from 'lucide-react'
+import { Building2, MapPin, RefreshCw, Search } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useResource } from '@/lib/use-resource'
 import { useSession } from '@/lib/store'
 import type { ScopePlaceNode, ScopeUnit } from '@/lib/types'
 import { Button } from './ui/button'
+import { Input } from './ui/input'
 
 type TreeNode = { id: string; name: string; children: TreeNode[]; place: ScopePlaceNode | null }
 type TreeIssue = { node: TreeNode; reason: string }
@@ -50,7 +51,7 @@ function placeTree(places: ScopePlaceNode[]): PlaceTree {
   return { roots, issues }
 }
 
-export function ScopeTreePanel() {
+export function ScopeTreePanel({ searchable = false }: { searchable?: boolean }) {
   const audience = useSession(s => s.audience)
   const initialized = useSession(s => s.scopeInitialized)
   const tenantIds = useSession(s => s.scopeTenantIds)
@@ -60,6 +61,8 @@ export function ScopeTreePanel() {
   const scopeTreeRevision = useSession(s => s.scopeTreeRevision)
   const tree = useResource(`scope-tree:${scopeTreeRevision}`, signal => api.scopeTree(signal), enabled)
   const [expanded, setExpanded] = useState<string[]>([])
+  const [search, setSearch] = useState('')
+  const [searchExpansion, setSearchExpansion] = useState<string[] | null>(null)
   const units = tree.data ?? []
   const selectedTenants = useMemo(() => new Set(tenantIds), [tenantIds])
   const selectedPlaces = useMemo(() => new Set(placeIds), [placeIds])
@@ -84,25 +87,42 @@ export function ScopeTreePanel() {
     const nextPlaces = selectedPlaces.has(place.id) ? placeIds.filter(id => id !== place.id) : [...placeIds, place.id]
     setScope(tenantIds, nextPlaces)
   }
-  function renderPlaces(unit: ScopeUnit, nodes: TreeNode[]): TreeDataNode[] {
-    return nodes.map(node => ({
-      key: JSON.stringify(['place', unit.id, node.id]),
-      title: node.place
-        ? <Checkbox checked={selectedTenants.has(unit.id) || selectedPlaces.has(node.place.id)} disabled={selectedTenants.has(unit.id)} onChange={() => togglePlace(unit, node.place!)}><MapPin size={12}/><span>{node.name}</span><small>{node.place.device_count}</small></Checkbox>
-        : <span className="scope-tree-context" aria-label="只读上级位置"><MapPin size={12}/><span>{node.name}</span><small>仅显示层级</small></span>,
-      children: renderPlaces(unit, node.children),
-      selectable: false,
-    }))
+  const query = searchable ? search.trim().toLocaleLowerCase() : ''
+  const matches = (name: string) => name.toLocaleLowerCase().includes(query)
+  const searchExpanded: string[] = []
+  function renderPlaces(unit: ScopeUnit, nodes: TreeNode[], ancestorMatches: boolean): TreeDataNode[] {
+    return nodes.flatMap(node => {
+      const key = JSON.stringify(['place', unit.id, node.id])
+      const ownMatch = matches(node.name)
+      const children = renderPlaces(unit, node.children, ancestorMatches || ownMatch)
+      if (!ancestorMatches && !ownMatch && !children.length) return []
+      if (query && children.length) searchExpanded.push(key)
+      return [{
+        key,
+        title: node.place
+          ? <Checkbox checked={selectedTenants.has(unit.id) || selectedPlaces.has(node.place.id)} disabled={selectedTenants.has(unit.id)} onChange={() => togglePlace(unit, node.place!)}><MapPin size={12}/><span>{node.name}</span><small>{node.place.device_count}</small></Checkbox>
+          : <span className="scope-tree-context" aria-label="只读上级位置"><MapPin size={12}/><span>{node.name}</span><small>仅显示层级</small></span>,
+        children,
+        selectable: false,
+      }]
+    })
   }
+  const treeData = units.flatMap(unit => {
+    const key = JSON.stringify(['unit', unit.id]), ownMatch = matches(unit.name)
+    const children = renderPlaces(unit, hierarchies.get(unit.id)?.roots ?? [], ownMatch)
+    if (!ownMatch && !children.length) return []
+    if (query && children.length) searchExpanded.push(key)
+    return [{ key, children, title: <Checkbox checked={selectedTenants.has(unit.id)} indeterminate={!selectedTenants.has(unit.id) && unit.places.some(place => selectedPlaces.has(place.id))} onChange={() => toggleUnit(unit)}><Building2 size={13}/><span title={unit.name}>{unit.name}</span></Checkbox> }]
+  })
   return <section className="scope-tree-panel" aria-label="单位位置范围">
+    {searchable && <div className="asset-scope-search"><Input type="search" aria-label="搜索单位或位置" placeholder="输入关键字查询" value={search} onChange={event => { setSearch(event.target.value); setSearchExpansion(null) }}/><Search size={15} aria-hidden="true"/></div>}
     <div className="scope-tree-head"><div className="scope-tree-title">单位 / 位置</div><div className="scope-tree-actions"><Button type="button" variant="ghost" size="sm" onClick={tree.refresh} aria-label="刷新单位位置范围" title="刷新单位位置范围"><RefreshCw size={13}/></Button><Button type="button" variant="ghost" size="sm" onClick={() => setScope(units.map(unit => unit.id), [])} disabled={allSelected}>全选</Button><Button type="button" variant="ghost" size="sm" onClick={() => setScope([], [])}>清空</Button></div></div>
     <p className="scope-tree-hint">{scopeSummary(units, selectedTenants, selectedPlaces)}</p>
     <div className="scope-tree-list">
-      {units.length === 0 ? <p className="scope-tree-hint">当前账户没有可用的单位授权。</p> : <Tree blockNode selectable={false} expandedKeys={expanded} onExpand={keys => setExpanded(keys.map(String))} treeData={units.map(unit => ({
-        key: JSON.stringify(['unit', unit.id]),
-        title: <Checkbox checked={selectedTenants.has(unit.id)} indeterminate={!selectedTenants.has(unit.id) && unit.places.some(place => selectedPlaces.has(place.id))} onChange={() => toggleUnit(unit)}><Building2 size={13}/><span title={unit.name}>{unit.name}</span></Checkbox>,
-        children: renderPlaces(unit, hierarchies.get(unit.id)?.roots ?? []),
-      }))}/>}
+      {units.length === 0 ? <p className="scope-tree-hint">当前账户没有可用的单位授权。</p> :
+        treeData.length ? <Tree blockNode selectable={false} expandedKeys={query ? searchExpansion ?? searchExpanded : expanded}
+          onExpand={keys => (query ? setSearchExpansion : setExpanded)(keys.map(String))} treeData={treeData}/> :
+        <p className="scope-tree-hint">没有匹配的单位或位置。</p>}
       {units.map(unit => {
         const issues = hierarchies.get(unit.id)?.issues ?? []
         return issues.length > 0 && <div key={unit.id} className="scope-tree-issues" role="alert"><strong>{unit.name} · 层级待确认</strong>{issues.map(({ node, reason }) => node.place && <Checkbox key={node.id} checked={selectedTenants.has(unit.id) || selectedPlaces.has(node.id)} disabled={selectedTenants.has(unit.id)} onChange={() => togglePlace(unit, node.place!)}><span>{node.name}</span><small>{reason}</small></Checkbox>)}</div>

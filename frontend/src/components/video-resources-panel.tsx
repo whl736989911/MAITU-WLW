@@ -15,6 +15,9 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Empty, ErrorNotice, Loading, Pager, RefreshButton } from '@/components/common'
+import { useSession } from '@/lib/store'
+import { CustomerDeviceBack, CustomerDeviceCard, CustomerDeviceSearch, CustomerDeviceTable, CustomerDeviceTools } from '@/components/customer-device-ledger'
+import { CustomerSystemTabs } from '@/components/customer-records'
 
 function WriteFields({ write, label }: { write: DomainWrite; label: string }) {
   return <>
@@ -26,9 +29,11 @@ function WriteFields({ write, label }: { write: DomainWrite; label: string }) {
 export function VideoResourcesPanel({ tenantId, canWrite, canPlay, canReadDevices, canReadPlaces }: {
   tenantId: string; canWrite: boolean; canPlay: boolean; canReadDevices: boolean; canReadPlaces: boolean
 }) {
+  const legacy = useSession(s => s.audience === 'customer')
+  const [size, setSize] = useState(10)
   const [page, setPage] = useState(1), [keyword, setKeyword] = useState(''), [draft, setDraft] = useState(''), [includeArchived, setIncludeArchived] = useState(false)
-  const list = useResource(`video-resources:${tenantId}:${page}:${keyword}:${includeArchived}`,
-    signal => videoApi.list(tenantId, page, { keyword, include_archived: includeArchived }, signal))
+  const list = useResource(`video-resources:${tenantId}:${page}:${keyword}:${includeArchived}:${legacy ? size : ''}`,
+    signal => videoApi.list(tenantId, page, { keyword, include_archived: includeArchived, size: legacy ? size : undefined }, signal))
   const [selectedId, setSelectedId] = useState('')
   const detail = useResource(`video-detail:${tenantId}:${selectedId}`, signal => videoApi.detail(tenantId, selectedId, signal), !!selectedId)
   const write = useDomainWrite()
@@ -103,6 +108,26 @@ export function VideoResourcesPanel({ tenantId, canWrite, canPlay, canReadDevice
   }
 
   return <>
+    {legacy ? <section className="legacy-device-ledger" aria-label="视频设备信息">
+      {selectedId ? <div className="legacy-device-detail">
+        <CustomerDeviceBack onClick={() => setSelectedId('')}/>
+        {detail.loading ? <Loading/> : detail.error != null ? <ErrorNotice error={detail.error} retry={detail.refresh}/> : selected &&
+          <CustomerDeviceCard title="视频设备信息"><dl className="legacy-device-fields">
+            <div><dt>设备名称</dt><dd>{selected.resource.name}</dd></div>
+            <div><dt>设备类型</dt><dd>{selected.resource.resource_kind}</dd></div>
+            <div><dt>接入协议</dt><dd>{selected.resource.protocol}</dd></div>
+          </dl></CustomerDeviceCard>}
+      </div> : <>
+        <CustomerSystemTabs/>
+        <CustomerDeviceSearch fields={[['keyword', '设备名称 / 端点主机']]} draft={draft} onDraft={setDraft}
+          onSearch={(_field, value) => { setKeyword(value); setPage(1) }} onReset={() => { setDraft(''); setKeyword(''); setPage(1) }}>
+          <CustomerDeviceTools kind="视频设备"/>
+        </CustomerDeviceSearch>
+        <CustomerDeviceTable page={page} size={size} list={{ ...list, data: list.data && { ...list.data,
+          items: rows.map(row => ({ id: row.id, name: row.name, status: row.enabled ? '已启用' : '未启用' })) } }}
+          open={row => setSelectedId(row.id)} setPage={setPage} setSize={value => { setPage(1); setSize(value) }}/>
+      </>}
+    </section> : <>
     <div className="list-toolbar"><h2>视频资源</h2><div className="row-actions">
       <RefreshButton onClick={reload}/>
       {canWrite && <DataTransferActions kind="VIDEO_RESOURCES" tenantId={tenantId} filters={{ unit_ids: tenantId, place_ids: '' }}/>}
@@ -127,6 +152,7 @@ export function VideoResourcesPanel({ tenantId, canWrite, canPlay, canReadDevice
         </tr>)}</tbody></table></div>
       <Pager page={list.data?.page ?? 1} size={list.data?.size ?? 20} total={list.data?.total ?? 0} onChange={setPage}/>
     </>}
+    </>}
 
     {createOpen && <Card><CardContent><form onSubmit={submitCreate}>
       <h2>登记视频资源</h2>
@@ -141,7 +167,7 @@ export function VideoResourcesPanel({ tenantId, canWrite, canPlay, canReadDevice
     </form></CardContent></Card>}
 
     {selected && <Card><CardContent>
-      <div className="list-toolbar"><h2>视频资源详情 · {selected.resource.name}</h2><Button type="button" variant="outline" onClick={() => setSelectedId('')}>关闭</Button></div>
+      {!legacy && <div className="list-toolbar"><h2>视频资源详情 · {selected.resource.name}</h2><Button type="button" variant="outline" onClick={() => setSelectedId('')}>关闭</Button></div>}
       <div className="detail-grid">
         <div><strong>协议</strong><p>{selected.resource.protocol}</p></div>
         <div><strong>端点主机</strong><p>{selected.resource.endpoint_host ?? '未配置'}</p></div>

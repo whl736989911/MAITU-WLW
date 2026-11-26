@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type FormEvent } from 'react'
-import { Dropdown } from 'antd'
-import { Search, SlidersHorizontal, Plus, ChevronDown, Pencil, History, GitCompareArrows, Building2, ListChecks, MoveRight, Ellipsis } from 'lucide-react'
+import { Dropdown, Pagination, Popover, Tabs } from 'antd'
+import { Search, SlidersHorizontal, Plus, ChevronDown, Pencil, History, GitCompareArrows, Building2, ListChecks, MoveRight, Ellipsis, Filter, RefreshCw, Server, Flame, Battery, Layers } from 'lucide-react'
 import { api } from '@/lib/api'
 import { deviceBatchApi, type DeviceBatchTarget } from '@/lib/device-batch'
 import { customerAssetsApi, customerDeviceBatchMoveMutation } from '@/lib/customer-assets'
@@ -8,17 +8,22 @@ import { placePath } from '@/lib/place-tree'
 import { useResource } from '@/lib/use-resource'
 import { useSession } from '@/lib/store'
 import { allowedPage, type Device, type PlaceNode, type ScopeUnit } from '@/lib/types'
+import { defaultDeviceSort, nextDeviceSort, type DeviceColumnKey } from '@/lib/device-sort'
+import { emptyDeviceFilters, getDeviceWorkbench, type DeviceMetrics } from '@/lib/device-workbench'
 import type { VendorDeviceSource } from '@/lib/vendor-devices'
 import { VendorDeviceCreator } from '@/components/vendor-device-creator'
 import type { DeviceEditorState } from '@/components/device-editor'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { DeviceTable, configurableDeviceColumns, defaultDeviceColumns, type DeviceColumnKey } from '@/components/data-tables'
+import { DeviceTable, configurableDeviceColumns } from '@/components/data-tables'
+import { CustomerDeviceSearch, CustomerDeviceStatus, CustomerDeviceStatusFilter, CustomerDeviceTable, CustomerDeviceTools } from '@/components/customer-device-ledger'
+import { CustomerSystemTabs } from '@/components/customer-records'
 import { PublishedVersionPicker } from '@/components/product-common'
 import { OperationConfirmation, useMutationAction } from '@/components/identity-common'
 import { Card, CardContent } from '@/components/ui/card'
+import './device-assets.css'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Empty, ErrorNotice, Loading, Pager, RefreshButton } from '@/components/common'
+import { Empty, ErrorNotice, Loading } from '@/components/common'
 import { DataTransferActions } from '@/components/data-transfer-actions'
 import { DeviceTransferAction } from '@/components/device-transfer-action'
 import { DeviceArchiveAction } from '@/components/device-archive-action'
@@ -33,12 +38,59 @@ const DeviceEditor = lazy(() => import('@/components/device-editor').then(m => (
 const DeviceDetail = lazy(() => import('@/components/device-detail').then(m => ({ default: m.DeviceDetail })))
 const DeviceWorkbench = lazy(() => import('@/components/device-workbench').then(m => ({ default: m.DeviceWorkbench })))
 const HikvisionAssociationSheet = lazy(() => import('@/components/hikvision-pending-devices').then(m => ({ default: m.HikvisionAssociationSheet })))
+const CustomerDeviceDetail = lazy(() => import('@/components/customer-device-detail'))
 type DeviceIntake = VendorDeviceSource | 'import' | 'advanced'
 const intakeCopy = {
   LEGACY_REALTIME: { title: '旧烟感建档', description: '创建本地资产。设备通过网关或运营商直连本平台；建档不代表设备已上线。' },
   HIKVISION_FIRECLOUD: { title: '海康云新增', description: '确认后在海康云新增，再保存本地资产或接入登记。结果未知时从「待完成接入」继续核对。' },
   import: { title: '导入设备来源', description: '旧烟感表格可选单位、位置和型号；海康表格只关联已发现的设备。' },
 } satisfies Record<Exclude<DeviceIntake, 'advanced'>, { title: string; description: string }>
+const customerFields = [['eui', '设备编号'], ['name', '设备名称'], ['model', '设备型号'], ['address', '安装位置']] as const
+const assetSystemTabs = [
+  ['', '全部系统'], ['烟温火灾探测报警系统', '独立式烟温感系统'], ['传统消防接入报警系统', '火灾报警系统'],
+  ['电气火灾监控预警系统', '电气火灾系统'], ['可燃气体系统', '可燃气体系统'], ['消防用水监测报警系统', '消防用水系统'],
+  ['视频监控系统', '视频监控系统'], ['充电桩系统', '充电桩系统'], ['防排烟系统', '防排烟系统'],
+  ['防火门监控系统', '防火门监控系统'], ['电源监控系统', '电源监控系统'], ['其他系统', '其他系统'],
+] as const
+const assetColumnOptions: typeof configurableDeviceColumns = [...configurableDeviceColumns, { key: 'business', label: '业务状态' }]
+const assetColumns: DeviceColumnKey[] = ['name', 'category', 'eui', 'unit']
+const monitoringColumns: DeviceColumnKey[] = ['name', 'eui', 'unit', 'placement', 'business', 'battery', 'last']
+const connectivityOptions = [['', '全部连接状态'], ['ONLINE', '在线'], ['OFFLINE', '离线'], ['UNACTIVATED', '未激活'], ['UNKNOWN', '状态未确认']] as const
+const deviceStatusOptions = [['', '全部设备状态'], ['ONLINE', '在线'], ['OFFLINE', '离线'], ['UNACTIVATED', '未激活'], ['FIRE', '报警'], ['FAULT', '故障'], ['SHIELDED', '屏蔽']] as const
+const assetMetricGroups = [
+  { icon: Server, title: '在线状态', values: [['在线', 'online', 'good'], ['离线', 'offline', 'danger'], ['未激活', 'unactivated', 'neutral'], ['未确认', 'unknown_connectivity', 'neutral']] },
+  { icon: Flame, title: '火情状态', values: [['正常', 'normal', 'good'], ['火警', 'fire', 'danger'], ['未知', 'unknown', 'neutral']] },
+  { icon: Battery, title: '电池状态', values: [['正常', 'battery_normal', 'good'], ['低电量', 'battery_low', 'warning'], ['未配置阈值', 'battery_not_configured', 'neutral'], ['未上报', 'battery_no_data', 'neutral']] },
+] as const
+
+function AssetMetrics({ metrics, loading, unavailable }: { metrics?: DeviceMetrics; loading: boolean; unavailable: boolean }) {
+  return <section className="asset-metrics" aria-label="所选范围设备概况" aria-busy={loading}
+    title={unavailable ? '统计暂不可用，请刷新设备列表' : '按左侧授权范围与系统分类统计全部分页，不受列表关键字影响'}>
+    <div className="asset-metric asset-metric-total"><Layers size={17} aria-hidden="true"/><span>设备总数</span><strong>{metrics?.device_total ?? '—'}</strong></div>
+    {assetMetricGroups.map(({ icon: Icon, title, values }) => <div className="asset-metric" key={title}>
+      <div className="asset-metric-label"><Icon size={16} aria-hidden="true"/><span>{title}</span></div>
+      <dl>{values.map(([label, key, tone]) => <div key={key} data-tone={tone}><dt>{label}</dt><dd>{metrics?.[key] ?? '—'}</dd></div>)}</dl>
+    </div>)}
+    {unavailable && <span className="asset-metrics-error" role="status">统计暂不可用，可刷新重读</span>}
+  </section>
+}
+
+function AssetChoiceFilter({ label, value, options, onChange }: { label: string; value: string; options: readonly (readonly [string, string])[]; onChange: (value: string) => void }) {
+  return <Dropdown trigger={['click']} menu={{ items: options.map(([key, text]) => ({ key: key || 'all', label: text })), selectable: true, selectedKeys: [value || 'all'], onClick: ({ key }) => onChange(key === 'all' ? '' : key) }}>
+    <Button variant="ghost" size="icon-sm" className="asset-header-filter" aria-label={label} title={label} data-active={!!value}><Filter size={13}/></Button>
+  </Dropdown>
+}
+
+function AssetCategoryFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false)
+  function apply(value: string) { onChange(value.trim()); setOpen(false) }
+  return <Popover trigger="click" open={open} onOpenChange={setOpen} destroyOnHidden content={
+    <form className="asset-category-filter" onSubmit={event => { event.preventDefault(); apply(String(new FormData(event.currentTarget).get('category') ?? '')) }}>
+      <Input name="category" aria-label="按设备类别筛选" defaultValue={value} maxLength={80} placeholder="输入完整设备类别"/>
+      <div><Button size="sm" variant="ghost" onClick={() => apply('')}>清除类别</Button><Button size="sm" type="submit">应用</Button></div>
+    </form>
+  }><Button variant="ghost" size="icon-sm" className="asset-header-filter" aria-label="筛选设备类型" title="筛选设备类型" data-active={!!value}><Filter size={13}/></Button></Popover>
+}
 export function DevicesPage({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: () => void } = {}) {
   const { user, permissions, audience, generation } = useSession()
   if (!user || user.must_change_password || !allowedPage('devices', audience, permissions)) return <Empty title="当前账户无设备查看权限"/>
@@ -61,80 +113,113 @@ function DevicesContent({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: (
   const canMigrate = management && permissions.includes('device:migrate')
   const [editor, setEditor] = useState<DeviceEditorState | null>(null), [selectedDetail, setSelectedDetail] = useState<{ id: string; tenantId?: string } | null>(null)
   const [movingDevice, setMovingDevice] = useState<Device | null>(null)
+  const [customerMoveTargets, setCustomerMoveTargets] = useState<Device[]>([])
   const [selectedDevices, setSelectedDevices] = useState<Map<string, Device>>(new Map())
+  const [batchTargets, setBatchTargets] = useState<Device[]>([])
   const [pendingOpen, setPendingOpen] = useState(() => canReadHikvision && !!onHikvisionEntryOpened)
   useEffect(() => { onHikvisionEntryOpened?.() }, [onHikvisionEntryOpened])
   const [serviceDevice, setServiceDevice] = useState<{ id: string; tenantId?: string; name?: string | null } | null>(null)
   const close = () => setEditor(null)
   const [page, setPage] = useState(1)
-  const [size, setSize] = useState<number | undefined>(undefined)
+  const [sort, setSort] = useState(defaultDeviceSort)
+  const [size, setSize] = useState<number | undefined>(management ? undefined : 10)
   const [draft, setDraft] = useState('')
   const [keyword, setKeyword] = useState('')
-  const [field, setField] = useState('')
+  const [field, setField] = useState(management ? '' : customerFields[0][0])
+  const [customerStatus, setCustomerStatus] = useState('')
   const [placeId, setPlaceId] = useState('')
   const [tenantFilter, setTenantFilter] = useState('')
   const scopeTenantIds = useSession(s => s.scopeTenantIds), scopePlaceIds = useSession(s => s.scopePlaceIds)
-  const effectiveTenantScope = scopeTenantIds.length || scopePlaceIds.length ? scopeTenantIds : undefined
-  const effectivePlaceScope = scopeTenantIds.length || scopePlaceIds.length ? scopePlaceIds : undefined
+  const effectiveTenantScope = management && session.scopeInitialized ? scopeTenantIds : undefined
+  const effectivePlaceScope = management && session.scopeInitialized ? scopePlaceIds : undefined
   const canReadTenants = management && permissions.includes('tenants:read')
   const tenants = useResource('device-filter-tenants', signal => api.tenants(signal), canReadTenants)
   const canReadPlaces = permissions.includes('units:read')
   const placeTree = useResource('device-ledger-place-options', signal => api.scopeTree(signal), !advanced && canReadPlaces && management)
-  const customerPlaceTree = useResource('customer-device-ledger-place-options', signal => customerAssetsApi.scopeTree(signal), !advanced && canReadPlaces && !management)
-  const placeOptions: PlaceNode[] = management
-    ? (placeTree.data ?? []).flatMap((unit: ScopeUnit) => unit.places)
-    : (customerPlaceTree.data ?? []).flatMap(unit => unit.places)
+  const placeOptions: PlaceNode[] = (placeTree.data ?? []).flatMap((unit: ScopeUnit) => unit.places)
   const filteredPlaceOptions = placeOptions.filter(place => !tenantFilter || place.tenant_id === tenantFilter)
   const [columnOpen, setColumnOpen] = useState(false)
+  const [monitoring, setMonitoring] = useState(false)
   const [connectivity, setConnectivity] = useState(''), [physicalState, setPhysicalState] = useState(''), [systemType, setSystemType] = useState(''), [deviceCategory, setDeviceCategory] = useState('')
   const [columns, setColumns] = useState<DeviceColumnKey[]>(() => {
     try {
       const stored: unknown = JSON.parse(localStorage.getItem('fire.device.columns') || '[]')
-      const saved = Array.isArray(stored) ? configurableDeviceColumns.map(c => c.key).filter(key => stored.includes(key)) : []
-      return saved.length ? saved : defaultDeviceColumns
-    } catch { return defaultDeviceColumns }
+      const saved = Array.isArray(stored) ? assetColumnOptions.map(c => c.key).filter(key => stored.includes(key)) : []
+      return saved.length ? saved : assetColumns
+    } catch { return assetColumns }
   })
-  const eventRevision = useObjectRevision('events'), notificationRevision = useObjectRevision('notifications')
-  const devices = useResource(`devices:${page}:${size}:${keyword}:${field}:${placeId}:${tenantFilter}:${connectivity}:${physicalState}:${systemType}:${deviceCategory}:${effectiveTenantScope?.join(',')}:${effectivePlaceScope?.join(',')}:${eventRevision}:${notificationRevision}`, signal => api.devices(page, keyword, size, signal, field, placeId, tenantFilter || undefined, effectiveTenantScope, effectivePlaceScope, { connectivity, physical_state: physicalState, system_type: systemType, device_category: deviceCategory }), !advanced)
+  const eventRevision = useObjectRevision('events'), notificationRevision = useObjectRevision('notifications'), deviceRevision = useObjectRevision('devices')
+  const statusFilters = { connectivity, physical_state: physicalState, system_type: systemType, device_category: deviceCategory, customer_status: customerStatus }
+  const devices = useResource(`devices:${JSON.stringify([page, size, keyword, field, placeId, tenantFilter, connectivity, physicalState, systemType, deviceCategory, customerStatus, effectiveTenantScope, effectivePlaceScope, eventRevision, notificationRevision, sort])}`,
+    signal => api.devices(page, keyword, size, signal, field, placeId, tenantFilter || undefined, effectiveTenantScope, effectivePlaceScope, statusFilters, sort), !advanced)
+  const metrics = useResource(`asset-metrics:${JSON.stringify([effectiveTenantScope, effectivePlaceScope, systemType, eventRevision, deviceRevision])}`,
+    signal => getDeviceWorkbench({ ...emptyDeviceFilters, system_type: systemType.trim() || null }, 1, 1, signal),
+    management && !advanced && session.scopeInitialized)
+  const refreshAssets = () => { devices.refresh(); metrics.refresh() }
   useEffect(() => { setPage(1); setSelectedDevices(new Map()) }, [scopeTenantIds.join(','), scopePlaceIds.join(',')])
+  const setFirstPage = () => { setPage(1); setSelectedDevices(new Map()) }
   function search(event: FormEvent) { event.preventDefault(); setPage(1); setSelectedDevices(new Map()); setKeyword(draft.trim()) }
-  function resetSearch() { setDraft(''); setKeyword(''); setField(''); setPlaceId(''); setTenantFilter(''); setConnectivity(''); setPhysicalState(''); setSystemType(''); setDeviceCategory(''); setSelectedDevices(new Map()); setPage(1) }
+  function sortBy(column: DeviceColumnKey) { setSort(current => nextDeviceSort(current, column)); setPage(1); setSelectedDevices(new Map()) }
+  function resetSearch() { setDraft(''); setKeyword(''); setField(management ? '' : customerFields[0][0]); setPlaceId(''); setTenantFilter(''); setConnectivity(''); setPhysicalState(''); setSystemType(''); setDeviceCategory(''); setCustomerStatus(''); setFirstPage() }
   function saveColumns(next: DeviceColumnKey[]) { setColumns(next); try { localStorage.setItem('fire.device.columns', JSON.stringify(next)) } catch {} }
   function toggleColumn(key: DeviceColumnKey, checked: boolean) { if (checked) saveColumns([...columns, key]); else if (columns.length > 1) saveColumns(columns.filter(value => value !== key)) }
-  function showAllColumns() { saveColumns(configurableDeviceColumns.map(c => c.key)) }
+  function showAllColumns() { saveColumns(assetColumnOptions.map(c => c.key)) }
   function switchMode(next: boolean) { closeDetail(); setEditor(null); setSelectedDevices(new Map()); setNotice(''); setPage(1); setSize(undefined); setDraft(''); setKeyword(''); setAdvanced(next) }
   function selectDevice(device: Device, checked: boolean) { setSelectedDevices(current => { const next = new Map(current); if (checked) next.set(device.id, device); else next.delete(device.id); return next }) }
   function selectPage(items: Device[], checked: boolean) { setSelectedDevices(current => { const next = new Map(current); for (const device of items) { if (checked) next.set(device.id, device); else next.delete(device.id) } return next }) }
   if (advanced) return <Suspense fallback={<Loading/>}><DeviceWorkbench back={() => switchMode(false)} /></Suspense>
+  if (!management) {
+    const tenantId = session.user?.tenant_id
+    if (!tenantId) return <Empty title="当前账户未绑定单位"/>
+    const items = devices.data?.items ?? []
+    const canSelect = canWrite || permissions.includes('exports:write')
+    function edit(device: Device) {
+      if (canWrite && Number.isSafeInteger(device.revision)) setEditor({ mode: 'edit', device })
+    }
+    function refresh() { devices.refresh(); setSelectedDevices(new Map()); publishObjectChange('devices') }
+    return <section className="legacy-device-ledger" aria-label="无线终端信息">
+      {selectedDetail ? <Suspense fallback={<Loading/>}><CustomerDeviceDetail deviceId={selectedDetail.id} tenantId={tenantId}
+        close={closeDetail} onEdit={canWrite ? edit : undefined}/></Suspense> : <>
+        <CustomerSystemTabs system={systemType} onSystem={value => { setSystemType(value); setFirstPage() }}/>
+        <CustomerDeviceSearch fields={customerFields} initialField={field} draft={draft} onDraft={setDraft}
+          onSearch={(nextField, value) => { setField(nextField); setKeyword(value); setFirstPage() }} onReset={resetSearch}>
+          <CustomerDeviceTools kind="无线终端" create={canWrite ? () => setNewDeviceOpen(true) : undefined} transfer={mode =>
+            <DataTransferActions key={mode} kind="DEVICES" direct={mode} label={mode === 'import' ? '批量添加' : '批量导出'}
+              tenantId={tenantId} filters={{ unit_ids: tenantId, keyword, field, system_type: systemType, customer_status: customerStatus }}
+              selectedIds={[...selectedDevices.keys()]} onCompleted={result => { if ('plan_id' in result) refresh() }}/>}>
+            {canWrite && selectedDevices.size > 0 && <button type="button" className="legacy-device-link" disabled={devices.loading} onClick={() => setCustomerMoveTargets([...selectedDevices.values()])}>移动位置</button>}
+          </CustomerDeviceTools>
+        </CustomerDeviceSearch>
+        <CustomerDeviceTable page={page} size={size ?? 10} list={{ ...devices, data: devices.data && { ...devices.data,
+          items: items.map(device => ({ id: device.id, device, eui: device.device_eui, name: device.name, model: device.model,
+            address: device.address ?? device.place_name, status: <CustomerDeviceStatus code={device.status_display?.customer_status}/>, last: device.last_message_at })) } }}
+          setPage={value => { setPage(value); setSelectedDevices(new Map()) }} setSize={value => { setSize(value); setFirstPage() }}
+          open={row => openDetail(row.device)} edit={canWrite ? row => edit(row.device) : undefined}
+          statusFilter={<CustomerDeviceStatusFilter value={customerStatus} onChange={value => { setCustomerStatus(value); setFirstPage() }}/>}
+          selection={canSelect ? { has: id => selectedDevices.has(id), set: (id, value) => {
+            const device = items.find(item => item.id === id)
+            if (device) selectDevice(device, value)
+          }, setPage: value => selectPage(items, value) } : undefined}/>
+      </>}
+      <Sheet open={newDeviceOpen} onOpenChange={setNewDeviceOpen}><SheetContent className="review-sheet">
+        <SheetHeader className="review-header"><SheetTitle>添加无线终端</SheetTitle></SheetHeader><CustomerDeviceRegistrationWorkspace onCreated={refresh}/>
+      </SheetContent></Sheet>
+      <Sheet open={!!editor} onOpenChange={open => { if (!open) close() }}><SheetContent className="review-sheet">{editor &&
+        <DeviceEditor key={`${editor.device?.id}:${editor.device?.revision}`} editor={editor} onRefresh={() => { close(); refresh() }} onSaved={() => { close(); refresh() }}/>}
+      </SheetContent></Sheet>
+      <Sheet open={customerMoveTargets.length > 0} onOpenChange={open => { if (!open) setCustomerMoveTargets([]) }}><SheetContent className="review-sheet">
+        <SheetHeader className="review-header"><SheetTitle>移动设备位置</SheetTitle></SheetHeader>
+        {customerMoveTargets.length > 0 && <DeviceBatchActions devices={customerMoveTargets} canWrite={canWrite} canMigrate={false}
+          onCancel={() => setCustomerMoveTargets([])} onSaved={() => { setCustomerMoveTargets([]); refresh(); useSession.getState().refreshScopeTree() }}/>}
+      </SheetContent></Sheet>
+    </section>
+  }
+  if (selectedDetail) return <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail} onEdit={device => { closeDetail(); setSelectedDevices(new Map()); setEditor({ mode: 'edit', device }) }}/></Suspense>
   return <section className="device-ledger" aria-labelledby="device-ledger-title">
-    <div className="page-heading device-ledger-heading">
-      <div><h1 id="device-ledger-title">设备资产台账</h1></div>
-      <div className="heading-actions">
-      {!management && canWrite && <Button type="button" onClick={() => setNewDeviceOpen(true)}><Plus/>新增设备</Button>}
-      {management && (canWrite || canReadHikvision && canWriteHikvision) && <Dropdown trigger={['click']} menu={{ items: [
-        ...(canWrite ? [{ key: 'LEGACY_REALTIME', label: intakeCopy.LEGACY_REALTIME.title, onClick: () => setIntake('LEGACY_REALTIME') }] : []),
-        ...(canWrite && canWriteHikvision ? [{ key: 'HIKVISION_FIRECLOUD', label: intakeCopy.HIKVISION_FIRECLOUD.title, onClick: () => setIntake('HIKVISION_FIRECLOUD') }] : []),
-        ...(canReadHikvision && canWriteHikvision ? [{ key: 'association', label: '关联已有海康设备', onClick: () => setPendingOpen(true) }] : []),
-        ...(canWrite ? [{ key: 'advanced', label: '高级接入登记', onClick: () => setIntake('advanced') }] : []),
-      ] }}><Button type="button"><Plus/>添加设备<ChevronDown size={14}/></Button></Dropdown>}
-      {management && canWrite && <Button type="button" variant="outline" onClick={() => setQueueOpen(true)}><ListChecks/>待完成接入</Button>}
-      {management && canWrite && <Button type="button" variant="outline" onClick={() => setIntake('import')}>批量导入设备</Button>}
-      {canReadHikvision && !canWriteHikvision && <Button type="button" variant="outline" onClick={() => setPendingOpen(true)}><Building2/>查看海康待关联设备</Button>}
-      <RefreshButton onClick={devices.refresh}/>
-      <RowActions label="设备列表工具" text="设备工具" closeOnClick={false}>
-        <PageHelp title="设备资产台账说明">资产台账展示真实设备记录，与实时监测、报警处理分开。未知字段显示「未上报」；电量未上报不会显示为 0%。无归属位置的历史设备保留原状态，需显式选择真实位置才能修复或迁移。</PageHelp>
-        {session.scopeInitialized && <DataTransferActions kind="DEVICES" filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(','), keyword, field, place_id: placeId, tenant_id: tenantFilter, connectivity, physical_state: physicalState, system_type: systemType, device_category: deviceCategory }} selectedIds={[...selectedDevices.keys()]} onCompleted={result => { if ('plan_id' in result) { devices.refresh(); setSelectedDevices(new Map()); setNotice('设备导入已提交；请查看逐行结果，提交不代表全部成功。') } }}/>}
-        <Button type="button" variant="outline" onClick={() => switchMode(true)}><SlidersHorizontal/>打开设备筛选工作台</Button>
-      </RowActions>
-      </div>
-    </div>
-    {management && canWrite && <Sheet open={queueOpen && !registrationId} onOpenChange={setQueueOpen}><SheetContent className="review-sheet sm:max-w-5xl">
+    <h1 className="asset-heading" id="device-ledger-title">设备资产</h1>
+    {canWrite && <Sheet open={queueOpen && !registrationId} onOpenChange={setQueueOpen}><SheetContent className="review-sheet sm:max-w-5xl">
       <SheetHeader className="review-header"><SheetTitle>待完成接入</SheetTitle><SheetDescription>继续核对来源或完成本地验收。</SheetDescription></SheetHeader>
-      <div className="review-body">{queueOpen && !registrationId && <DeviceRegistrationQueue onCompleted={() => { devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices') }}/>}</div>
-    </SheetContent></Sheet>}
-    {!management && <Sheet open={newDeviceOpen} onOpenChange={setNewDeviceOpen}><SheetContent className="review-sheet sm:max-w-2xl">
-      <SheetHeader className="review-header"><SheetTitle>新增设备</SheetTitle><SheetDescription>确认真实来源身份、实际所属单位和位置。已有本地资产请使用接入关联，不重复新建。</SheetDescription></SheetHeader>
-      <div className="review-body">{newDeviceOpen && <CustomerDeviceRegistrationWorkspace onCreated={() => { setNewDeviceOpen(false); devices.refresh(); publishObjectChange('devices') }}/>}</div>
+      <div className="review-body">{queueOpen && !registrationId && <DeviceRegistrationQueue onCompleted={() => { refreshAssets(); useSession.getState().refreshScopeTree(); publishObjectChange('devices') }}/>}</div>
     </SheetContent></Sheet>}
     <Sheet open={intake !== null} onOpenChange={open => { if (!open) setIntake(null) }}><SheetContent className="review-sheet sm:max-w-2xl">
       {intake === 'advanced' ? <RegistrationCreator onCreated={detail => {
@@ -160,29 +245,68 @@ function DevicesContent({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: (
       <HikvisionAssociationSheet onClose={() => setPendingOpen(false)} openDevice={device => { setPendingOpen(false); openDetail(device) }}/>
     </Suspense>}
     {notice && <div role="status" className="notice">{notice}</div>}
-    <Card className="list-card device-ledger-panel"><CardContent>
-      <div className="list-toolbar">
-        <form onSubmit={search} className="search-form">
-          <div className="input-icon"><Search size={17}/><Input aria-label="搜索设备" placeholder={field === 'eui' ? '搜索设备编号' : field === 'name' ? '搜索设备名称' : field === 'model' ? '搜索设备型号' : field === 'address' ? '搜索安装位置' : '搜索设备名称、EUI、型号或安装位置'} value={draft} onChange={e => setDraft(e.target.value)}/></div>
-          <Button variant="outline" type="submit">查询</Button><Button variant="ghost" type="button" onClick={resetSearch}>重置</Button>
+    <div className="asset-list">
+      <Tabs size="small" animated={false} activeKey={monitoring ? 'monitoring' : 'ledger'} onChange={view => {
+        setMonitoring(view === 'monitoring')
+        if (view === 'monitoring') setSelectedDevices(new Map())
+      }} items={[{ key: 'ledger', label: '资产台账' }, { key: 'monitoring', label: '运行监控' }]}/>
+      <Tabs className="asset-tabs" size="small" animated={false} activeKey={systemType || 'all'}
+        onChange={value => { setSystemType(value === 'all' ? '' : value); setFirstPage() }}
+        items={[...assetSystemTabs.map(([key, label]) => ({ key: key || 'all', label })),
+          ...(systemType && !assetSystemTabs.some(([key]) => key === systemType) ? [{ key: systemType, label: systemType }] : [])]}/>
+      <AssetMetrics metrics={metrics.data?.metrics} loading={metrics.loading} unavailable={metrics.error != null}/>
+      <div className="asset-toolbar">
+        <form onSubmit={search} className="asset-search">
+          <Input type="search" aria-label="搜索设备" placeholder={field === 'eui' ? '搜索设备编号' : field === 'name' ? '搜索设备名称' : field === 'model' ? '搜索设备型号' : field === 'address' ? '搜索安装位置' : '设备名称、序列号、安装位置'} value={draft} onChange={e => setDraft(e.target.value)}/>
+          <Button variant="ghost" type="submit" size="icon-sm" title="查询" aria-label="查询"><Search size={16}/></Button>
         </form>
+        {!monitoring && (canWrite || canReadHikvision && canWriteHikvision) && <Dropdown trigger={['click']} menu={{ items: [
+          ...(canWrite ? [{ key: 'LEGACY_REALTIME', label: intakeCopy.LEGACY_REALTIME.title, onClick: () => setIntake('LEGACY_REALTIME') }] : []),
+          ...(canWrite && canWriteHikvision ? [{ key: 'HIKVISION_FIRECLOUD', label: intakeCopy.HIKVISION_FIRECLOUD.title, onClick: () => setIntake('HIKVISION_FIRECLOUD') }] : []),
+          ...(canReadHikvision && canWriteHikvision ? [{ key: 'association', label: '关联已有海康设备', onClick: () => setPendingOpen(true) }] : []),
+          ...(canWrite ? [{ key: 'advanced', label: '高级接入登记', onClick: () => setIntake('advanced') }] : []),
+        ] }}><Button type="button" size="sm"><Plus/>添加设备<ChevronDown/></Button></Dropdown>}
+        {!monitoring && canWrite && <Button type="button" variant="ghost" size="sm" onClick={() => setQueueOpen(true)}><ListChecks/>待完成接入</Button>}
+        {!monitoring && <DataTransferActions kind="DEVICES" assetMenu={{ scopeReady: session.scopeInitialized, onSourceImport: canWrite ? () => setIntake('import') : undefined }}
+          filters={{ unit_ids: scopeTenantIds.join(','), place_ids: scopePlaceIds.join(','), keyword, field, place_id: placeId, tenant_id: tenantFilter, ...statusFilters }}
+          selectedIds={[...selectedDevices.keys()]} onCompleted={result => { if ('plan_id' in result) { refreshAssets(); setSelectedDevices(new Map()) } }}/>}
+        {!monitoring && canReadHikvision && !canWriteHikvision && <Button type="button" variant="ghost" size="sm" onClick={() => setPendingOpen(true)}><Building2/>查看海康待关联设备</Button>}
+        {!monitoring && (canWrite || canMigrate) && selectedDevices.size > 0 && <Button variant="ghost" size="sm" onClick={() => setBatchTargets([...selectedDevices.values()])}><ListChecks/>批量操作（{selectedDevices.size}）</Button>}
+        <RowActions label="设备列表工具" text="更多配置" closeOnClick={false}>
+          <Button type="button" variant="outline" onClick={() => switchMode(true)}>打开设备筛选工作台</Button>
+          <PageHelp title="设备资产说明">左侧单位和位置仅筛选读取范围。引入、移动和移交必须另选真实目标。未知字段不作正常、离线或零值推定。</PageHelp>
+        </RowActions>
+        <div className="asset-toolbar-end">
+          <Button type="button" size="icon-sm" variant="ghost" aria-label="刷新数据" title="刷新数据" onClick={refreshAssets}><RefreshCw/></Button>
+          <Popover trigger="click" placement="bottomRight" destroyOnHidden content={<div className="asset-filters">
+          <label className="size-picker"><select aria-label="搜索字段" value={field} onChange={e => { setField(e.target.value); setFirstPage() }}><option value="">全部字段</option><option value="eui">设备编号</option><option value="name">设备名称</option><option value="model">设备型号</option><option value="address">安装位置</option></select></label>
+          {canReadPlaces && <label className="size-picker"><Building2 size={15}/><select aria-label="按安装位置筛选" value={placeId} onChange={e => { setPlaceId(e.target.value); setFirstPage() }}><option value="">全部位置</option>{filteredPlaceOptions.map(place => <option key={place.id} value={place.id}>{`${place.tenant_name} · ${'　'.repeat(Math.max(0, place.level - 1))}${place.name}`}</option>)}</select></label>}
+          {canReadTenants && <label className="size-picker"><Building2 size={15}/><select aria-label="按单位筛选" value={tenantFilter} onChange={e => { setTenantFilter(e.target.value); setPlaceId(''); setFirstPage() }}><option value="">全部单位</option>{tenants.data?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+          <label className="size-picker">在线状态<select aria-label="按链路诊断筛选" value={connectivity} onChange={e => { setConnectivity(e.target.value); setFirstPage() }}>{connectivityOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+          <label className="size-picker">来源火情<select aria-label="按来源火情筛选" value={physicalState} onChange={e => { setPhysicalState(e.target.value); setFirstPage() }}><option value="">全部</option><option value="FIRE">火警</option><option value="NORMAL">正常</option><option value="UNKNOWN">未知</option></select></label>
+          <label className="size-picker">设备状态<select aria-label="按设备状态筛选" value={customerStatus} onChange={e => { setCustomerStatus(e.target.value); setFirstPage() }}>{deviceStatusOptions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+          <label className="size-picker">系统类型<Input aria-label="按系统类型筛选" maxLength={80} value={systemType} onChange={e => { setSystemType(e.target.value); setFirstPage() }}/></label>
+          <label className="size-picker">设备类别<Input aria-label="按设备类别筛选" maxLength={80} value={deviceCategory} onChange={e => { setDeviceCategory(e.target.value); setFirstPage() }}/></label>
+          <Button variant="ghost" size="sm" type="button" onClick={resetSearch}>重置</Button>
+          </div>}>
+            <Button variant="ghost" size="sm"><Filter/>条件筛选{(field || placeId || tenantFilter || connectivity || physicalState || deviceCategory || customerStatus) && ' · 已启用'}</Button>
+          </Popover>
+          {!monitoring && <Popover trigger="click" placement="bottomRight" open={columnOpen} onOpenChange={setColumnOpen} destroyOnHidden content={
+            <div className="column-picker" role="group" aria-label="设备列设置"><div className="column-picker-head"><strong>显示列</strong><span>{columns.length} / {assetColumnOptions.length}</span></div><div className="column-picker-grid">{assetColumnOptions.map(column => <label key={column.key}><input type="checkbox" checked={columns.includes(column.key)} onChange={e => toggleColumn(column.key, e.target.checked)}/>{column.label}</label>)}</div><div className="column-picker-actions"><Button type="button" variant="ghost" size="sm" onClick={showAllColumns}>全部显示</Button><Button type="button" variant="ghost" size="sm" onClick={() => setColumnOpen(false)}>完成</Button></div></div>
+          }><Button variant="ghost" size="sm" type="button" aria-expanded={columnOpen}><SlidersHorizontal/>列设置</Button></Popover>}
+        </div>
       </div>
-      <details className="device-filter-drawer"><summary>筛选与列表设置{(field || placeId || tenantFilter || connectivity || physicalState || systemType || deviceCategory) && ' · 已启用筛选'}</summary><div className="list-toolbar">
-          <label className="size-picker"><select aria-label="搜索字段" value={field} onChange={e => { setField(e.target.value); setPage(1); setSelectedDevices(new Map()) }}><option value="">全部字段</option><option value="eui">设备编号</option><option value="name">设备名称</option><option value="model">设备型号</option><option value="address">安装位置</option></select></label>
-          {canReadPlaces && <label className="size-picker"><Building2 size={15}/><select aria-label="按安装位置筛选" value={placeId} onChange={e => { setPlaceId(e.target.value); setPage(1); setSelectedDevices(new Map()) }}><option value="">全部位置</option>{filteredPlaceOptions.map(place => <option key={place.id} value={place.id}>{`${place.tenant_name} · ${'　'.repeat(Math.max(0, place.level - 1))}${place.name}`}</option>)}</select></label>}
-        {canReadTenants && <label className="size-picker"><Building2 size={15}/><select aria-label="按单位筛选" value={tenantFilter} onChange={e => { setTenantFilter(e.target.value); setPage(1); setPlaceId(''); setSelectedDevices(new Map()) }}><option value="">全部单位</option>{tenants.data?.items?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-        <Button variant="outline" type="button" onClick={() => setColumnOpen(value => !value)}><SlidersHorizontal/>列设置</Button>
-        <label className="size-picker"><SlidersHorizontal size={15}/><select aria-label="每页设备条数" value={size ?? ''} onChange={e => { setPage(1); setSelectedDevices(new Map()); setSize(e.target.value ? Number(e.target.value) : undefined) }}><option value="">服务端默认条数</option><option value={20}>20 条 / 页</option><option value={50}>50 条 / 页</option><option value={100}>100 条 / 页</option></select></label>
-        {management && <label className="size-picker">链路诊断<select aria-label="按链路诊断筛选" value={connectivity} onChange={e => { setConnectivity(e.target.value); setPage(1); setSelectedDevices(new Map()) }}><option value="">全部</option><option value="ONLINE">在线</option><option value="OFFLINE">离线</option><option value="UNACTIVATED">未激活</option><option value="UNKNOWN">未知</option></select></label>}
-        {management && <label className="size-picker">来源火情<select aria-label="按来源火情筛选" value={physicalState} onChange={e => { setPhysicalState(e.target.value); setPage(1); setSelectedDevices(new Map()) }}><option value="">全部</option><option value="FIRE">火警</option><option value="NORMAL">正常</option><option value="UNKNOWN">未知</option></select></label>}
-        <label className="size-picker">系统类型<Input aria-label="按系统类型筛选" maxLength={80} value={systemType} onChange={e => { setSystemType(e.target.value); setPage(1); setSelectedDevices(new Map()) }}/></label>
-        <label className="size-picker">设备类别<Input aria-label="按设备类别筛选" maxLength={80} value={deviceCategory} onChange={e => { setDeviceCategory(e.target.value); setPage(1); setSelectedDevices(new Map()) }}/></label>
-      </div></details>
-      {columnOpen && <div className="column-picker" role="group" aria-label="设备列设置"><div className="column-picker-head"><strong>显示列</strong><span>{columns.length} / {configurableDeviceColumns.length}</span></div><div className="column-picker-grid">{configurableDeviceColumns.map(column => <label key={column.key}><input type="checkbox" checked={columns.includes(column.key)} onChange={e => toggleColumn(column.key, e.target.checked)}/>{column.label}</label>)}</div><div className="column-picker-actions"><Button type="button" variant="ghost" size="sm" onClick={showAllColumns}>全部显示</Button><Button type="button" variant="ghost" size="sm" onClick={() => setColumnOpen(false)}>完成</Button></div></div>}
-      {devices.loading ? <Loading/> : devices.error != null ? <ErrorNotice error={devices.error} retry={devices.refresh}/> : devices.data ? <>
-        <DeviceTable items={devices.data.items} visibleColumns={columns} selectedIds={new Set(selectedDevices.keys())} onSelectionChange={canWrite || canMigrate ? selectDevice : undefined} onPageSelectionChange={canWrite || canMigrate ? selectPage : undefined} actions={device => <div className="identity-row-actions device-ledger-row-actions">
-          <Button type="button" variant="link" size="sm" onClick={() => openDetail(device)}>查看详情</Button>
-          {(management || canWrite) && <RowActions label="更多设备操作" text={<Ellipsis aria-hidden="true" size={17}/>}>
+      <div className="asset-table-frame">
+      {devices.loading ? <Loading/> : devices.error != null ? <ErrorNotice error={devices.error} retry={refreshAssets}/> : devices.data ?
+        <DeviceTable assetLayout showPhysicalState={monitoring} items={devices.data.items} visibleColumns={monitoring ? monitoringColumns : columns} sort={sort} onSort={sortBy}
+          headerActions={{
+            category: <AssetCategoryFilter value={deviceCategory} onChange={value => { setDeviceCategory(value); setFirstPage() }}/>,
+            online: <AssetChoiceFilter label="筛选在线状态" value={connectivity} options={connectivityOptions} onChange={value => { setConnectivity(value); setFirstPage() }}/>,
+            customer: <AssetChoiceFilter label="筛选设备状态" value={customerStatus} options={deviceStatusOptions} onChange={value => { setCustomerStatus(value); setFirstPage() }}/>,
+          }}
+          selectedIds={new Set(selectedDevices.keys())} onSelectionChange={!monitoring && (canWrite || canMigrate || permissions.includes('exports:write')) ? selectDevice : undefined} onPageSelectionChange={!monitoring && (canWrite || canMigrate || permissions.includes('exports:write')) ? selectPage : undefined} actions={device => <div className="identity-row-actions device-ledger-row-actions">
+          <Button type="button" variant="ghost" size="sm" onClick={() => openDetail(device)}>查看详情</Button>
+          {!monitoring && <RowActions label="更多设备操作" text={<Ellipsis aria-hidden="true" size={17}/>}>
             {canWrite && <><Button variant="ghost" size="sm" disabled={!Number.isSafeInteger(device.revision)} onClick={() => setEditor({ mode: 'edit', device })}><Pencil/>编辑资料</Button><Button variant="ghost" size="sm" disabled={!Number.isSafeInteger(device.revision)} onClick={() => setMovingDevice(device)}><MoveRight/>移动位置</Button></>}
             {management && permissions.includes('device-services:read') && <Button type="button" variant="ghost" size="sm" onClick={() => setServiceDevice({ id: device.id, tenantId: device.tenant_id, name: device.name })}><SlidersHorizontal/>服务与参数</Button>}
             {management && canWrite && <DeviceTransferAction device={device} onSaved={() => { setSelectedDevices(new Map()); devices.refresh(); setNotice('受控移交已提交；来源资产历史保留，目标资产需单独完成接入绑定。') }}/>}
@@ -191,14 +315,22 @@ function DevicesContent({ onHikvisionEntryOpened }: { onHikvisionEntryOpened?: (
             <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'history', device })}><History/>绑定历史</Button>
             <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'place-history', device })}><History/>位置历史</Button>
           </RowActions>}
-        </div>}/>
-        <Pager page={devices.data.page} size={devices.data.size} total={devices.data.total} onChange={next => { setSelectedDevices(new Map()); setPage(next) }}/>
-      </> : null}
-    </CardContent></Card>
-    {selectedDevices.size > 0 && <DeviceBatchActions devices={[...selectedDevices.values()]} canWrite={canWrite} canMigrate={canMigrate} onCancel={() => setSelectedDevices(new Map())} onSaved={() => { setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices', 'organization'); setNotice('已完成所选设备的显式版本/位置变更。') }}/>}
+        </div>}/> : null}
+      </div>
+      {devices.data && !devices.loading && <div className="asset-pagination">
+        <span>共 {devices.data.total} 条</span>
+        {selectedDevices.size > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedDevices(new Map())}>已选 {selectedDevices.size} 条 · 清除</Button>}
+        <select aria-label="每页设备条数" value={devices.data.size} onChange={e => { setSize(Number(e.target.value)); setFirstPage() }}>
+          {[...new Set([devices.data.size, 20, 50, 100])].sort((a, b) => a - b).map(count => <option key={count} value={count}>{count} 条 / 页</option>)}
+        </select>
+        <Pagination current={devices.data.page} pageSize={devices.data.size} total={devices.data.total} showSizeChanger={false} size="small" onChange={setPage}/>
+      </div>}
+    </div>
+    <Sheet open={batchTargets.length > 0} onOpenChange={open => { if (!open) setBatchTargets([]) }}><SheetContent className="review-sheet sm:max-w-xl"><SheetHeader className="review-header"><SheetTitle>已选设备批量操作</SheetTitle><SheetDescription>使用选中设备的实际归属，位置和版本变更须核对后提交。</SheetDescription></SheetHeader>
+      <div className="review-body">{batchTargets.length > 0 && <DeviceBatchActions devices={batchTargets} canWrite={canWrite} canMigrate={canMigrate} onCancel={() => { setBatchTargets([]); setSelectedDevices(new Map()) }} onSaved={() => { setBatchTargets([]); setSelectedDevices(new Map()); refreshAssets(); useSession.getState().refreshScopeTree(); publishObjectChange('devices', 'organization'); setNotice('已完成所选设备的显式版本/位置变更。') }}/>}</div>
+    </SheetContent></Sheet>
     <Sheet open={!!editor} onOpenChange={open => { if (!open) close() }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <DeviceEditor key={`${editor.mode}:${editor.device?.id ?? 'new'}:${editor.device?.revision ?? ''}`} editor={editor} onRefresh={() => { close(); setSelectedDevices(new Map()); devices.refresh() }} onSaved={() => { close(); setSelectedDevices(new Map()); devices.refresh(); publishObjectChange('devices'); setNotice('设备操作已保存。开户不是上报、迁移不是恢复；请按服务端结果核对未知状态、待联调标记与固定版本。') }}/>}</SheetContent></Sheet>
     <Sheet open={!!movingDevice} onOpenChange={open => { if (!open) setMovingDevice(null) }}><SheetContent className="review-sheet"><SheetHeader className="review-header"><SheetTitle>移动设备位置 · {movingDevice?.name ?? movingDevice?.device_eui}</SheetTitle></SheetHeader><div className="review-body">{movingDevice && <DeviceBatchActions key={movingDevice.id} devices={[movingDevice]} canWrite={canWrite} canMigrate={false} onCancel={() => setMovingDevice(null)} onSaved={() => { setMovingDevice(null); setSelectedDevices(new Map()); devices.refresh(); useSession.getState().refreshScopeTree(); publishObjectChange('devices', 'organization'); setNotice('设备位置已更新，位置履历已保留；列表筛选与页码不变。') }}/>}</div></SheetContent></Sheet>
-    {selectedDetail && <Suspense fallback={<Loading/>}><DeviceDetail deviceId={selectedDetail.id} tenantId={selectedDetail.tenantId} close={closeDetail} onEdit={device => { closeDetail(); setSelectedDevices(new Map()); setEditor({ mode: 'edit', device }) }}/></Suspense>}
     <Sheet open={!!serviceDevice} onOpenChange={open => { if (!open) setServiceDevice(null) }}><SheetContent className="review-sheet sm:max-w-3xl">
       {serviceDevice && <><SheetHeader className="review-header"><SheetTitle>设备服务 · {serviceDevice.name ?? serviceDevice.id}</SheetTitle><SheetDescription>能力为缓存元数据；参数与命令只在显式操作后产生。厂商接受不等于物理执行。</SheetDescription></SheetHeader><DeviceServicesPanel deviceId={serviceDevice.id} tenantId={serviceDevice.tenantId}/></>}
     </SheetContent></Sheet>

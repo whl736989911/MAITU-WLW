@@ -36,7 +36,7 @@ async function deviceAction(user: ReturnType<typeof userEvent.setup>, name: stri
   await user.click(await screen.findByRole('button', { name: '更多设备操作' }))
   await user.click(screen.getByRole('button', { name }))
 }
-beforeEach(() => useSession.getState().clear())
+beforeEach(() => { useSession.getState().clear(); localStorage.removeItem('fire.device.columns') })
 
 describe('P3声明式JSON与API边界', () => {
   it('拒绝重复键、转义后相同键、非有限数；不执行脚本或归零', () => {
@@ -360,6 +360,11 @@ describe('设备批量移动位置确认消歧', () => {
     render(<DevicesPage/>)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('checkbox', { name: '选择当前页全部设备' }))
+    if (audience === 'customer') await user.click(screen.getByRole('button', { name: '移动位置' }))
+    else {
+      expect(screen.queryByLabelText('真实目标位置')).not.toBeInTheDocument()
+      await user.click(screen.getByRole('button', { name: '批量操作（2）' }))
+    }
     await screen.findByRole('option', { name: '西楼 / 205室' })
     await user.selectOptions(screen.getByLabelText('真实目标位置'), 'west-205')
     if (audience === 'management') await user.click(screen.getByRole('button', { name: '核对批量操作' }))
@@ -378,7 +383,7 @@ describe('设备批量移动位置确认消歧', () => {
 
 describe('批量移动保存后范围刷新', () => {
   it.each(['management', 'customer'] as const)('%s 成功后显示新位置并保留筛选，管理端同步源和目标计数', async audience => {
-    const rows = [{ ...device, tenant_id: 'tenant-a' }, { ...device, id: 'count-device-b', device_eui: 'count-device-b', name: '正式未联调B', tenant_id: 'tenant-a' }]
+    const rows = [{ ...device, tenant_id: 'tenant-a', address: null }, { ...device, id: 'count-device-b', device_eui: 'count-device-b', name: '正式未联调B', tenant_id: 'tenant-a', address: null }]
     let committed = false, finishSave!: () => void
     const currentDevices = () => rows.map(row => ({ ...row, tenant_name: '单位A', place_id: committed ? 'count-target' : 'count-source', place_name: committed ? '目标位置' : '源位置', revision: committed ? 1 : 0 }))
     const places = () => [
@@ -405,10 +410,17 @@ describe('批量移动保存后范围刷新', () => {
       await user.keyboard('{ArrowDown}{ArrowRight}')
       await waitFor(() => expect(counter('源位置')).toHaveTextContent('源位置2'))
       expect(counter('目标位置')).toHaveTextContent('目标位置0')
+      await user.click(screen.getByRole('button', { name: '列设置' }))
+      const columns = within(screen.getByRole('group', { name: '设备列设置' }))
+      await user.click(columns.getByRole('checkbox', { name: '归属位置' }))
+      await user.click(columns.getByRole('button', { name: '完成' }))
     }
+    if (audience === 'customer') await user.selectOptions(screen.getByLabelText('搜索字段'), 'name')
     setValue('搜索设备', '正式')
-    await user.click(screen.getByRole('button', { name: /^查\s*询$/ }))
+    await user.click(screen.getByRole('button', { name: audience === 'management' ? '查询' : '搜索' }))
     await user.click(await screen.findByRole('checkbox', { name: '选择当前页全部设备' }))
+    if (audience === 'customer') await user.click(screen.getByRole('button', { name: '移动位置' }))
+    else await user.click(screen.getByRole('button', { name: '批量操作（2）' }))
     await screen.findByRole('option', { name: '目标位置' })
     await user.selectOptions(screen.getByLabelText('真实目标位置'), 'count-target')
     if (audience === 'management') await user.click(screen.getByRole('button', { name: '核对批量操作' }))
@@ -418,13 +430,16 @@ describe('批量移动保存后范围刷新', () => {
     if (audience === 'management') expect(counter('源位置')).toHaveTextContent('源位置2')
     await act(async () => finishSave())
     await waitFor(() => {
-      for (const row of rows) expect(document.querySelector(`[data-device-id="${row.id}"]`)).toHaveTextContent('目标位置')
+      for (const row of rows) {
+        const deviceRow = screen.getByRole('cell', { name: row.name! }).closest('tr')
+        expect(deviceRow).toHaveTextContent('目标位置')
+      }
       if (audience === 'management') {
         expect(counter('源位置')).toHaveTextContent('源位置0')
         expect(counter('目标位置')).toHaveTextContent('目标位置2')
       }
     })
-    expect(screen.getByRole('textbox', { name: '搜索设备' })).toHaveValue('正式')
+    expect(screen.getByLabelText('搜索设备')).toHaveValue('正式')
     expect(useSession.getState().scopeTenantIds).toEqual(['tenant-a'])
     expect(useSession.getState().scopePlaceIds).toEqual([])
     expect(screen.queryByLabelText('真实目标位置')).not.toBeInTheDocument()

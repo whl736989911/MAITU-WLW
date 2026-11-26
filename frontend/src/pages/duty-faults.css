@@ -20,23 +20,12 @@
 .duty-device-fault-card>dl { grid-area:timing; grid-template-columns:1fr; gap:5px; margin:0; font-size:10px; }
 .duty-device-fault-card>dl dd { margin-bottom:5px; font-variant-numeric:tabular-nums; }
 .duty-device-fault-card>button { grid-area:action; justify-self:end; white-space:nowrap; }
-.duty-fault-page .duty-event-row { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(130px,1fr) minmax(0,1.4fr); gap:8px 18px; width:100%; padding:16px 12px; border:0; border-bottom:1px solid var(--color-border); background:transparent; text-align:left; color:var(--foreground); cursor:pointer; }
-.duty-fault-page .duty-event-row:hover { background:var(--color-muted); }
-.duty-fault-page .duty-event-row:focus-visible { outline:2px solid var(--color-ring); outline-offset:-2px; }
-.duty-fault-page .duty-event-row>strong { font-size:12px; font-weight:600; overflow-wrap:anywhere; }
-.duty-fault-page .duty-event-row>time,.duty-fault-page .duty-event-row>span { font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
-.duty-fault-page .duty-event-row>time { color:var(--color-muted-foreground); font-variant-numeric:tabular-nums; }
-.duty-fault-page .duty-event-row>span { color:#a85f23; }
-.duty-fault-page .duty-event-row>small { grid-column:1/-1; color:var(--color-muted-foreground); font-size:10px; line-height:1.6; overflow-wrap:anywhere; }
 @media(max-width:1150px) {
   .duty-device-fault-card { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"identity count" "types types" "timing action"; }
-  .duty-fault-page .duty-event-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
-  .duty-fault-page .duty-event-row>span { grid-column:1/-1; }
 }
 @media(max-width:640px) {
   .duty-fault-page dl { grid-template-columns:1fr; gap:5px; }
   .duty-fault-page dl dd { margin-bottom:10px; }
   .duty-device-fault-card { grid-template-columns:minmax(0,1fr); grid-template-areas:"identity" "count" "types" "timing" "action"; gap:12px; }
   .duty-device-fault-card>button { justify-self:start; }
-  .duty-fault-page .duty-event-row { grid-template-columns:minmax(0,1fr); }
 }

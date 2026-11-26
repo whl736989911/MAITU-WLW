@@ -19,7 +19,7 @@ function ServiceCard({ icon, title, description, stats, action, onOpen }: { icon
   return <div className="demo-service-card">
     <div className="service-ic">{icon}</div>
     <div className="service-body"><h3>{title}</h3><p>{description}</p><div className="service-stats">{stats.map(stat => <div key={stat.label}><b>{stat.value}</b><span>{stat.label}</span></div>)}</div></div>
-    <Button type="button" className="service-go" onClick={onOpen}>{action}<ArrowRight size={15}/></Button>
+    <Button type="button" variant="ghost" className="service-go" onClick={onOpen}>{action}<ArrowRight size={15}/></Button>
   </div>
 }
 
@@ -88,11 +88,11 @@ export function Dashboard() {
       <div className="demo-service-list">
         {allowedPage('alarms', audience, permissions) && <ServiceCard icon={<BellRing size={22}/>} title="监控值守" description="查看报警与人工处置情况" action="进入报警中心" onOpen={() => navigate('alarms')} stats={[
           { label: '未处理报警', value: summary.loading ? '…' : reported(live?.alarms.unhandled ?? data?.unhandled_alarms) },
+          { label: '今日报警', value: reported(data?.today_alarms) },
           ...(management ? [
             { label: '当前火警', value: reported(live?.alarms.fire) },
             { label: '最早待处理时间', value: live ? live.alarms.oldest_unhandled_at ? <small>{live.alarms.oldest_unhandled_at}（含时间来源未核验的历史记录）</small> : live.alarms.unhandled > 0 ? '来源发生时间未知' : '无待处理报警' : '未确认' },
           ] : []),
-          { label: '今日报警', value: reported(data?.today_alarms) },
         ]}/>}
         <ServiceCard icon={<Radio size={22}/>} title="设备与资源" description="设备连接、物理状态与资源分布" action="进入设备监测" onOpen={() => navigate('devices')} stats={[
           { label: '设备', value: reported(data?.device_total) },

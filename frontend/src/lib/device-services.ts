@@ -420,8 +420,11 @@ export const deviceServicesApi = {
     get<ParameterRead>(`${audiencePrefix()}/devices/${encodeURIComponent(deviceId)}/service-parameters`, tenantId, signal, parameterResponse),
   sourceBindings: (deviceId: string, tenantId: string | undefined, signal?: AbortSignal) =>
     get<SourceBinding[]>(`${audiencePrefix()}/devices/${encodeURIComponent(deviceId)}/source-bindings`, tenantId, signal, bindingsResponse),
-  commands: (deviceId: string, page: number, tenantId: string | undefined, signal?: AbortSignal) =>
-    get<{ items: CommandSummary[]; total: number; page: number; size: number }>(`${audiencePrefix()}/devices/${encodeURIComponent(deviceId)}/service-commands?page=${page}`, tenantId, signal, commandsPageResponse),
+  commands: (deviceId: string, page: number, tenantId: string | undefined, signal?: AbortSignal, serviceKey?: string) => {
+    const query = new URLSearchParams({ page: String(page) })
+    if (serviceKey) query.set('serviceKey', serviceKey)
+    return get<{ items: CommandSummary[]; total: number; page: number; size: number }>(`${audiencePrefix()}/devices/${encodeURIComponent(deviceId)}/service-commands?${query}`, tenantId, signal, commandsPageResponse)
+  },
   command: (id: string, tenantId: string | undefined, signal?: AbortSignal) =>
     get<CommandDetail>(`${audiencePrefix()}/device-service-commands/${encodeURIComponent(id)}`, tenantId, signal, commandDetailResponse),
   createCommand: (deviceId: string, body: { service_key: string; arguments: Record<string, unknown>; expected_device_revision: number; capability_revision?: number; source_binding_id?: string; reason: string; risk_confirmed: boolean }, key: string, tenantId: string | undefined, signal?: AbortSignal) =>
@@ -452,8 +455,8 @@ export const deviceServicesApi = {
     request<{ id: string }>(`/management/product-service-definitions/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key }, body: JSON.stringify(body), signal }),
 }
 
-export function emptyArguments(fields: ServiceField[]): Record<string, unknown> {
-  const result: Record<string, unknown> = {}
+export function emptyArguments(fields: ServiceField[]): Record<string, boolean> {
+  const result: Record<string, boolean> = {}
   for (const field of fields) if (field.type === 'boolean') result[field.key] = false
   return result
 }

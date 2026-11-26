@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Coins, ListChecks, QrCode, RefreshCw } from 'lucide-react'
+import { Coins, ListChecks, QrCode } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import { useSession } from '@/lib/store'
@@ -8,13 +8,11 @@ import type { NotificationCustomerLedger, NotificationCustomerOrder, Paginated }
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Empty, ErrorNotice, Loading, PageHeading, Pager } from '@/components/common'
+import { Empty, ErrorNotice, Loading, Pager } from '@/components/common'
 import { PageHelp } from '@/components/page-tools'
 import { dateTime } from '@/lib/format'
 import './notification-resources.css'
-import './notification-recharge.css'
 
 const accountKey = (item: { owner_type: string; owner_id: string }) => `${item.owner_type}:${item.owner_id}`
 const kindNames: Record<string, string> = { RECHARGE: '充值', ADJUST: '调整', CONSUME: '扣减', REFUND: '退回' }
@@ -55,7 +53,7 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const [page, setPage] = useState(1)
   const orders = useResource(`customer-recharge-orders:${page}`, signal => api.customerRechargeOrders(page, signal))
   const [owner, setOwner] = useState(''), [channel, setChannel] = useState<'SMS'|'VOICE'>('SMS'), [quantity, setQuantity] = useState('100')
-  const [notice, setNotice] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [created, setCreated] = useState<NotificationCustomerOrder | null>(null), [reviewing, setReviewing] = useState(false)
+  const [notice, setNotice] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [created, setCreated] = useState<NotificationCustomerOrder | null>(null)
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null), [orderReadError, setOrderReadError] = useState<unknown>()
   const closingOrder = useRef<string | null>(null)
   const [closing, setClosing] = useState(false), [verifyId, setVerifyId] = useState<string | null>(null)
@@ -73,7 +71,7 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
   const [ledgerOwner, setLedgerOwner] = useState(''), [ledgerPage, setLedgerPage] = useState(1)
   const retry = useRef<{ intent: string; key: string } | null>(null)
   const destinations = options.data?.destinations
-  const selectedOwner = owner
+  const selectedOwner = owner || (destinations?.[0] ? accountKey(destinations[0]) : '')
   const destination = destinations?.find(item => accountKey(item) === selectedOwner)
   const accountsByOwner = new Map((balances.data ?? []).map(account => [accountKey(account), account] as const))
   const ledgerAccount = ledgerOwner ? accountsByOwner.get(ledgerOwner) : undefined
@@ -129,21 +127,19 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       setClosing(false)
     }
   }
-  function refresh() { setReviewing(false); options.refresh(); orders.refresh(); balances.refresh(); if (created) viewOrder(created.id); else if (selectedOrderId) selectedOrder.refresh() }
+  function refresh() { options.refresh(); orders.refresh(); balances.refresh(); if (created) viewOrder(created.id); else if (selectedOrderId) selectedOrder.refresh() }
   function showLedger(key: string) { setLedgerOwner(key); setLedgerPage(1) }
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (busy || closingOrder.current) return
     setError('')
-    setNotice('')
-    if (!destination) { setError(owner ? '所选充值账户已不可用，请重新选择账户' : '请明确选择充值账户'); return }
+    if (!destination) { setError(owner ? '所选充值账户已不可用，请重新选择账户' : '没有可用的充值账户'); return }
     const count = Number(quantity)
     if (!Number.isInteger(count) || count <= 0 || count > 1_000_000) { setError('数量必须是 1 至 1,000,000 的整数'); return }
     if (amount == null) { setError('资源单价未配置，请联系平台管理员'); return }
-    if (!reviewing) { setReviewing(true); return }
-    setReviewing(false)
-    closeOrder()
     const intent = JSON.stringify([destination.owner_type, destination.owner_id, channel, count])
+    if (!window.confirm(`确认向「${destination.owner_name}」${destination.owner_type === 'ORGANIZATION' ? '单位' : '位置'}账户充值 ${count} ${channel === 'SMS' ? '条短信' : '次语音'}，预计 ${(amount / 100).toFixed(2)} 元？`)) return
+    setNotice(''); closeOrder()
     if (!retry.current || retry.current.intent !== intent) retry.current = { intent, key: crypto.randomUUID() }
     const key = retry.current.key
     setBusy(true)
@@ -153,9 +149,12 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       setCreated(order); orders.refresh(); setNotice(order.code_url ? `订单已创建：${(order.amount_cents / 100).toFixed(2)} 元，请使用微信扫码支付。` : `订单已创建：${(order.amount_cents / 100).toFixed(2)} 元。${pendingPaymentMessage(order)}`)
     } catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
-  return <><PageHeading eyebrow="NOTIFICATION · 充值" title="短信与语音充值" description={canWrite ? '查看授权账户的短信/语音余额与明细，并生成充值订单。' : '当前账户只读：可查看授权账户余额、明细和本人充值订单。'}><Button variant="outline" onClick={refresh}><RefreshCw/>刷新</Button><PageHelp title="充值与余额说明"><p>短信和语音分别计量、计价及入账，不互相抵扣。剩余数量、总量和已用数量以当前账户实际记录为准；没有记录时不显示虚构余额。</p><p>充值金额按当前平台单价计算。支付配置接入前不能完成在线支付；订单创建、支付受理与数量到账是不同状态，请按原订单刷新核对，不重复支付。</p><p>只读账户可以查看授权余额、明细和自己的历史订单，不能创建新订单。</p></PageHelp></PageHeading>
+  return <section className="legacy-record-page legacy-recharge-page" aria-label="语音短信充值">
     <Card><CardContent>
-      <div className="demo-side-head"><h2 className="section-heading" style={{ margin: 0 }}>资源余额</h2><span className="muted">短信与语音分别统计，只显示当前授权的充值账户</span></div>
+      <div className="demo-side-head"><h2 className="section-heading">资源信息</h2><div className="legacy-record-actions">
+        <button type="button" className="legacy-device-link" onClick={refresh}>刷新</button>
+        <PageHelp title="充值与余额说明"><p>短信与语音分别计量、计价，提交订单不等于支付或到账。请按原订单刷新核对，不重复支付。</p></PageHelp>
+      </div></div>
       {options.loading || balances.loading ? <Loading/> : options.error != null ? <ErrorNotice error={options.error} retry={options.refresh}/> : balances.error != null ? <div role="status" className="notice danger-note">账户余额读取失败，可稍后刷新。<Button type="button" variant="outline" onClick={() => balances.refresh()}>重试</Button></div> : !destinations?.length ? <Empty title="当前没有可查看的资源账户">请联系平台管理员配置充值授权。</Empty> : <div className="notification-account-grid">{destinations.map(item => {
         const account = accountsByOwner.get(accountKey(item))
         return <article className="notification-account-card" key={accountKey(item)} aria-label={`${item.owner_name} · ${item.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}`}>
@@ -174,22 +173,23 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
       </section>}
     </CardContent></Card>
     {canWrite ? <><div className="notice"><Coins size={15}/>充值金额按平台当前单价计算。微信支付参数接入前，订单只能创建，不能完成在线支付。</div>{options.loading ? <Loading/> : options.error != null ? <ErrorNotice error={options.error} retry={options.refresh}/> : options.data && <>
-      <Card className="customer-recharge-order-form"><CardContent><h2 className="section-heading">新建充值订单</h2>{!destinations?.length ? <Empty title="当前没有可充值账户">请联系平台管理员配置充值权限。</Empty> : <form className="customer-recharge-form" onSubmit={submit}>
-        <div className="customer-recharge-fields">
-          <div className="field"><Label htmlFor="recharge-owner">充值账户</Label><select id="recharge-owner" className="native-select" value={selectedOwner} required onChange={e => { setOwner(e.target.value); setReviewing(false) }}><option value="">请明确选择充值账户</option>{owner && !destination && <option value={owner}>所选账户已不可用，请重新选择</option>}{destinations.map(item => <option key={accountKey(item)} value={accountKey(item)}>{item.owner_name}（{item.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}）</option>)}</select><p className="muted-note">充值仅针对明确选中的单位或位置账户。</p></div>
-          <div className="field"><Label htmlFor="recharge-channel">资源类型</Label><select id="recharge-channel" className="native-select" value={channel} onChange={e => { setChannel(e.target.value as 'SMS'|'VOICE'); setReviewing(false) }}><option value="SMS">短信</option><option value="VOICE">语音（次）</option></select></div>
-          <div className="field"><Label htmlFor="recharge-quantity">{channel === 'SMS' ? '短信条数' : '语音次数'}</Label><Input id="recharge-quantity" type="number" min={1} max={1000000} value={quantity} onChange={e => { setQuantity(e.target.value); setReviewing(false) }}/></div>
-        </div>
-        <div className="customer-recharge-checkout">
-          <dl className="detail-list"><div><dt>单价</dt><dd>{unit == null ? '未配置' : `${unit} 分/${channel === 'SMS' ? '条' : '次'}`}</dd></div><div><dt>应付金额</dt><dd>{amount == null ? '—' : `${(amount / 100).toFixed(2)} 元`}</dd></div></dl>
-          {reviewing ? <section className="customer-recharge-review" role="status" aria-label="订单确认">
-            <h3>请确认充值订单</h3>
-            <dl><div><dt>充值账户</dt><dd>{destination!.owner_name} · {destination!.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}</dd></div><div><dt>充值内容</dt><dd>{channel === 'SMS' ? `短信 ${quantity} 条` : `语音 ${quantity} 次`}</dd></div><div><dt>应付金额</dt><dd>{(amount! / 100).toFixed(2)} 元</dd></div></dl>
-            <p>确认后仅创建充值订单，不会自动完成支付或保证资源到账。</p>
-            <div className="customer-recharge-actions"><Button type="button" variant="outline" disabled={busy} onClick={() => setReviewing(false)}>返回修改</Button><Button type="submit" disabled={busy}>{busy ? '创建中…' : '确认创建订单'}</Button></div>
-          </section> : <Button type="submit" disabled={busy || amount == null}>{busy ? '创建中…' : '审核充值订单'}</Button>}
-        </div>
-      </form>}</CardContent></Card>
+      <Card><CardContent><h2 className="section-heading">语音短信充值</h2>{!destinations?.length ? <Empty title="当前没有可充值账户">请联系平台管理员配置充值权限。</Empty> :
+        <form className="form-stack legacy-recharge-form" onSubmit={submit}>
+          <div className="legacy-unit-grid">
+            <label><span>充值到：</span><select className="native-select" value={selectedOwner} disabled={busy} onChange={event => setOwner(event.target.value)}>
+              {owner && !destination && <option value={owner}>所选账户已不可用</option>}
+              {destinations.map(item => <option key={accountKey(item)} value={accountKey(item)}>{item.owner_name}（{item.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'}）</option>)}
+            </select></label>
+            <label><span>资源类型：</span><select className="native-select" value={channel} disabled={busy} onChange={event => setChannel(event.target.value as 'SMS' | 'VOICE')}>
+              <option value="VOICE">语音</option><option value="SMS">短信</option>
+            </select></label>
+            <label><span>{channel === 'SMS' ? '请输入短信条数' : '请输入语音次数'}</span><Input type="number" min={1} max={1000000}
+              required disabled={busy} placeholder={channel === 'SMS' ? '请输入短信条数' : '请输入语音次数'} value={quantity} onChange={event => setQuantity(event.target.value)}/></label>
+            <p>单价：{unit == null ? '未配置' : `${unit} 分/${channel === 'SMS' ? '条' : '次'}`} · 应付金额：{amount == null ? '—' : `${(amount / 100).toFixed(2)} 元`}</p>
+          </div>
+          <div className="legacy-record-actions"><button className="legacy-device-button" disabled={busy || amount == null} type="submit">{busy ? '创建中…' : '提交'}</button>
+            <button className="legacy-device-button" disabled={busy} type="button" onClick={() => { setOwner(''); setChannel('SMS'); setQuantity(''); setError('') }}>重置</button></div>
+        </form>}</CardContent></Card>
     </>}</> : null}
     {(selectedOrderId || created) && <section id="customer-recharge-order" style={{ scrollMarginTop: 80 }}><Card><CardContent>
       <div className="demo-side-head"><h2 className="section-heading"><QrCode size={18}/>{created?.status === 'PENDING' ? '待支付订单' : '充值订单'}</h2><div className="notification-actions">
@@ -206,11 +206,11 @@ function RechargeContent({ canWrite }: { canWrite: boolean }) {
         {closing ? <p role="status">正在核对原订单，请勿支付。</p> :
           checkingClose ? <p role="status">取消结果未确认，请核对原订单，勿重复付款。</p> :
           orderReadError != null ? <ErrorNotice error={orderReadError} retry={() => viewOrder(created.id)}/> :
-          payable(created) ? <div className="payment-qr"><QRCodeSVG value={created.code_url!} size={220} role="img" aria-label="微信支付二维码"/><p>请使用微信扫码支付，支付成功后会自动刷新。</p></div> :
+          payable(created) ? <div className="payment-qr"><QRCodeSVG value={created.code_url!} size={220} marginSize={4} role="img" aria-label="微信支付二维码"/><p>请使用微信扫码支付，支付成功后会自动刷新。</p></div> :
           <div className="notice">{created.status === 'PENDING' ? pendingPaymentMessage(created) : created.status === 'CANCELLED' ? '支付已取消，此订单不能继续支付。' : '此订单已结束，不能继续支付。'}</div>}
       </>}
     </CardContent></Card></section>}
     <Card><CardContent><div className="demo-side-head"><h2 className="section-heading" style={{ margin: 0 }}>我的充值订单</h2><span className="muted">仅显示本人订单；查看原订单不会重复下单</span></div>{orders.loading ? <Loading/> : orders.error != null ? <ErrorNotice error={orders.error} retry={orders.refresh}/> : orders.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>订单 / 操作</TableHead><TableHead>状态</TableHead><TableHead>支付</TableHead></TableRow></TableHeader><TableBody>{orders.data.items.map(order => <TableRow key={order.id}><TableCell><strong>{order.channel === 'SMS' ? '短信' : '语音'} {order.quantity} {order.channel === 'SMS' ? '条' : '次'} · {(order.amount_cents / 100).toFixed(2)} 元</strong><div className="table-sub">{order.created_at}</div><Button type="button" variant="outline" size="sm" aria-label={`查看订单 ${order.id}`} onClick={() => viewOrder(order.id)}>{order.status === 'PENDING' ? '查看 / 继续支付' : '查看订单'}</Button></TableCell><TableCell>{order.status}</TableCell><TableCell>{paymentStateNames[order.payment_state] ?? order.payment_state}{order.status === 'PENDING' && order.expires_at && <div className="table-sub">有效至 {order.expires_at}</div>}</TableCell></TableRow>)}</TableBody></Table><Pager page={orders.data.page} size={orders.data.size} total={orders.data.total} onChange={setPage}/></> : <Empty title="暂无充值订单"/>}</CardContent></Card>
     {notice && <div role="status" className="notice success-note">{notice}</div>}{error && <div role="alert" className="notice danger-note">{error}</div>}
-  </>
+  </section>
 }

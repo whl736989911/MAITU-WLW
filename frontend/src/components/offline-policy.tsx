@@ -1,6 +1,6 @@
 import type { EffectiveParameter } from '@/lib/types'
 import { dateTime, reported } from '@/lib/format'
-export const parameterScopeNames = { GLOBAL: '全局', TENANT: '单位', PLACE: '位置', DEVICE: '单设备' } as const
+export const parameterScopeNames = { GLOBAL: '全局', TENANT: '单位', PLACE: '位置', GROUP: '设备分组', DEVICE: '单设备' } as const
 export function validOfflinePolicy(policy?: EffectiveParameter | null): policy is EffectiveParameter {
   return !!policy && policy.key === 'offline_threshold_minutes' && Number.isSafeInteger(policy.value) && policy.value > 0 && typeof policy.unit === 'string' && !!policy.unit && Object.hasOwn(parameterScopeNames, policy.source_scope) && Number.isSafeInteger(policy.source_revision) && policy.source_revision >= 0 && (policy.source_scope === 'GLOBAL' ? policy.source_id === null : typeof policy.source_id === 'string' && !!policy.source_id) && typeof policy.evaluated_at === 'string' && Number.isFinite(Date.parse(policy.evaluated_at))
 }

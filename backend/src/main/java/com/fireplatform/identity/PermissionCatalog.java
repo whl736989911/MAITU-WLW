@@ -15,7 +15,7 @@ public class PermissionCatalog {
     public record PasswordPolicy(int minLength,int maxLength) { }
     public record Catalog(List<Item> items,PasswordPolicy passwordPolicy) { }
     public Catalog forIdentity(AuthService.Identity identity) {
-        Set<String> applicable=identity.user().userType().equals("CUSTOMER") ? CUSTOMER_KEYS : Set.copyOf(Limits.PLATFORM_PERMISSIONS);
+        Set<String> applicable=identity.audience().equals("customer") ? CUSTOMER_KEYS : Set.copyOf(Limits.PLATFORM_PERMISSIONS);
         return new Catalog(applicable.stream().sorted().map(key->new Item(key,label(key),CUSTOMER_KEYS.contains(key) ? List.of("PLATFORM","CUSTOMER") : List.of("PLATFORM"),identity.permissions().contains(key))).toList(),new PasswordPolicy(Limits.MIN_PASSWORD_LENGTH,Limits.MAX_PASSWORD_LENGTH));
     }
     public List<String> validate(String type,List<String> requested,List<String> actorPermissions) {

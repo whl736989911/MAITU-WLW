@@ -205,9 +205,14 @@ export const dataTransferApi = {
       return exported
     } })
   },
-  exports(page = 1, signal?: AbortSignal) {
+  exports(page = 1, signal?: AbortSignal, kind?: DataTransferKind) {
     const { base } = context('exports:read')
-    return request<Paginated<DataTransferExport>>(`${base}/exports?page=${page}`, { signal, decode: raw => pageValue(raw, exportValue) })
+    const query = new URLSearchParams({ page: String(page), ...(kind ? { kind, size: '20' } : {}) })
+    return request<Paginated<DataTransferExport>>(`${base}/exports?${query}`, { signal, decode: raw => {
+      const result = pageValue(raw, exportValue)
+      if (kind && result.items.some(item => item.kind !== kind)) throw new Error('导出记录与请求类型不一致')
+      return result
+    } })
   },
   downloadExport(id: string, signal?: AbortSignal) {
     const { base } = context('exports:read')

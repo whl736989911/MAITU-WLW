@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
+import { Table as TreeTable, type TableColumnsType } from 'antd'
 import { BellRing, Coins, RefreshCw } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import { paymentApi, type PaymentActionResult } from '@/lib/payments'
 import { dateTime } from '@/lib/format'
-import { placePath } from '@/lib/place-tree'
+import { placePath, placeTreeOptions, type PlaceTreeOption } from '@/lib/place-tree'
 import { createMutationIntent } from '@/lib/mutation-intent'
 import { publishObjectChange } from '@/lib/object-events'
 import './notification-resources.css'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
-import { allowedPage, type NotificationResourceAccount, type NotificationResourceOrder } from '@/lib/types'
+import { allowedPage, type NotificationResourceAccount, type NotificationResourceOrder, type ScopeUnit } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -50,6 +51,8 @@ function ResourcesContent() {
   const paymentWrite = permissions.includes('payments:write')
   const scopeTenantIds = useSession(s => s.scopeTenantIds), scopePlaceIds = useSession(s => s.scopePlaceIds), scopeKey = useSession(s => `${s.scopeTenantIds.join(',')}|${s.scopePlaceIds.join(',')}|${s.scopeInitialized}`)
   const accounts = useResource(`notification-resources:${scopeKey}`, signal => api.notificationResources(signal, scopeTenantIds, scopePlaceIds))
+  const scopeInitialized = useSession(s => s.scopeInitialized), scopeTreeRevision = useSession(s => s.scopeTreeRevision)
+  const balanceTree = useResource(`notification-balance-tree:${scopeTreeRevision}`, signal => api.scopeTree(signal), scopeInitialized && (scopeTenantIds.length > 0 || scopePlaceIds.length > 0))
   const places = useResource(`notification-resources:places:${targetUnit || 'none'}`, signal => api.places(signal, targetUnit ? [targetUnit] : [], []), !!targetUnit)
   const targetUnits = useResource('notification-resource-target-units', signal => api.tenants(signal), audience === 'management' && permissions.includes('tenants:read'))
   const targetUnitName = targetUnits.data?.items.find(unit => unit.id === targetUnit)?.name ?? places.data?.find(place => place.tenant_id === targetUnit)?.tenant_name ?? targetUnit
@@ -171,14 +174,11 @@ function ResourcesContent() {
       {recharge.phase === 'CONFLICT' && <Button type="button" variant="outline" onClick={() => { recharge.reload(); accounts.refresh(); setRetryOpen(false) }}>刷新账户后重新填写</Button>}
     </CardContent></Card>}
     {accounts.loading ? <Loading/> : accounts.error != null ? <ErrorNotice error={accounts.error} retry={accounts.refresh}/> : <>
-      <Card><CardContent><h2 className="section-heading"><BellRing size={18}/>账户余额</h2>{accounts.data?.length ? <section className="notification-account-grid" aria-label="通知资源账户余额">{accounts.data.map(account => <article className="notification-account-card" key={account.id}>
-        <header><h3>{account.owner_name}</h3><p className="muted-note">{account.owner_type === 'ORGANIZATION' ? '单位账户' : '位置账户'} · {account.tenant_name ?? '单位名称未提供'}{!account.enabled && ' · 已停用'}</p></header>
-        <dl className="notification-account-balances">
-          <div><dt>短信剩余（条）</dt><dd>{account.sms_remaining ?? '未知'}</dd><small>总量 {account.sms_total ?? '未知'} · 已用 {account.sms_used ?? '未知'}</small></div>
-          <div><dt>语音剩余（次）</dt><dd>{account.voice_remaining ?? '未知'}</dd><small>总量 {account.voice_total ?? '未知'} · 已用 {account.voice_used ?? '未知'}</small></div>
-        </dl>
-        <div className="notification-account-footer"><details><summary>账户标识与更新时间</summary><p className="table-sub mono">单位：{account.tenant_id ?? '未提供'}</p><p className="table-sub mono">归属：{account.owner_id}</p><p className="table-sub">更新：{account.updated_at ? dateTime(account.updated_at) : '未记录'}</p></details><Button type="button" variant="outline" size="sm" disabled={!account.tenant_id} onClick={() => { setLedgerAccount(account); setLedgerPage(1) }}>流水</Button></div>
-      </article>)}</section> : <Empty title="当前读取范围暂无资源账户">在“单价与充值操作”中选择明确目标单位后，可查看并使用该单位的充值功能。</Empty>}</CardContent></Card>
+      <Card><CardContent><h2 className="section-heading"><BellRing size={18}/>账户余额</h2>
+        {balanceTree.error != null && <ErrorNotice error={balanceTree.error} retry={balanceTree.refresh}/>}
+        {balanceTree.loading ? <Loading/> : <AccountBalances key={scopeKey} accounts={accounts.data ?? []} units={balanceTree.data ?? []}
+          scopeTenantIds={scopeTenantIds} scopePlaceIds={scopePlaceIds} onLedger={account => { setLedgerAccount(account); setLedgerPage(1) }}/>}
+      </CardContent></Card>
       {ledgerAccount && <Card><CardContent><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><h2 className="section-heading" style={{ margin: 0 }}>资源流水 · {ledgerAccount.owner_name}</h2><Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={() => setLedgerAccount(null)}>关闭</Button></div>{ledger.loading ? <Loading/> : ledger.error != null ? <ErrorNotice error={ledger.error} retry={ledger.refresh}/> : ledger.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>渠道</TableHead><TableHead>类型</TableHead><TableHead>数量</TableHead><TableHead>余额</TableHead><TableHead>来源</TableHead><TableHead>凭证/备注</TableHead><TableHead>操作人</TableHead></TableRow></TableHeader><TableBody>{ledger.data.items.map(item => <TableRow key={item.id}><TableCell className="muted">{item.created_at}</TableCell><TableCell>{item.channel === 'SMS' ? '短信' : '语音'}</TableCell><TableCell>{item.kind}</TableCell><TableCell>{item.quantity}</TableCell><TableCell>{item.balance_after}</TableCell><TableCell>{item.source}</TableCell><TableCell>{item.reference ?? '—'}</TableCell><TableCell className="mono">{item.operator ?? '—'}</TableCell></TableRow>)}</TableBody></Table><Pager page={ledger.data.page} size={ledger.data.size} total={ledger.data.total} onChange={setLedgerPage}/></> : <Empty title="暂无资源流水"/>}</CardContent></Card>}
       {canWrite && <details className="secondary-controls"><summary>单价与充值操作</summary><div className="secondary-controls-body">
       <TargetUnitSelect audience={audience} permissions={permissions} value={targetUnit} onChange={unit => { setTargetUnit(unit); setOwnerId('') }} disabled={busy || orderBusy || priceBusy}/>
@@ -190,9 +190,9 @@ function ResourcesContent() {
       <Card><CardContent><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><h2 className="section-heading" style={{ margin: 0 }}>扫码充值订单</h2><Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={orders.refresh}>刷新</Button></div><div className="notice">微信支付回调成功后自动入账；也可在后台人工确认到账。</div>{orders.loading ? <Loading/> : orders.error != null ? <ErrorNotice error={orders.error} retry={orders.refresh}/> : orders.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>创建时间</TableHead><TableHead>渠道</TableHead><TableHead>数量</TableHead><TableHead>金额</TableHead><TableHead>订单状态</TableHead><TableHead>支付状态</TableHead><TableHead>到期 / 到账</TableHead><TableHead>订单 token</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{orders.data.items.map(order => { const managed = order as ManagedOrder; return <TableRow key={order.id}><TableCell className="muted">{order.created_at}</TableCell><TableCell>{order.channel === 'SMS' ? '短信' : '语音'}</TableCell><TableCell>{order.quantity}</TableCell><TableCell>{(order.amount_cents / 100).toFixed(2)} 元</TableCell><TableCell>{order.status}{managed.close_state && <div className="table-sub mono">关单 {managed.close_state}</div>}{managed.query_state && <div className="table-sub mono">查单 {managed.query_state}</div>}</TableCell><TableCell>{paymentStateLabels[managed.payment_state] ?? managed.payment_state}</TableCell><TableCell className="muted">{managed.expires_at ? <span>到期 {dateTime(managed.expires_at)}</span> : '未设业务有效期'}<div className="table-sub">{order.paid_at ? `到账 ${dateTime(order.paid_at)}` : '未到账'}</div></TableCell><TableCell className="mono">{order.token.slice(0, 12)}…</TableCell><TableCell><div className="notification-actions">{order.out_trade_no && <Button size="sm" variant="outline" disabled={!paymentWrite || actionBusy} onClick={() => { setActionOrder(managed); setActionKind('query'); setLastAction(null) }}>查单</Button>}{order.status === 'PENDING' && order.out_trade_no && <Button size="sm" variant="outline" disabled={!paymentWrite || actionBusy} onClick={() => { setActionOrder(managed); setActionKind('close'); setLastAction(null) }}>关单</Button>}{order.status === 'PENDING' && canWrite && <Button size="sm" onClick={() => setConfirming(order)}>确认到账</Button>}{!order.out_trade_no && <span className="muted">—</span>}</div></TableCell></TableRow> })}</TableBody></Table><Pager page={orders.data.page} size={orders.data.size} total={orders.data.total} onChange={setOrdersPage}/></> : <Empty title="暂无充值订单"/>}{confirming && <form className="form-stack" onSubmit={confirmOrder} style={{ marginTop: 16 }}><div className="notice">确认订单 {confirming.id} 已线下到账，确认后立即写入资源账户和流水。</div><div className="field"><Label>到账凭证/备注</Label><Input value={confirmReference} onChange={e => setConfirmReference(e.target.value)} maxLength={200}/></div><div style={{ display: 'flex', gap: 8 }}><Button type="button" variant="outline" onClick={() => setConfirming(null)}>取消</Button><Button type="submit">确认到账</Button></div></form>}{actionOrder && <form className="form-stack" onSubmit={runOrderAction} style={{ marginTop: 16 }}><div className="notice">对订单 {actionOrder.id} 执行{actionKind === 'query' ? '微信查单' : '微信关单'}。查单会校验微信响应签名、商户身份、商户订单号与金额后才可能入账；关单只关闭商户侧订单，不代表退款。结果未确认时订单保持待处理并记录 UNKNOWN。</div><div style={{ display: 'flex', gap: 8 }}><Button type="button" variant="outline" onClick={() => { setActionOrder(null); setLastAction(null) }}>取消</Button><Button type="submit" disabled={actionBusy}>{actionBusy ? '处理中…' : actionKind === 'query' ? '确认查单' : '确认关单'}</Button></div>{lastAction && <div className="notice success-note" role="status">{lastAction.outcome} · {lastAction.message}</div>}</form>}</CardContent></Card>
       </div></details>
       <details className="secondary-controls"><summary>厂商受理记录</summary><div className="secondary-controls-body">
-      <Card><CardContent>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><h2 className="section-heading" style={{ margin: 0 }}>真实厂商发送尝试</h2><Button variant="ghost" size="sm" style={{ marginLeft: 'auto' }} onClick={attempts.refresh}>刷新</Button></div>
-        <div className="notice">SENT 仅表示厂商受理，不代表送达；UNKNOWN 不会自动重发或退回资源。</div>
+      <Card className="list-card management-list-panel"><CardContent>
+        <div className="management-list-bar"><h2>真实厂商发送尝试</h2><div className="list-toolbar management-list-actions"><Button variant="outline" size="sm" onClick={attempts.refresh}>刷新</Button></div></div>
+        <p className="management-list-context">SENT 仅表示厂商受理，不代表送达；UNKNOWN 不会自动重发或退回资源。</p>
         {attempts.loading ? <Loading/> : attempts.error != null ? <ErrorNotice error={attempts.error} retry={attempts.refresh}/> : attempts.data?.items.length ? <>
           <Table><TableHeader><TableRow><TableHead>时间</TableHead><TableHead>事件</TableHead><TableHead>来源记录</TableHead><TableHead>联系人</TableHead><TableHead>渠道</TableHead><TableHead>尝试</TableHead><TableHead>状态</TableHead><TableHead>厂商码</TableHead><TableHead>回执 ID</TableHead></TableRow></TableHeader>
             <TableBody>{attempts.data.items.map(item => <TableRow key={item.id}><TableCell className="muted">{item.created_at}</TableCell><TableCell>{item.event_kind === 'FAULT' ? '设备故障' : '火警'}</TableCell><TableCell><span>{item.source_kind === 'RAW_FAULT' ? '设备上报' : item.source_kind === 'LEGACY_FAULT' ? '旧平台故障' : '报警记录'}</span><div className="table-sub mono">{item.source_id}</div></TableCell><TableCell className="mono">{item.contact_id}</TableCell><TableCell>{item.channel === 'SMS' ? '短信' : '语音'}</TableCell><TableCell>{item.attempt_no}</TableCell><TableCell>{item.status}</TableCell><TableCell>{item.provider_code ?? '—'}</TableCell><TableCell className="mono">{item.provider_id ?? '—'}</TableCell></TableRow>)}</TableBody>
@@ -203,5 +203,54 @@ function ResourcesContent() {
       {createdOrder && <Card><CardContent><h2 className="section-heading" id="management-wechat-order">微信支付订单</h2>{createdOrder.code_url ? <div className="payment-qr"><QRCodeSVG value={createdOrder.code_url} size={220}/><p>订单号 {createdOrder.id} · 金额 {(createdOrder.amount_cents / 100).toFixed(2)} 元</p><p>客户使用微信扫码支付；支付成功后自动入账。</p></div> : <div className="notice">订单 {createdOrder.id} 已创建，但微信支付未配置或下单失败。</div>}</CardContent></Card>}
       {notice && <div role="status" className="notice success-note">{notice}</div>}{error && <div role="alert" className="notice danger-note">{error}</div>}
     </>}
+  </>
+}
+
+type BalanceRow = { key: string; name: string; account?: NotificationResourceAccount; kind: string; inScope: boolean; children?: BalanceRow[] }
+
+function AccountBalances({ accounts, units, scopeTenantIds, scopePlaceIds, onLedger }: {
+  accounts: NotificationResourceAccount[]; units: ScopeUnit[]; scopeTenantIds: string[]; scopePlaceIds: string[]
+  onLedger: (account: NotificationResourceAccount) => void
+}) {
+  const visibleUnits = new Set(scopeTenantIds), visiblePlaces = new Set(scopePlaceIds)
+  const accountKey = (unitId: string, type: NotificationResourceAccount['owner_type'], ownerId: string) => `${unitId}:${type}:${ownerId}`
+  const byOwner = new Map(accounts.filter(account => account.tenant_id).map(account => [accountKey(account.tenant_id!, account.owner_type, account.owner_id), account]))
+  const used = new Set<string>()
+  function find(unitId: string, type: NotificationResourceAccount['owner_type'], ownerId: string) {
+    const account = byOwner.get(accountKey(unitId, type, ownerId))
+    if (account) used.add(account.id)
+    return account
+  }
+  function branch(unitId: string, place: PlaceTreeOption, inherited: boolean): BalanceRow[] {
+    const account = find(unitId, 'PLACE', place.key)
+    const selected = inherited || visiblePlaces.has(place.key)
+    const children = place.children.flatMap(node => branch(unitId, node, selected))
+    return selected || account || children.length ? [{
+      key: `place:${place.key}`, name: place.title, kind: '位置', account, inScope: selected, children: children.length ? children : undefined,
+    }] : []
+  }
+  const rows: BalanceRow[] = units.flatMap(unit => {
+    const selected = visibleUnits.has(unit.id)
+    const children = placeTreeOptions(unit.places).flatMap(place => branch(unit.id, place, selected))
+    const account = find(unit.id, 'ORGANIZATION', unit.id)
+    return selected || account || children.length ? [{
+      key: `unit:${unit.id}`, name: unit.name, kind: '单位', account, inScope: selected, children: children.length ? children : undefined,
+    }] : []
+  })
+  for (const account of accounts) if (!used.has(account.id)) {
+    rows.push({ key: `account:${account.id}`, name: `${account.tenant_name ?? '所属单位未知'} · ${account.owner_name}`,
+      kind: account.owner_type === 'ORGANIZATION' ? '单位' : '位置（层级未确认）', account, inScope: true })
+  }
+  const columns: TableColumnsType<BalanceRow> = [
+    { title: '单位 / 位置', dataIndex: 'name', render: (name, row) => <><strong>{name}</strong> <span className="muted-note">{row.kind}</span></> },
+    { title: '本级账户', key: 'account', render: (_, row) => row.account ? row.account.enabled ? '已开通' : '已停用' : row.inScope ? '未开通' : '未纳入本级账目' },
+    { title: '短信剩余（条）', key: 'sms', render: (_, { account }) => account ? <>{account.sms_remaining}<div className="muted-note">总量 {account.sms_total} · 已用 {account.sms_used}</div></> : '—' },
+    { title: '语音剩余（次）', key: 'voice', render: (_, { account }) => account ? <>{account.voice_remaining}<div className="muted-note">总量 {account.voice_total} · 已用 {account.voice_used}</div></> : '—' },
+    { title: '操作', key: 'ledger', render: (_, { account }) => account && account.tenant_id && <Button type="button" variant="outline" size="sm" onClick={() => onLedger(account)}>流水</Button> },
+  ]
+  return <>
+    <p className="muted-note">每行只显示本级账户余额，不汇总下级；没有账户不等于余额为零。</p>
+    <TreeTable<BalanceRow> columns={columns} dataSource={rows} size="small" pagination={false} scroll={{ x: 740 }}
+      locale={{ emptyText: '当前读取范围暂无单位、位置或资源账户' }}/>
   </>
 }

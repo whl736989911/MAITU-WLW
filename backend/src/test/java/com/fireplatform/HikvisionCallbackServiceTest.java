@@ -47,7 +47,7 @@ class HikvisionCallbackServiceTest {
     }
     @Test void durableReceiptAuthenticationDedupMaskingAndCas(){
         jdbc.update("DELETE FROM hikvision_callback_receipts");jdbc.update("DELETE FROM hikvision_callback_config");jdbc.update("DELETE FROM hikvision_config");
-        configuration.update(actor,"callback-test-hikvision",new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","","",false,30,"800235"),"request-config");
+        configuration.update(actor,"callback-test-hikvision",new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","","",false,30,"800235",null),"request-config");
         String credential="a".repeat(64);var saved=callbacks.update(actor,"callback-test-enable",new HikvisionCallbackService.Write(0L,true,"https://receiver.example.com",credential,null),"request-enable");
         assertThat(saved.enabled()).isTrue();assertThat(saved.credential_configured()).isTrue();assertThat(saved.public_origin()).isEqualTo("https://receiver.example.com");
         assertThat(saved.worker_enabled()).isFalse();assertThat(callbacks.get().worker_enabled()).isFalse();
@@ -70,7 +70,7 @@ class HikvisionCallbackServiceTest {
         assertThat(jdbc.queryForObject("SELECT state FROM hikvision_callback_receipts",String.class)).isEqualTo("PARTIAL");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hikvision_raw_records WHERE ingress='HIKVISION_PUSH'",Long.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hikvision_callback_config WHERE credential_cipher LIKE ?",Long.class,"%"+credential+"%")).isZero();
-        configuration.update(actor,"callback-test-account-switch",new HikvisionConfigInputs.Write(1L,"https://open.hikfirecloud.com","replacement-account-key","replacement-account-secret",false,30,"800235"),"request-account-switch");
+        configuration.update(actor,"callback-test-account-switch",new HikvisionConfigInputs.Write(1L,"https://open.hikfirecloud.com","replacement-account-key","replacement-account-secret",false,30,"800235",null),"request-account-switch");
         assertThatThrownBy(()->callbacks.update(actor,"callback-test-rebind-stale",new HikvisionCallbackService.Write(1L,true,"https://receiver.example.com","",null),"request-rebind-stale"))
             .isInstanceOf(com.fireplatform.shared.ApiError.class).satisfies(error->assertThat(((com.fireplatform.shared.ApiError)error).status).isEqualTo(409));
         String replacementCredential="c".repeat(64);
@@ -83,7 +83,7 @@ class HikvisionCallbackServiceTest {
     @Test @org.springframework.transaction.annotation.Transactional
     void mixedNativeEnvelopeRetainsExactNumericFieldsAndDoesNotTreatOtherStreamsAsApplied() throws Exception {
         jdbc.update("DELETE FROM hikvision_callback_receipts");jdbc.update("DELETE FROM hikvision_callback_config");jdbc.update("DELETE FROM hikvision_config");
-        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235"),"precision-config");
+        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235",null),"precision-config");
         String credential="d".repeat(64);
         callbacks.update(actor,UUID.randomUUID().toString(),new HikvisionCallbackService.Write(0L,true,"https://receiver.example.com",credential,null),"precision-enable");
         String tenant=UUID.randomUUID().toString(),device=UUID.randomUUID().toString();
@@ -106,7 +106,7 @@ class HikvisionCallbackServiceTest {
     @Test @org.springframework.transaction.annotation.Transactional
     void newStreamsRequireOptInAndReceiptReparseKeepsOriginalBodyAndOriginalIdempotentResult() {
         jdbc.update("DELETE FROM hikvision_callback_receipts");jdbc.update("DELETE FROM hikvision_callback_config");jdbc.update("DELETE FROM hikvision_config");
-        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235"),"opt-in-config");
+        configuration.update(actor,UUID.randomUUID().toString(),new HikvisionConfigInputs.Write(0L,"https://open.hikfirecloud.com","callback-env-key","callback-env-secret",false,30,"800235",null),"opt-in-config");
         String credential="e".repeat(64);
         var enabled=callbacks.update(actor,UUID.randomUUID().toString(),new HikvisionCallbackService.Write(0L,true,"https://receiver.example.com",credential,null),"native-default");
         assertThat(enabled.enabled_message_types()).containsExactly("980016");

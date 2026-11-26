@@ -70,6 +70,6 @@ class LegacyDictionaryImporterTest {
         Files.writeString(legacy.resolve("products.tsv"), "p_id\tp_model\tp_manufacturer\nproduct-1\tSynthetic model\tMaker\n");
         Files.writeString(legacy.resolve("product_attrs.tsv"), "pa_pid\tpa_key\tpa_value\nproduct-1\tkey\tvalue\n");
         Files.writeString(legacy.resolve("devices_tsf.tsv"),
-            "d_device_id\td_eui\td_id\td_model\td_pid\nlegacy-device\tsynthetic-eui\tproduct-1\tSynthetic model\tplace-1\n");
+            "d_device_id\td_eui\td_id\td_model\td_pid\td_company_id\nlegacy-device\tsynthetic-eui\tdevice-1\tSynthetic model\tplace-1\tcompany-1\n");
     }
 }

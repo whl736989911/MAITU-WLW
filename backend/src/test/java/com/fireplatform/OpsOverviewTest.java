@@ -149,6 +149,9 @@ class OpsOverviewTest {
         }
         var bounded=body(call(HttpMethod.GET,path+"?handling_state=UNRECORDED&from="+at+"&to="+at.plusSeconds(1),root,"tenant-a",null,null).andExpect(status().isOk()));
         assertThat(bounded.get("items").findValuesAsText("id")).containsExactly("state-null-1");
+        var current=body(call(HttpMethod.GET,"/api/management/duty/faults?handling_state=ACTIVE",root,"tenant-a",null,null).andExpect(status().isOk()));
+        assertThat(current.get("total").asInt()).isEqualTo(3);
+        assertThat(current.get("items").findValuesAsText("id")).containsExactlyInAnyOrder("state-null-1","state-null-2","state-false");
         call(HttpMethod.GET,"/api/management/duty/faults?handling_state=UNKNOWN",root,"tenant-a",null,null).andExpect(status().isBadRequest());
     }
 

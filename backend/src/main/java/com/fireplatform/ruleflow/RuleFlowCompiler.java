@@ -173,19 +173,7 @@ public class RuleFlowCompiler {
                             : "只读引用：规则流不改写、不启用该联动规则。"));
                     dependencies.add(new RuleFlowModels.Dependency("RESOURCE_LINKAGE", "rule:" + rule.id(), rule.id(), rule.revision()));
                 }
-                case RuleFlowCatalog.MQTT -> {
-                    String applicationId = text(node, node.config().get("applicationId"), 64, "数据输出应用", issues);
-                    if (applicationId == null) continue;
-                    var rows = jdbc.query("SELECT a.name,(SELECT COUNT(*) FROM application_outputs o WHERE o.application_id=a.id AND o.enabled=TRUE AND o.protocol='MQTT_TLS_3_1_1') FROM output_applications a WHERE a.id=? AND a.tenant_id=? AND a.status='ACTIVE'",
-                        (rs, n) -> new Object[]{rs.getString(1), rs.getLong(2)}, applicationId, tenant);
-                    if (rows.isEmpty()) { issues.add(error(node, "OUTPUT_APPLICATION_MISSING", "所选数据输出应用不存在、已归档或不属于当前单位。")); continue; }
-                    Object[] row = rows.getFirst();
-                    if (((Number) row[1]).longValue() < 1) { issues.add(error(node, "OUTPUT_APPLICATION_DISABLED", "所选数据输出应用没有已启用的MQTT输出；HTTPS输出不能作为MQTT引用，规则流也不会代建外发。")); continue; }
-                    long revision = jdbc.queryForObject("SELECT revision FROM output_applications WHERE id=? AND tenant_id=?", Long.class, applicationId, tenant);
-                    references.add(new RuleFlowModels.Reference(node.id(), "OUTPUT_APPLICATION", applicationId, String.valueOf(row[0]), revision,
-                        "只读引用：MQTT外发由已发布应用的数据输出链路承载，规则流不新建、不启停外发。"));
-                    dependencies.add(new RuleFlowModels.Dependency("OUTPUT_APPLICATION", "application:" + applicationId, applicationId, revision));
-                }
+                case RuleFlowCatalog.MQTT -> issues.add(error(node, "OUTPUT_APPLICATION_RETIRED", "第三方数据输出已退役；请从草稿移除此历史引用再发布。"));
                 default -> issues.add(error(node, "NODE_UNKNOWN", "节点类型不在受审目录内：" + node.type()));
             }
         }

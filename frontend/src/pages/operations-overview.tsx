@@ -28,7 +28,7 @@ export function OperationsOverviewPage() {
       <PageHelp title="运维统计口径"><div className="form-stack"><p>报警按实际发生时间、来源故障按观察时间分别统计；观察时间未知的故障单独计数，不推定为零或纳入趋势。</p><p>报告 OFFLINE 事件和当前策略离线命中是不同事实。连接策略状态是当前快照，不代表历史事件数。</p><p>趋势、故障类别及离线设备排名均来自范围过滤后的完整服务端窗口，不由当前显示列表累加。</p></div></PageHelp>
       <Button type="button" variant="outline" disabled={!enabled} onClick={refresh}>刷新运维概览</Button>
     </PageHeading>
-    <div className="list-toolbar"><div role="group" aria-label="运维时间范围">{([7, 30] as const).map(n => <Button key={n} type="button" disabled={!!authorityError} variant={days === n ? 'default' : 'outline'} onClick={() => setDays(n)}>近{n}天</Button>)}</div>
+    <div className="list-toolbar overview-query"><div role="group" aria-label="运维时间范围">{([7, 30] as const).map(n => <Button key={n} type="button" disabled={!!authorityError} aria-pressed={days === n} variant={days === n ? 'default' : 'outline'} onClick={() => setDays(n)}>近{n}天</Button>)}</div>
       {data && <span className="muted-note">{data.from} 至 {data.to} · {data.timezone} · 完整时间窗口聚合</span>}
     </div>
     {empty ? <Empty title="当前范围未选择">空范围不会退化为平台全量统计。</Empty> : !session.scopeInitialized ? <Loading /> : !enabled ? <Empty title="无概览读取权限" /> : authorityError ? <ErrorNotice error={authorityError} retry={refresh} /> : <>

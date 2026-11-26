@@ -187,12 +187,11 @@ async function scope(s, id, status = 200, onBasic = true) {
 }
 async function login(s, name = s.actor, navigate = true) {
   s.actor = name; s.principal = input[name]; s.mode = 'login'; s.tenant = undefined
-  if (navigate) await s.page.goto(input.url)
-  await s.page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor()
-  await button(s, s.principal.audience === 'customer' ? '客户端' : '管理端').click()
+  const entry = `/${s.principal.audience}/login`
+  if (navigate || new URL(s.page.url()).pathname !== entry) await s.page.goto(new URL(entry, input.url).href)
   await s.page.getByLabel('账户', { exact: true }).fill(s.principal.username); await s.page.getByLabel('密码', { exact: true }).fill(s.principal.password)
   const pending = next(s, '/api/auth/login', {}, 'POST', undefined)
-  await button(s, s.principal.audience === 'customer' ? '登录客户端' : '登录管理端').click(); await response(pending)
+  await button(s, '登录').click(); await response(pending)
   await button(s, '退出登录').waitFor(); eq(await s.page.getByRole('combobox', { name: '选择租户', exact: true }).count(), 0)
   if (s.principal.audience === 'management') await scope(s, s.principal.tenant_id, 200, false)
   else eq(await button(s, '指定单位ID').count(), 0)
@@ -306,7 +305,7 @@ function hold(s, kind, synthetic401 = false) {
   h.release = async () => { h.released = true; release(); if (h.started) await bounded(h.done, 'HELD_DELIVERY_NOT_SETTLED'); if (s.hold === h) s.hold = null }
   s.hold = h; s.holds.push(h); return h
 }
-async function logout(s) { const pending = next(s, '/api/auth/logout', {}, 'POST', undefined); s.mode = 'logout'; await button(s, '退出登录').click(); await response(pending, 204); await s.page.getByRole('heading', { name: '欢迎回来', exact: true }).waitFor(); s.defaultNewCount = listCount(s) }
+async function logout(s) { const pending = next(s, '/api/auth/logout', {}, 'POST', undefined); s.mode = 'logout'; await button(s, '退出登录').click(); await response(pending, 204); await s.page.getByLabel('账户', { exact: true }).waitFor(); eq(new URL(s.page.url()).pathname, `/${s.principal.audience}/login`); s.defaultNewCount = listCount(s) }
 async function heldScope(s) {
   phase = 'controlled-real-200-delivery-after-scope-switch'; const h = hold(s, 'workbench-list')
   try {

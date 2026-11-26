@@ -56,15 +56,18 @@ function DistributionContent() {
     } catch (e) { setError(e) }
   }
   const data = distribution.data
-  return <><PageHeading eyebrow="MAP · 无底图分布" title="设备分布"><PageHelp title="分布视图说明">仅展示人工维护的经纬度，不推断坐标、不接入地图服务、不引入建筑楼层体系。客户界面仍只显示文字地址。</PageHelp>{canWrite && <Button variant="outline" onClick={() => setCoordsOpen(true)}>维护坐标</Button>}</PageHeading>
-    <Card><CardContent>
+  return <><PageHeading eyebrow="MAP · 无底图分布" title="设备分布"><PageHelp title="分布视图说明">仅展示人工维护的经纬度，不推断坐标、不接入地图服务、不引入建筑楼层体系。客户界面仍只显示文字地址。</PageHelp></PageHeading>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar"><h2>坐标与设备</h2>
+        {canWrite && <div className="list-toolbar management-list-actions"><Button variant="outline" onClick={() => setCoordsOpen(true)}>维护坐标</Button></div>}
+      </div>
       {empty ? <Empty title="当前范围未选择">请在左侧单位 / 位置树选择至少一个范围；清空后不会读取全部设备。</Empty> : distribution.loading ? <Loading/> : distribution.error != null ? <ErrorNotice error={distribution.error} retry={distribution.refresh}/> : data && <>
-        <div className="list-toolbar"><h2>分布</h2><span className="muted-note">已维护 {data.with_coordinates} 台 · 未维护 {data.without_coordinates} 台</span></div>
-        <svg viewBox="0 0 100 100" role="img" aria-label="设备经纬度散布（无底图）" style={{ width: '100%', maxWidth: 640, height: 320, border: '1px solid var(--border)', borderRadius: 8, background: 'transparent' }}>
+        <p className="management-list-context">已维护 {data.with_coordinates} 台 · 未维护 {data.without_coordinates} 台</p>
+        {data.points.length > 0 && <svg viewBox="0 0 100 100" role="img" aria-label="设备经纬度散布（无底图）" className="distribution-plot">
           <line x1="0" y1="50" x2="100" y2="50" stroke="var(--border)" strokeWidth="0.3"/>
           <line x1="50" y1="0" x2="50" y2="100" stroke="var(--border)" strokeWidth="0.3"/>
           {data.points.map(point => <circle key={point.id} cx={x(Number(point.longitude))} cy={y(Number(point.latitude))} r="1.6" fill="var(--accent)"><title>{`${point.name} · ${point.latitude},${point.longitude}`}</title></circle>)}
-        </svg>
+        </svg>}
         <p className="muted-note">{data.semantics}</p>
         {data.points.length ? <Table><TableHeader><TableRow><TableHead>设备</TableHead><TableHead>地址</TableHead><TableHead>纬度</TableHead><TableHead>经度</TableHead><TableHead>物理状态</TableHead></TableRow></TableHeader><TableBody>{data.points.map(point => <TableRow key={point.id}><TableCell><strong>{point.name}</strong><div className="table-sub mono">{point.id}</div></TableCell><TableCell>{point.address}</TableCell><TableCell className="mono">{point.latitude}</TableCell><TableCell className="mono">{point.longitude}</TableCell><TableCell>{point.physical_state}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="尚无人工维护坐标的设备"/>}
       </>}

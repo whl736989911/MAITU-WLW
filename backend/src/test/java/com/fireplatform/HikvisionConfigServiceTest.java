@@ -53,12 +53,14 @@ class HikvisionConfigServiceTest {
     @Test @Order(1) void existingEnvironmentCredentialsCanBeMaskedAndMigratedWithoutReentry() {
         var environment=configuration.get();
         assertThat(environment.configurationSource()).isEqualTo("ENVIRONMENT");
+        assertThat(environment.registrationUnitId()).isNull();
         assertThat(environment.secretConfigured()).isTrue();
         assertThat(environment.endpoint()).isNull();
         assertThat(environment.appKeyMasked()).isNull();
         var migrated=configuration.update(actor,"hikvision-env-migration",input(0,"",""),"request-env");
         assertThat(migrated.configurationSource()).isEqualTo("DATABASE");
         assertThat(migrated.appKeyMasked()).isEqualTo("****-key");
+        assertThat(configuration.get().registrationUnitId()).isEqualTo("fixture-registration-unit");
         assertThat(configuration.refreshRuntime().appSecret()).isEqualTo("environment-secret");
     }
 
@@ -76,6 +78,7 @@ class HikvisionConfigServiceTest {
         var retained=configuration.update(actor,"hikvision-save-retain",input(2,"",""),"request-4");
         assertThat(retained.appKeyMasked()).isEqualTo("****-key");
         assertThat(configuration.refreshRuntime().appSecret()).isEqualTo("fixture-secret");
+        assertThat(configuration.get().registrationUnitId()).isEqualTo("fixture-registration-unit");
     }
 
     @Test @Order(3) void refreshedInstanceLoadsCommittedDatabaseRevisionIntoItsRuntimeSnapshot() {
@@ -84,17 +87,18 @@ class HikvisionConfigServiceTest {
         otherInstance.loadDatabaseConfiguration();
         var protectedSecret=secrets.protect("external-instance-secret");
         String fingerprint=secrets.fingerprint("https://open.hikfirecloud.com\nexternal-instance-key");
-        assertThat(jdbc.update("UPDATE hikvision_config SET endpoint=?,app_key=?,app_key_masked=?,secret_cipher=?,secret_nonce=?,account_fingerprint=?,enabled=?,poll_interval_seconds=?,model_scope=?,revision=9,updated_at=?,updated_by=? WHERE id=1",
-            "https://open.hikfirecloud.com","external-instance-key","****-key",protectedSecret.cipher(),protectedSecret.nonce(),fingerprint,true,47,"800235",OffsetDateTime.now(),actor.user().id())).isEqualTo(1);
+        assertThat(jdbc.update("UPDATE hikvision_config SET endpoint=?,app_key=?,app_key_masked=?,secret_cipher=?,secret_nonce=?,account_fingerprint=?,enabled=?,poll_interval_seconds=?,model_scope=?,registration_unit_id=?,revision=9,updated_at=?,updated_by=? WHERE id=1",
+            "https://open.hikfirecloud.com","external-instance-key","****-key",protectedSecret.cipher(),protectedSecret.nonce(),fingerprint,true,47,"800235","second-unit",OffsetDateTime.now(),actor.user().id())).isEqualTo(1);
         var snapshot=otherInstance.refreshRuntime();
         assertThat(snapshot.revision()).isEqualTo(9);
         assertThat(snapshot.enabled()).isTrue();
         assertThat(snapshot.pollIntervalSeconds()).isEqualTo(47);
         assertThat(snapshot.appSecret()).isEqualTo("external-instance-secret");
         assertThat(snapshot.session().configured()).isTrue();
+        assertThat(snapshot.registrationUnitId()).isEqualTo("second-unit");
     }
 
     private HikvisionConfigInputs.Write input(long revision,String appKey,String appSecret) {
-        return new HikvisionConfigInputs.Write(revision,"https://open.hikfirecloud.com",appKey,appSecret,false,30,"800235");
+        return new HikvisionConfigInputs.Write(revision,"https://open.hikfirecloud.com",appKey,appSecret,false,30,"800235"," fixture-registration-unit ");
     }
 }

@@ -77,7 +77,7 @@ public class ControllerController {
         var resource = queries.visible(actor.user().id(), tenant, security.readSelection(request), id);
         var capabilities = deviceServices.capabilities(actor.user().id(), tenant, resource.deviceId());
         Page<DeviceServiceModels.CommandSummary> commands = deviceCommands.page(actor.user().id(), tenant,
-            resource.deviceId(), 1, 20);
+            resource.deviceId(), 1, 20, null);
         String note = resource.enabled()
             ? "仅当该操作仍为已发布、已验证的NORMAL类型化COMMAND且当前授权有效时，联动才可入队；入队不等于设备已执行"
             : "关联未启用；联动评估不会向设备服务队列写入命令";

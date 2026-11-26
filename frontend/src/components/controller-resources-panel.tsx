@@ -13,6 +13,8 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Empty, ErrorNotice, Loading, Pager, RefreshButton } from '@/components/common'
+import { useSession } from '@/lib/store'
+import { CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable } from './customer-records'
 
 function WriteFields({ write, label }: { write: DomainWrite; label: string }) {
   return <>
@@ -45,6 +47,7 @@ function fieldValue(field: ServiceField, value: string | undefined): unknown {
 export function ControllerResourcesPanel({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
   tenantId: string; canWrite: boolean; canReadDevices: boolean; canReadPlaces: boolean
 }) {
+  const legacy = useSession(s => s.audience === 'customer')
   const [page, setPage] = useState(1), [keyword, setKeyword] = useState(''), [draft, setDraft] = useState(''), [includeRetired, setIncludeRetired] = useState(false)
   const list = useResource(`controllers:${tenantId}:${page}:${keyword}:${includeRetired}`,
     signal => controllerApi.list(tenantId, page, { keyword, include_retired: includeRetired }, signal))
@@ -125,6 +128,18 @@ export function ControllerResourcesPanel({ tenantId, canWrite, canReadDevices, c
   }
 
   return <>
+    {legacy ? <section className="legacy-record-page" aria-label="控制器管理">
+      <CustomerRecordsSearch field="名称 / 服务 / 设备" keyword={draft} onKeyword={setDraft} onSearch={search}
+        onReset={() => { setDraft(''); setKeyword(''); setPage(1) }}
+        actions={<button type="button" className="legacy-device-button" onClick={reload}>刷新</button>}/>
+      <CustomerRecordTable name="控制器管理" columns={['控制器名称', '关联设备', '动作 / 服务', '控制器状态', '操作']}
+        loading={list.loading} error={list.error} retry={list.refresh} rows={rows.map(item => ({
+          key: item.id, cells: [item.name, item.device_name ?? item.device_id, `${ACTION_LABELS[item.action] ?? item.action} / ${item.service_key}`,
+            item.state !== 'ACTIVE' ? '已停用' : item.enabled ? '已启用' : '未启用',
+            <button type="button" className="legacy-device-link" onClick={() => { setSelectedId(item.id); write.reset() }}>详情</button>],
+        }))}/>
+      {list.data && <CustomerRecordPager page={list.data.page} size={list.data.size} total={list.data.total} onPage={setPage}/>}
+    </section> : <>
     <div className="list-toolbar"><h2>联动控制器</h2><div className="row-actions">
       <RefreshButton onClick={reload}/>
       {canWrite && <DataTransferActions kind="CONTROLLER_RESOURCES" tenantId={tenantId} filters={{ unit_ids: tenantId, place_ids: '' }}/>}
@@ -150,6 +165,7 @@ export function ControllerResourcesPanel({ tenantId, canWrite, canReadDevices, c
         </tr>)}</tbody></table></div>
       <Pager page={list.data?.page ?? 1} size={list.data?.size ?? 20} total={list.data?.total ?? 0} onChange={setPage}/>
       {canWrite && <WriteFields write={write} label="controller-inline"/>}
+    </>}
     </>}
 
     {formOpen && <Card><CardContent><form onSubmit={submitForm}>

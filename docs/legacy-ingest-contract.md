@@ -53,6 +53,10 @@ TTL 与 TSF 设备数相差 4 台（`23.9`）：以 TTL 为准建档，TSF 多�
 | `tcc_sms.json` | 通知意图（只做接收与状态，不发真实短信） |
 | `export_request.json` | 导出请求（N12 消费） |
 
+- LoRaWAN 外层 `battery=255` 表示未提供电量，不更新设备电量；真实 `0` 仍是有效读数，原始报文不改写。
+- CAT1 兼容 `platformMsg.time` 提供的来源时间（已观察到 Unix 秒）；未提供可解析来源时间时仍保持未知，不以接收时间替代。
+- TYY/OceanConnect：优先取顶层 `deviceId`，缺失时取 `service.deviceId`，不以网关标识代替。有效 `eventTime` 按顶层、`service`、`service.data` 顺序选取；载荷仍交给匹配的型号解码器。
+
 **原始报文必须原样落库**（payload + 到达时刻 + 入口 + 标识），再做标准化。任何解析失败保留原文并可重放，不允许"解析失败就丢"。
 
 HTTP 镜像保留原始 body 和基于 body 的去重。新 spool 记录的 `original_uri` 只保存规范路由（已知 TTL 平台的令牌位固定为 `{redacted}`，CAT1 只保留解析类别，未知路由使用入口标识）；`headers` 只保留白名单内的 `Content-Type` 主类型，不保留参数、原始代理 URI、Cookie、认证头或其他转发头。旧记录仍可处理，不做批量改写。
@@ -64,7 +68,7 @@ HTTP 镜像保留原始 body 和基于 body 的去重。新 spool 记录的 `ori
 | `JSON_POINTER_V1`（现有） | 新设备 | schema + capabilities + 阈值参数 |
 | `LEGACY_ATTR_JS_V1`（新增） | 旧 77 个产品中的 64 个有解码器者 | 绑定旧属性目录（3,053 条）+ 解码器引用 |
 
-- 旧属性目录进 `product_attributes`（`key/name/unit/data_type/enum/min/max`），只读同步，不参与新版本发布流程。
+- 旧属性目录写入 `product_version_attributes`，不参与新版本发布。已支持的数值监测字段按本产品版本的 `pa_flag` 匹配上报，以 `pa_id` 保留源记录身份；按字典展示名称与单位，不猜缺失单位。数值可来自数字或可解析的数字文本。服务、事件、设备识别字段不会因为出现在旧字典中就成为监测指标。
 - 13 个无 JS 的产品：标记 `DECODER_MISSING`，报文进"待解码"队列，不伪造解析结果。
 - 解码器执行：**独立受限进程**（无文件/网络访问、CPU 与内存预算、超时即终止）。单条失败只影响该条消息，主服务不受影响。
 - 迁移路径：`沙箱执行 → 用测试向量逐条比对 → 该产品改声明式 → 移除其 JS 引用`，仅当向量全部一致才允许移除。
@@ -74,6 +78,7 @@ HTTP 镜像保留原始 body 和基于 body 的去重。新 spool 记录的 `ori
 标准化事件（与 N06 对齐）：`tenant`、`device`、`source`、`received_at`、`observed_at`、`kind`（heartbeat/alarm/fault/param/other）、`events[]`、`raw_ref`。
 
 - 旧 `msg_type` 映射：`Alarm`→告警、`Fault`→故障、`OffLine`→连接、`HearBeat`→心跳、`Param`→参数、`Other`→其他。
+- CAT1 的 `/v1/formttl/alarms/telemetry` 是共用回调，不以 `alarms` 路径判定告警。优先采用正文 `parseMsg[].method`、`messageType` 或已识别的火警码；没有分类证据时保留为 `OTHER`，不补造来源时间。
 - 设备六态映射：`1` 离线、`2` 在线、`3` 报警、`4` 故障、`5` 未激活、`6` 屏蔽，与现有 `connectivity`/`physical_state`/`integration_state` 分离保存，**不合并成单一状态字段**。
 - 告警码：旧 `device_state_code`（已观测 `1001001/1002006/1002045/1001011` 等，完整码表未知）进 `legacy_alarm_codes` 映射表；未知码**原样保留并标记 `UNMAPPED`**，不猜测语义。
 

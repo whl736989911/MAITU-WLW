@@ -37,7 +37,7 @@ public class ScopeFilter {
         if (selection.empty()) return new Clause("1=0", List.of());
         String column = tenantColumn.contains(".") ? tenantColumn : alias + "." + tenantColumn;
         var sql = new StringBuilder("EXISTS (SELECT 1 FROM tenants __read_unit WHERE __read_unit.enabled=TRUE AND __read_unit.id=" + column
-            + " AND (EXISTS (SELECT 1 FROM user_tenant_grants __read_grant WHERE __read_grant.user_id=? AND __read_grant.tenant_id=__read_unit.id)"
+            + " AND (EXISTS (SELECT 1 FROM effective_user_tenant_grants __read_grant WHERE __read_grant.user_id=? AND __read_grant.tenant_id=__read_unit.id)"
             + " OR EXISTS (SELECT 1 FROM app_users __read_customer WHERE __read_customer.id=? AND __read_customer.user_type='CUSTOMER' AND __read_customer.enabled=TRUE AND __read_customer.tenant_id=__read_unit.id)))");
         var args = new ArrayList<Object>();
         args.add(actorId);

@@ -31,7 +31,6 @@ public final class DeviceServiceInputs {
         @Min(1) Integer accessMode,
         @Min(1) Integer producterId,
         @Min(1) Integer productModelId,
-        @Size(max=64) String vendorUnitId,
         @Size(max=200) String verificationCode,
         @Size(max=500) String location,
         @DecimalMin("-90") @DecimalMax("90") java.math.BigDecimal latitude,

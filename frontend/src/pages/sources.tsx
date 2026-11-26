@@ -18,6 +18,13 @@ import { credentialDrawer, IngestionBoundary, IngestionGate, OneTimeCredential, 
 import { PageHelp } from '@/components/page-tools'
 
 type SourceEditor = { mode: 'create'; source: null; binding?: never } | { mode: 'edit' | 'rotate' | 'bind' | 'detach'; source: IngestSource; binding?: SourceBinding }
+
+function sourceIntakeState(source: IngestSource, health?: Health) {
+  if (!source.enabled) return '已停用'
+  if (health?.generic_ingest_enabled === false) return '通用 HTTP 入口未启用'
+  if (source.last_received_at != null || source.message_count > 0) return '有接收记录'
+  return '已登记 · 尚无接收记录'
+}
 export function SourcesPage({ health }: { health?: Health }) { return <IngestionGate page="sources"><SourcesContent health={health}/></IngestionGate> }
 function SourcesContent({ health }: { health?: Health }) {
   const permissions = useSession(s => s.permissions), scopeTenantIds = useSession(s => s.scopeTenantIds), scopePlaceIds = useSession(s => s.scopePlaceIds), scopeInitialized = useSession(s => s.scopeInitialized)
@@ -28,7 +35,39 @@ function SourcesContent({ health }: { health?: Health }) {
   const [editor, setEditor] = useState<SourceEditor | null>(null), [credential, setCredential] = useState<CredentialDrawerState | null>(null), [notice, setNotice] = useState('')
   const selected = sources.data?.items.find(item => item.id === selectedId)
   function saved(result?: CredentialResult) { setEditor(null); sources.refresh(); setNotice('来源配置操作已保存，不推进设备/报警，不改变设备来源或产品版本。'); if (result) setCredential(credentialDrawer(result)) }
-  return <><PageHeading eyebrow="SOURCES · 接入来源" title="来源接入"><PageHelp title="接入来源边界">当前授权范围内真实通用 HTTP 来源；不是海康厂商适配器，不自动匹配 EUI 或接管已有主源。绑定需明确选择同单位设备和来源设备标识；解绑保留历史，不回填旧报文或迁移产品版本。</PageHelp><RefreshButton onClick={sources.refresh}/>{canWrite && <Button onClick={() => setEditor({ mode: 'create', source: null })}><Plus/>创建接入来源</Button>}</PageHeading><IngestionBoundary health={health}/>{notice && <div role="status" className="notice">{notice}</div>}<Card className="list-card"><CardContent><IdentitySearch placeholder="按来源名称查询（字面匹配）" aria-label="搜索接入来源" onSearch={value => { setPage(1); setKeyword(value) }}/>{sources.loading ? <Loading/> : sources.error != null ? <ErrorNotice error={sources.error} retry={sources.refresh}/> : sources.data?.items.length ? <><Table><TableHeader><TableRow><TableHead>来源 / 协议</TableHead><TableHead>状态</TableHead><TableHead>接收统计</TableHead><TableHead>最后接收</TableHead><TableHead>版本</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{sources.data.items.map(source => <TableRow key={source.id}><TableCell><strong>{source.name}</strong><div className="table-sub mono">{source.id}</div><div className="table-sub mono">单位：{source.tenant_id}</div><div className="table-sub">{source.protocol}</div></TableCell><TableCell><Badge variant="outline">{source.enabled ? '已启用' : '已停用'}</Badge></TableCell><TableCell>接收 {source.message_count}<div className="table-sub">重复 {source.duplicate_count}</div></TableCell><TableCell>{dateTime(source.last_received_at)}</TableCell><TableCell>{source.revision}</TableCell><TableCell><div className="identity-row-actions"><Button variant="ghost" size="sm" onClick={() => setSelectedId(source.id)}><Link2/>绑定与历史</Button>{canWrite && <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'edit', source })}><Pencil/>来源配置</Button>}{canRotate && <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'rotate', source })}><KeyRound/>轮换凭据</Button>}</div></TableCell></TableRow>)}</TableBody></Table><Pager page={sources.data.page} size={sources.data.size} total={sources.data.total} onChange={setPage}/></> : <Empty title="暂无接入来源">请创建平台自有真实通用来源；不会预置真实厂商协议或凭据。</Empty>}</CardContent></Card>{selected && <SourceBindings key={`${selected.id}:${selected.revision}`} source={selected} canBind={canBind} open={setEditor}/>}<Sheet open={!!editor} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <SourceForm key={`${editor.mode}:${editor.source?.id ?? 'new'}:${editor.source?.revision ?? ''}:${editor.binding?.id ?? ''}`} editor={editor} onSaved={saved} onRefresh={() => { setEditor(null); sources.refresh() }}/>}</SheetContent></Sheet><Sheet open={!!credential} onOpenChange={open => { if (!open) setCredential(null) }}><SheetContent className="review-sheet sm:max-w-xl">{credential && <OneTimeCredential credential={credential}/>}</SheetContent></Sheet></>}
+  return <>
+    <PageHeading eyebrow="SOURCES · 接入来源" title="通用 HTTP 接入来源"><PageHelp title="接入来源怎么使用"><p>用于自有网关或第三方系统向平台主动上报。创建只登记单位和来源名称，并由平台生成一次性可见的令牌，不需要填厂商账号。</p><p>在发送端配置上报地址和令牌；在平台显式绑定同单位设备及其在来源中的标识，再到「消息追踪」核对是否接收到数据。不会按 EUI 自动匹配或抢占已有主源。</p><p>海康使用独立的「海康云接入」，不在此登记。启用一条来源不代表有设备接入。</p></PageHelp></PageHeading>
+    <IngestionBoundary health={health}/>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar"><h2>接入来源列表</h2>
+        <div className="list-toolbar management-list-actions">
+          <RefreshButton onClick={sources.refresh}/>
+          {canWrite && <Button onClick={() => setEditor({ mode: 'create', source: null })}><Plus/>创建接入来源</Button>}
+        </div>
+      </div>
+      {notice && <div role="status" className="notice">{notice}</div>}
+      <IdentitySearch placeholder="按来源名称查询（字面匹配）" aria-label="搜索接入来源" onSearch={value => { setPage(1); setKeyword(value) }}/>
+      {sources.loading ? <Loading/> : sources.error != null ? <ErrorNotice error={sources.error} retry={sources.refresh}/> : sources.data?.items.length ? <>
+        <Table><TableHeader><TableRow><TableHead>来源 / 协议</TableHead><TableHead>状态</TableHead><TableHead>接收统计</TableHead><TableHead>最后接收</TableHead><TableHead>版本</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+          <TableBody>{sources.data.items.map(source => <TableRow key={source.id}>
+            <TableCell><strong>{source.name}</strong><div className="table-sub mono">{source.id}</div><div className="table-sub mono">单位：{source.tenant_id}</div><div className="table-sub">{source.protocol}</div></TableCell>
+            <TableCell><Badge variant="outline">{sourceIntakeState(source, health)}</Badge></TableCell>
+            <TableCell>接收 {source.message_count}<div className="table-sub">重复 {source.duplicate_count}</div></TableCell>
+            <TableCell>{source.last_received_at ? dateTime(source.last_received_at) : '无接收时间'}</TableCell><TableCell>{source.revision}</TableCell>
+            <TableCell><div className="identity-row-actions">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedId(source.id)}><Link2/>绑定与历史</Button>
+              {canWrite && <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'edit', source })}><Pencil/>来源配置</Button>}
+              {canRotate && <Button variant="ghost" size="sm" onClick={() => setEditor({ mode: 'rotate', source })}><KeyRound/>轮换凭据</Button>}
+            </div></TableCell>
+          </TableRow>)}</TableBody>
+        </Table><Pager page={sources.data.page} size={sources.data.size} total={sources.data.total} onChange={setPage}/>
+      </> : <Empty title="暂无接入来源">只有准备向平台发送通用 HTTP 报文时才需要创建来源；海康和旧设备原有通道不依赖这张表。</Empty>}
+    </CardContent></Card>
+    {selected && <SourceBindings key={`${selected.id}:${selected.revision}`} source={selected} canBind={canBind} open={setEditor}/>}
+    <Sheet open={!!editor} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-xl">{editor && <SourceForm key={`${editor.mode}:${editor.source?.id ?? 'new'}:${editor.source?.revision ?? ''}:${editor.binding?.id ?? ''}`} editor={editor} onSaved={saved} onRefresh={() => { setEditor(null); sources.refresh() }}/>}</SheetContent></Sheet>
+    <Sheet open={!!credential} onOpenChange={open => { if (!open) setCredential(null) }}><SheetContent className="review-sheet sm:max-w-xl">{credential && <OneTimeCredential credential={credential}/>}</SheetContent></Sheet>
+  </>
+}
 function SourceBindings({ source, canBind, open }: { source: IngestSource; canBind: boolean; open: (editor: SourceEditor) => void }) {
   const bindings = useResource(`source-bindings:${source.id}:${source.revision}`, signal => api.sourceBindings(source.id, signal, source.tenant_id))
   return <Card className="product-versions"><CardHeader className="section-header"><div><CardTitle>{source.name} · 显式主源绑定</CardTitle><p>同设备只能一个主源；不会静默抢占。解绑保留历史，不回填旧报文或迁移产品版本。</p></div>{canBind && <Button variant="outline" onClick={() => open({ mode: 'bind', source })}><Link2/>绑定设备</Button>}</CardHeader><CardContent>{bindings.loading ? <Loading/> : bindings.error != null ? <ErrorNotice error={bindings.error} retry={bindings.refresh}/> : bindings.data?.items.length ? <Table><TableHeader><TableRow><TableHead>设备 / 来源设备标识</TableHead><TableHead>状态</TableHead><TableHead>创建 / 结束</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{bindings.data.items.map(binding => <TableRow key={binding.id}><TableCell><strong className="mono">{binding.device_id}</strong><div className="table-sub mono">{binding.vendor_device_id}</div></TableCell><TableCell>{binding.is_active ? '当前主源绑定' : '已解绑 · 历史'}</TableCell><TableCell>{dateTime(binding.created_at)}<div className="table-sub">{dateTime(binding.ended_at)}</div></TableCell><TableCell>{canBind && binding.is_active && <Button variant="outline" size="sm" onClick={() => open({ mode: 'detach', source, binding })}><Unlink/>显式解绑</Button>}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="暂无绑定历史">旧设备标识不会自动变成绑定关系。</Empty>}<SourceEndpoint id={source.id}/></CardContent></Card>

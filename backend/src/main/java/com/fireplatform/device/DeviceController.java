@@ -11,9 +11,10 @@ public class DeviceController {
     public DeviceController(DeviceQueryService reads,RequestSecurity security) { this.reads=reads; this.security=security; }
     @GetMapping("/api/{audience:management|customer}/device-workbench") public DeviceQueryService.WorkbenchResult workbench(@PathVariable String audience,@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(required=false) String keyword,@RequestParam(required=false) String connectivity,@RequestParam(name="physical_state",required=false) String physical,@RequestParam(name="integration_state",required=false) String integration,@RequestParam(name="system_type",required=false) String systemType,@RequestParam(name="device_category",required=false) String deviceCategory,HttpServletRequest request) {
         var actor=security.require(request,"device:read",audience);String tenant=security.optionalTenant(request);
-        var allowed=java.util.Set.of("page","size","keyword","connectivity","physical_state","integration_state","system_type","device_category","scope_selected","scope_tenant_ids","scope_place_ids");
+        var allowed=java.util.Set.of("page","size","keyword","connectivity","physical_state","integration_state","system_type","device_category","scope_selected","scope_tenant_ids","scope_place_ids","sort","direction");
         if(request.getParameterMap().entrySet().stream().anyMatch(e->!allowed.contains(e.getKey())||e.getValue().length!=1))throw com.fireplatform.shared.ApiError.bad("筛选参数无效或重复");
-        return reads.workbench(actor.user().id(),tenant,page,size,DeviceWorkbenchFilter.parse(keyword,connectivity,physical,integration,systemType,deviceCategory),security.readSelection(request));
+        var order=DeviceListOrder.parse(request.getParameter("sort"),request.getParameter("direction"));
+        return reads.workbench(actor.user().id(),tenant,page,size,DeviceWorkbenchFilter.parse(keyword,connectivity,physical,integration,systemType,deviceCategory),security.readSelection(request),order);
     }
     @GetMapping("/api/{audience:management|customer}/summary") public DeviceQueryService.Summary summary(@PathVariable String audience,HttpServletRequest request) {
         var actor=security.require(request,"summary:read",audience);
@@ -36,10 +37,11 @@ public class DeviceController {
     }
     @GetMapping("/api/{audience:management|customer}/devices") public Page<DeviceQueryService.DeviceRow> devices(@PathVariable String audience,@RequestParam(defaultValue="1") int page,@RequestParam(required=false) Integer size,@RequestParam(defaultValue="") String keyword,@RequestParam(value="battery_status",required=false) String batteryStatus,@RequestParam(required=false) String field,@RequestParam(name="place_id",required=false) String placeId,@RequestParam(name="tenant_id",required=false) String tenantId,@RequestParam(required=false) String connectivity,@RequestParam(name="physical_state",required=false) String physical,@RequestParam(name="integration_state",required=false) String integration,@RequestParam(name="system_type",required=false) String systemType,@RequestParam(name="device_category",required=false) String deviceCategory,HttpServletRequest request) {
         var actor=security.require(request,"device:read",audience); String tenant=security.optionalTenant(request); String filter=security.tenantFilter(request,tenantId);
-        var allowed=java.util.Set.of("page","size","keyword","battery_status","field","place_id","tenant_id","connectivity","physical_state","integration_state","system_type","device_category","scope_selected","scope_tenant_ids","scope_place_ids");
+        var allowed=java.util.Set.of("page","size","keyword","battery_status","field","place_id","tenant_id","connectivity","physical_state","integration_state","system_type","device_category","customer_status","scope_selected","scope_tenant_ids","scope_place_ids","sort","direction");
         if(request.getParameterMap().entrySet().stream().anyMatch(e->!allowed.contains(e.getKey())||e.getValue().length!=1)) throw com.fireplatform.shared.ApiError.bad("设备查询参数无效或重复");
-        var statuses=DeviceListFilter.parse(connectivity,physical,integration,systemType,deviceCategory);
+        var statuses=DeviceListFilter.parse(connectivity,physical,integration,systemType,deviceCategory,request.getParameter("customer_status"));
         var selection=security.readSelection(request);
-        return reads.devices(actor.user().id(),tenant,filter,page,size,keyword,batteryStatus,field,placeId,selection,statuses);
+        var order=DeviceListOrder.parse(request.getParameter("sort"),request.getParameter("direction"));
+        return reads.devices(actor.user().id(),tenant,filter,page,size,keyword,batteryStatus,field,placeId,selection,statuses,order);
     }
 }

@@ -30,7 +30,7 @@ final class LegacyPlaceHierarchy {
             if (!row.get(0).equals("place")) continue;
             String id = row.get(1).trim(), name = row.get(2), parent = row.get(3).trim(), company = row.get(4).trim();
             if (id.isEmpty() || company.isEmpty()) throw new IllegalArgumentException("Legacy place row lacks id or company at row " + (i + 1));
-            Place place = new Place(id, name, parent.isEmpty() || parent.equals("0") ? null : parent, company);
+            Place place = new Place(id, name, parent.isEmpty() || parent.equals("0") || parent.equals("\\N") ? null : parent, company);
             if (places.putIfAbsent(id, place) != null) throw new IllegalArgumentException("Duplicate legacy place id " + id);
         }
         for (Place place : places.values()) if (place.parentId() != null && !places.containsKey(place.parentId()))

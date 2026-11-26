@@ -1,20 +1,22 @@
-import { useMemo, useState } from 'react'
-import { Building2, MapPin, Pencil, Plus } from 'lucide-react'
+import { useState } from 'react'
+import { Building2, Pencil, Plus } from 'lucide-react'
 import { unitDirectoryApi, type UnitCreate, type UnitDetails } from '@/lib/unit-directory'
 import { api } from '@/lib/api'
 import { useSession } from '@/lib/store'
+import { accountPasswordBounds, accountPasswordHint, validAccountPassword } from '@/lib/account-password'
 import { useResource } from '@/lib/use-resource'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Empty, ErrorNotice, Loading, PageHeading, RefreshButton } from '@/components/common'
+import { Empty, ErrorNotice, Loading, PageHeading, Pager, RefreshButton, Status } from '@/components/common'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { UnitLifecycleEditor } from '@/components/unit-lifecycle-editor'
 import { DataTransferActions } from '@/components/data-transfer-actions'
 import { PageHelp } from '@/components/page-tools'
+import { PlacesPage } from './places'
 
 const blank = (): UnitCreate => ({ name: '', credit_code: '', region_id: '', unit_type: '', industry: '', map_address: '', detail_address: '', contact_name: '', contact_phone: '', remark: '', latitude: null, longitude: null, service_start: null, service_end: null, engineering_service_start: null, engineering_service_end: '' })
 
@@ -30,19 +32,26 @@ function UnitsContent() {
   const canWrite = session.permissions.includes('units:write')
   const scopeReady = session.scopeInitialized && (session.scopeTenantIds.length > 0 || session.scopePlaceIds.length > 0)
   const list = useResource(`units:${session.generation}:${page}:${keyword}:${status}:${JSON.stringify(session.scopeTenantIds)}:${JSON.stringify(session.scopePlaceIds)}`, signal => unitDirectoryApi.list(page, keyword, status, session.scopeTenantIds, session.scopePlaceIds, signal), scopeReady)
-  const pages = useMemo(() => Math.max(1, Math.ceil((list.data?.total ?? 0) / (list.data?.size ?? 20))), [list.data])
   return <>
     <PageHeading eyebrow="UNITS · 单位" title="单位管理">
       <PageHelp title="单位目录说明">按当前授权单位与位置范围浏览；单位登记信息、联系人、服务有效期与详情由管理 API 提供。新增单位不依赖当前浏览范围，新增和生命周期维护需要对应写入权限。</PageHelp>
-      {session.scopeInitialized && <DataTransferActions kind="UNITS" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword, status }} onCompleted={result => { if ('plan_id' in result) list.refresh() }}/>}
-      <RefreshButton onClick={list.refresh} />{canWrite && <Button onClick={() => setEditing('new')}><Plus />新增单位</Button>}
     </PageHeading>
-    <Card className="list-card"><CardContent>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>单位列表</h2>
+        <div className="list-toolbar management-list-actions">
+          {session.scopeInitialized && <DataTransferActions kind="UNITS" filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), keyword, status }} onCompleted={result => { if ('plan_id' in result) list.refresh() }}/>}
+          <RefreshButton onClick={list.refresh} />
+          {canWrite && <Button onClick={() => setEditing('new')}><Plus />新增单位</Button>}
+        </div>
+      </div>
       <div className="filter-row"><Input aria-label="单位搜索" value={keyword} onChange={event => { setKeyword(event.target.value); setPage(1) }} placeholder="单位名称、统一社会信用代码或地址" /><select className="native-select" aria-label="单位状态" value={status} onChange={event => { setStatus(event.target.value); setPage(1) }}><option value="">全部状态</option><option value="enabled">启用</option><option value="disabled">停用</option></select></div>
       {!scopeReady ? <Empty title={session.scopeInitialized ? '当前未选择范围' : '正在初始化授权范围'}>请在左侧勾选至少一个已授权单位或位置后浏览。新增单位不依赖当前浏览范围。</Empty> : list.loading ? <Loading /> : list.error != null ? <ErrorNotice error={list.error} retry={list.refresh} /> : list.data?.items.length ? <Table><TableHeader><TableRow><TableHead>单位名称</TableHead><TableHead>统一社会信用代码</TableHead><TableHead>类别 / 行业</TableHead><TableHead>地址</TableHead><TableHead>联系人</TableHead><TableHead>服务状态</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{list.data.items.map(unit => <TableRow key={unit.id}><TableCell><Button variant="link" onClick={() => setSelected(unit)}><Building2 />{unit.name}</Button></TableCell><TableCell className="mono">{unit.credit_code || '—'}</TableCell><TableCell>{[unit.unit_type, unit.industry].filter(Boolean).join(' / ') || '—'}</TableCell><TableCell>{[unit.map_address, unit.detail_address].filter(Boolean).join(' ') || '—'}</TableCell><TableCell>{[unit.contact_name, unit.contact_phone].filter(Boolean).join(' · ') || '—'}</TableCell><TableCell>{serviceLabel(unit)}</TableCell><TableCell><Badge variant={unit.enabled ? 'secondary' : 'outline'}>{unit.archived_at ? '已归档' : unit.enabled ? '启用' : '停用'}</Badge></TableCell><TableCell>{canWrite && <><Button variant="ghost" size="sm" disabled={!!unit.archived_at} onClick={() => setEditing(unit)}><Pencil />编辑</Button><Button variant="ghost" size="sm" disabled={!!unit.archived_at} onClick={() => setStatusEditing(unit)}>{unit.enabled ? '停用' : '启用'}</Button><Button variant="ghost" size="sm" disabled={!!unit.archived_at} onClick={() => setLifecycle({unit,mode:'archive'})}>归档单位</Button><Button variant="ghost" size="sm" disabled={!!unit.archived_at} onClick={() => setLifecycle({unit,mode:'delete'})}>删除空单位</Button></>}</TableCell></TableRow>)}</TableBody></Table> : <Empty title={keyword ? '没有匹配的单位' : '当前授权范围暂无单位'} />}
-      {list.data && <div className="version-actions"><span>共 {list.data.total} 个单位</span><Button variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</Button><span>{page} / {pages}</span><Button variant="outline" disabled={page >= pages} onClick={() => setPage(page + 1)}>下一页</Button></div>}
+      {list.data && <Pager page={list.data.page} size={list.data.size} total={list.data.total} onChange={setPage}/>}
     </CardContent></Card>
-    {selected && <UnitDetailsPanel unit={selected} close={() => setSelected(null)} />}
+    <Sheet open={!!selected} onOpenChange={open => { if (!open) setSelected(null) }}>
+      <SheetContent className="review-sheet sm:max-w-5xl">{selected && <UnitDetailsPanel key={selected.id} unit={selected}/>}</SheetContent>
+    </Sheet>
     <Sheet open={editing !== null} onOpenChange={open => { if (!open) setEditing(null) }}><SheetContent className="review-sheet sm:max-w-2xl">{editing !== null && <UnitEditor key={editing === 'new' ? 'new' : editing.id} unit={editing === 'new' ? undefined : editing} close={() => setEditing(null)} saved={() => { setEditing(null); list.refresh() }} />}</SheetContent></Sheet>
     <Sheet open={statusEditing !== null} onOpenChange={open => { if (!open) setStatusEditing(null) }}><SheetContent className="review-sheet sm:max-w-xl">{statusEditing && <UnitStatusEditor unit={statusEditing} close={() => setStatusEditing(null)} saved={() => { setStatusEditing(null); list.refresh(); useSession.getState().refreshTenants(); useSession.getState().refreshScopeTree() }} />}</SheetContent></Sheet>
     <Sheet open={lifecycle !== null} onOpenChange={open => { if (!open) setLifecycle(null) }}><SheetContent className="review-sheet sm:max-w-xl">{lifecycle && <UnitLifecycleEditor unit={lifecycle.unit} mode={lifecycle.mode} close={() => setLifecycle(null)} saved={() => { setLifecycle(null); list.refresh(); useSession.getState().refreshTenants(); useSession.getState().refreshScopeTree() }} />}</SheetContent></Sheet>
@@ -78,7 +87,12 @@ function UnitEditor({ unit, close, saved }: { unit?: UnitDetails; close: () => v
   const catalog = useResource('unit-admin-permission-catalog', signal => api.permissionCatalog(signal), admin)
   const set = (key: Exclude<keyof UnitCreate, 'latitude' | 'longitude' | 'admin_permissions'>, value: string) => setForm(previous => ({ ...previous, [key]: value }))
   async function submit(event: React.FormEvent) {
-    event.preventDefault(); setBusy(true); setError(undefined)
+    event.preventDefault()
+    const policy = catalog.data?.password_policy ?? accountPasswordBounds
+    if (admin && !unit && !validAccountPassword(form.admin_initial_password ?? '', policy)) {
+      setError(new Error(accountPasswordHint(policy))); return
+    }
+    setBusy(true); setError(undefined)
     try {
       const key = crypto.randomUUID()
       const payload = { ...form, credit_code: form.credit_code?.trim() || null }
@@ -104,24 +118,50 @@ function UnitEditor({ unit, close, saved }: { unit?: UnitDetails; close: () => v
     {admin && !unit && <>
       <div className="field"><Label htmlFor="unit-admin-username">管理员用户名</Label><Input id="unit-admin-username" required autoComplete="username" value={form.admin_username ?? ''} onChange={e => set('admin_username', e.target.value)} /></div>
       <div className="field"><Label htmlFor="unit-admin-name">管理员姓名</Label><Input id="unit-admin-name" value={form.admin_name ?? ''} onChange={e => set('admin_name', e.target.value)} /></div>
-      <div className="field"><Label htmlFor="unit-admin-initial-password">管理员初始密码</Label><Input id="unit-admin-initial-password" required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={form.admin_initial_password ?? ''} onChange={e => set('admin_initial_password', e.target.value)} /><p className="muted-note">首次登录必须修改密码；不会向管理员发送密码短信。</p></div>
+      <div className="field"><Label htmlFor="unit-admin-initial-password">管理员初始密码</Label><Input id="unit-admin-initial-password" required type="password" minLength={(catalog.data?.password_policy ?? accountPasswordBounds).min_length} maxLength={(catalog.data?.password_policy ?? accountPasswordBounds).max_length} aria-describedby="unit-admin-password-policy" autoComplete="new-password" value={form.admin_initial_password ?? ''} onChange={e => set('admin_initial_password', e.target.value)} /><p id="unit-admin-password-policy" className="muted-note">{accountPasswordHint(catalog.data?.password_policy)}。首次登录必须修改密码；不会向管理员发送密码短信。</p></div>
       <fieldset className="field"><legend>管理员初始权限</legend><details><summary>设置初始权限（已选 {adminPermissions.length} 项）</summary>{catalog.loading ? <Loading /> : catalog.error != null ? <ErrorNotice error={catalog.error} retry={catalog.refresh} /> : (catalog.data?.items ?? []).filter(permission => permission.user_types.includes('CUSTOMER') && permission.delegable).map(permission => <label key={permission.key} className="inline-check"><input type="checkbox" checked={adminPermissions.includes(permission.key)} onChange={event => setAdminPermissions(current => event.target.checked ? [...current, permission.key] : current.filter(item => item !== permission.key))} />{permission.label}</label>)}</details></fieldset>
     </>}
     {error != null && <ErrorNotice error={error} />}<div className="version-actions"><Button type="submit" disabled={busy || admin && (catalog.loading || catalog.error != null || !catalog.data)}>{busy ? '保存中…' : '保存单位'}</Button><Button type="button" variant="ghost" onClick={close}>取消</Button></div>
   </form></div></>
 }
 
-function UnitDetailsPanel({ unit, close }: { unit: UnitDetails; close: () => void }) {
+function UnitDetailsPanel({ unit }: { unit: UnitDetails }) {
   const [tab, setTab] = useState<'base'|'places'|'devices'|'accounts'>('base')
   const detail = useResource(`unit-detail:${unit.id}`, signal => unitDirectoryApi.detail(unit.id, signal))
-  const places = useResource(`unit-places:${unit.id}`, signal => api.places(signal, [unit.id], [], true))
-  const devices = useResource(`unit-devices:${unit.id}`, signal => api.devices(1, '', 100, signal, undefined, undefined, unit.id))
-  const accounts = useResource(`unit-accounts:${unit.id}`, signal => api.users(false, 1, '', signal, [unit.id], [], true))
+  const devices = useResource(`unit-devices:${unit.id}`, signal => api.devices(1, '', 100, signal, undefined, undefined, unit.id), tab === 'devices')
+  const accounts = useResource(`unit-accounts:${unit.id}`, signal => api.users(false, 1, '', signal, [unit.id], [], true), tab === 'accounts')
   const current = detail.data ?? unit
-  return <Card style={{ marginTop: 14 }}><CardContent><div className="version-actions"><div><h2 className="section-heading"><Building2 />{current.name} · 单位详情</h2><p className="muted-note">单位登记信息及当前本地单位、位置和账号数据。</p></div><Button variant="ghost" onClick={close}>关闭详情</Button></div><div className="filter-row">{(['base','places','devices','accounts'] as const).map(value => <Button key={value} variant={tab === value ? 'default' : 'outline'} onClick={() => setTab(value)}>{({base:'基本信息与服务',places:'位置',devices:'设备',accounts:'账号'})[value]}</Button>)}</div>
-    {tab === 'base' && (detail.loading ? <Loading /> : detail.error != null ? <ErrorNotice error={detail.error} retry={detail.refresh} /> : <Table><TableBody>{[['统一社会信用代码',current.credit_code],['行政区划',current.region_id],['单位类别',current.unit_type],['所属行业',current.industry],['地址',[current.map_address,current.detail_address].filter(Boolean).join(' ')],['联系人',[current.contact_name,current.contact_phone].filter(Boolean).join(' · ')],['单位服务有效期',[current.service_start,current.service_end].filter(Boolean).join(' 至 ')],['工程服务有效期',[current.engineering_service_start,current.engineering_service_end].filter(Boolean).join(' 至 ')],['经纬度',current.latitude == null ? null : `${current.latitude}, ${current.longitude}`],['备注',current.remark]].map(([label,value]) => <TableRow key={String(label)}><TableHead>{label}</TableHead><TableCell>{value || '—'}</TableCell></TableRow>)}</TableBody></Table>)}
-    {tab === 'places' && (places.loading ? <Loading /> : places.error != null ? <ErrorNotice error={places.error} retry={places.refresh} /> : places.data?.length ? <ul>{places.data.map(place => <li key={place.id}><MapPin size={14} /> {place.name} · {place.device_count} 台设备</li>)}</ul> : <Empty title="该单位暂无登记位置" />)}
-    {tab === 'devices' && (devices.loading ? <Loading /> : devices.error != null ? <ErrorNotice error={devices.error} retry={devices.refresh} /> : devices.data?.items.length ? <Table><TableHeader><TableRow><TableHead>设备名称</TableHead><TableHead>设备编号</TableHead><TableHead>位置 ID</TableHead><TableHead>接入状态</TableHead></TableRow></TableHeader><TableBody>{devices.data.items.map(device => <TableRow key={device.id}><TableCell>{device.name}</TableCell><TableCell>{device.id}</TableCell><TableCell>{device.place_id || '—'}</TableCell><TableCell>{device.connectivity || '—'}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="该单位暂无设备" />)}
+  const tabs = [['base', '单位资料'], ['places', '位置树'], ['devices', '设备'], ['accounts', '用户']] as const
+  return <>
+    <SheetHeader className="review-header">
+      <SheetTitle>{`${current.name} · 单位详情`}</SheetTitle>
+      <SheetDescription>查看单位登记信息及本地位置、设备和账号。</SheetDescription>
+    </SheetHeader>
+    <div className="review-body">
+    <nav className="section-switcher" aria-label="单位详情分类">{tabs.map(([value, label]) => <Button key={value} type="button"
+      aria-pressed={tab === value} variant={tab === value ? 'default' : 'outline'} onClick={() => setTab(value)}>{label}</Button>)}</nav>
+    {tab === 'base' && (detail.loading ? <Loading/> : detail.error != null ? <ErrorNotice error={detail.error} retry={detail.refresh}/> :
+      <dl className="detail-list">
+        {[
+          ['单位状态', current.archived_at ? '已归档' : current.enabled ? '启用' : '停用'],
+          ['统一社会信用代码', current.credit_code], ['行政区划', current.region_id],
+          ['单位类别', current.unit_type], ['所属行业', current.industry],
+          ['地址', [current.map_address, current.detail_address].filter(Boolean).join(' ')],
+          ['联系人', [current.contact_name, current.contact_phone].filter(Boolean).join(' · ')],
+          ['单位服务有效期', [current.service_start, current.service_end].filter(Boolean).join(' 至 ')],
+          ['工程服务有效期', [current.engineering_service_start, current.engineering_service_end].filter(Boolean).join(' 至 ')],
+          ['经纬度', current.latitude == null ? null : `${current.latitude}, ${current.longitude}`], ['备注', current.remark],
+        ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value || '—'}</dd></div>)}
+      </dl>)}
+    {tab === 'places' && <PlacesPage unitId={unit.id}/>}
+    {tab === 'devices' && (devices.loading ? <Loading/> : devices.error != null ? <ErrorNotice error={devices.error} retry={devices.refresh}/> : devices.data?.items.length ?
+      <Table aria-label="单位设备">
+        <TableHeader><TableRow><TableHead>设备名称</TableHead><TableHead>设备编号</TableHead><TableHead>位置</TableHead><TableHead>在线状态</TableHead></TableRow></TableHeader>
+        <TableBody>{devices.data.items.map(device => <TableRow key={device.id}><TableCell>{device.name ?? '—'}</TableCell>
+          <TableCell className="mono">{device.device_eui ?? '—'}</TableCell><TableCell>{device.place_name ?? '—'}</TableCell>
+          <TableCell><Status dimension="connectivity" value={device.connectivity}/></TableCell></TableRow>)}</TableBody>
+      </Table> : <Empty title="该单位暂无设备"/>)}
     {tab === 'accounts' && (accounts.loading ? <Loading /> : accounts.error != null ? <ErrorNotice error={accounts.error} retry={accounts.refresh} /> : accounts.data?.items.length ? <Table><TableHeader><TableRow><TableHead>用户名</TableHead><TableHead>姓名</TableHead><TableHead>状态</TableHead><TableHead>首次登录改密</TableHead></TableRow></TableHeader><TableBody>{accounts.data.items.map(account => <TableRow key={account.id}><TableCell>{account.username}</TableCell><TableCell>{account.name}</TableCell><TableCell>{account.enabled ? '启用' : '停用'}</TableCell><TableCell>{account.must_change_password ? '是' : '否'}</TableCell></TableRow>)}</TableBody></Table> : <Empty title="该单位暂无账号" />)}
-  </CardContent></Card>
+    </div>
+  </>
 }

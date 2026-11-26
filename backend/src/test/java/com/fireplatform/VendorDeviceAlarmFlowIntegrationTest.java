@@ -182,11 +182,27 @@ class VendorDeviceAlarmFlowIntegrationTest {
         assertThat(faults.path("customer_status").asText()).isEqualTo("FAULT");
         assertThat(faults.path("business_statuses").size()).isEqualTo(2);
         assertThat(faults.path("business_statuses").toString()).contains(source.equals("LEGACY_REALTIME")?"防拆报警":"防拆");
+        if (source.equals("HIKVISION_FIRECLOUD")) {
+            var recoveredAt = observed.plusSeconds(10);
+            hikvision.accept(HikvisionClient.Stream.FAULT,json.valueToTree(List.of(Map.of(
+                "faultID","first-"+external,"resourceID",external,"faultType",firstCode,
+                "faultStartTime",observed.toString(),"faultStopTime",recoveredAt.toString(),"faultState","1"))),time.now());
+            var remaining = deviceStatus(device,"customer",customer);
+            assertThat(remaining.path("customer_status").asText()).isEqualTo("FAULT");
+            assertThat(remaining.path("business_statuses").size()).isEqualTo(1);
+            assertThat(remaining.path("business_statuses").toString()).doesNotContain("防拆");
+            var history = f.body(f.call(HttpMethod.GET,"/api/management/duty/faults/"+events.getFirst(),f.root,"tenant-a",null,null)
+                .andExpect(status().isOk()));
+            assertThat(history.path("source_recovered").asBoolean()).isTrue();
+            assertThat(OffsetDateTime.parse(history.path("source_recovered_at").asText())).isEqualTo(recoveredAt);
+            assertThat(history.path("handling").isNull()).isTrue();
+            events = events.subList(1, events.size());
+        }
         for(int i=0;i<events.size();i++) {
             String event=events.get(i);
             f.call(HttpMethod.POST,"/api/management/duty/faults/"+event+"/handling",f.root,"tenant-a",UUID.randomUUID().toString(),
                 Map.of("expected_revision",0,"handled",true,"note","Checked the source fault")).andExpect(status().isOk());
-            assertThat(deviceStatus(device,"customer",customer).path("customer_status").asText()).isEqualTo(i==0?"FAULT":"ONLINE");
+            assertThat(deviceStatus(device,"customer",customer).path("customer_status").asText()).isEqualTo(i+1<events.size()?"FAULT":"ONLINE");
         }
     }
 

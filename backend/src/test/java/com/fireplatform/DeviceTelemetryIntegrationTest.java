@@ -104,6 +104,46 @@ class DeviceTelemetryIntegrationTest {
         assertThat(all.at("/items/3/received_at").isNull()).isTrue();
         assertThat(all.at("/items/3/readings/0/value").asText()).isEqualTo("4");
     }
+
+    @Test void importedLegacyMeasurementsExposeWireKeysAndDeclaredUnitsButNotIdentifiers(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path appendix)throws Exception {
+        var files=java.nio.file.Files.createDirectory(appendix.resolve("legacy"));
+        java.nio.file.Files.createDirectory(appendix.resolve("codecs"));
+        java.nio.file.Files.writeString(files.resolve("products.tsv"),"""
+            p_id\tp_name\tp_model\tp_manufacturer
+            8323\tLegacy monitoring fixture\tFixture-NB\tFixture vendor
+            """);
+        java.nio.file.Files.writeString(files.resolve("product_attrs.tsv"),"""
+            pa_id\tpa_pid\tpa_type\tpa_name\tpa_flag\tpa_data_type\tpa_unit
+            9101\t8323\t1\t正常工作间隔\theartbeat\t1\ts
+            9102\t8323\t1\t探测温度\ttemperature_value\t6\t°C
+            9103\t8323\t3\t心跳事件\theartbeat\t0\t
+            9104\t8323\t1\t模组标识\timei\t1\t
+            """);
+        java.nio.file.Files.writeString(appendix.resolve("excel-product-platform.tsv"),"""
+            p_id\tproduct_name\texcel_platform_name\tevidence
+            8323\tLegacy monitoring fixture\tFixture platform\ttest
+            """);
+        var importer=new com.fireplatform.legacyingest.importer.LegacyDictionaryImporter(jdbc,appendix.toString(),"");
+        importer.importDictionaries();
+        String version=jdbc.queryForObject("SELECT id FROM product_versions WHERE legacy_product_id='8323'",String.class);
+        try {
+            jdbc.update("UPDATE devices SET product_version_id=? WHERE id='device-a'",version);
+            sample("tenant-a","device-a","{\"heartbeat\":86400,\"temperature_value\":\"-10\",\"imei\":123}",at);
+            for(var body:java.util.List.of(current("device-a"),history("device-a",java.util.Map.of()))) {
+                var reads=body.at("/items/0/readings");
+                assertThat(reads).extracting(row->row.path("metric").asText()).containsExactly("heartbeat","temperature_value");
+                assertThat(reads.get(0).path("value").asText()).isEqualTo("86400");
+                assertThat(reads.get(0).path("label").asText()).isEqualTo("正常工作间隔");
+                assertThat(reads.get(0).path("unit").asText()).isEqualTo("s");
+                assertThat(reads.get(1).path("value").asText()).isEqualTo("-10");
+                assertThat(reads.get(1).path("unit").asText()).isEqualTo("°C");
+            }
+        } finally {
+            jdbc.update("DELETE FROM product_version_attributes WHERE product_version_id=?",version);
+        }
+    }
+
     @Test void historyRejectsScopeOverridesInvalidTimesAndMissingDeviceRead()throws Exception{
         String path="/api/management/devices/device-a/telemetry/history";
         mvc.perform(get("/api/management/devices/device-b/telemetry/history").header("Authorization","Bearer "+fixture.root).header("X-Tenant-Id","tenant-a")).andExpect(status().isNotFound());

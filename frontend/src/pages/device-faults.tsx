@@ -1,29 +1,85 @@
 import { useState, type FormEvent } from 'react'
-import { Alert, Button as AntButton, Card, Col, Descriptions, Drawer, Row, Space, Statistic, Table, Tabs, Tag, Typography, type TableColumnsType } from 'antd'
+import { Alert, Button as AntButton, Descriptions, Drawer, Space, Table, Tabs, Tag, Typography, type TableColumnsType } from 'antd'
 import { AlarmConfigVoice } from '@/components/alarm-config-voice'
 import { ConvertFaultToWorkOrder } from '@/components/convert-fault-to-work-order'
 import { DataTransferActions } from '@/components/data-transfer-actions'
 import { useMutationAction } from '@/components/identity-common'
+import { CustomerDateRange, CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable, CustomerSystemTabs } from '@/components/customer-records'
+import { useLegacyUnits } from '@/components/customer-workspace'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { PageHelp } from '@/components/page-tools'
-import { Empty, ErrorNotice, Loading, PageHeading } from '@/components/common'
+import { Empty, ErrorNotice, PageHeading } from '@/components/common'
+import { compileAlarmDraft, emptyAlarmDraft } from '@/lib/alarm-workbench'
 import { dateTime } from '@/lib/format'
 import { useSession } from '@/lib/store'
-import { publishObjectChange } from '@/lib/object-events'
+import { publishObjectChange, useObjectRevision } from '@/lib/object-events'
 import { useResource } from '@/lib/use-resource'
-import { queryDeviceFaults, queryDeviceFaultEvents, getFaultHandlingHistory, setFaultHandling, sourceFaultRecoveryText, type FaultEvent, type FaultHandling, type DeviceFaultSummary } from '@/lib/duty-api'
+import { queryFaults, queryDeviceFaults, queryDeviceFaultEvents, getFaultHandlingHistory, setFaultHandling, sourceFaultRecoveryText, type FaultEvent, type FaultHandling, type DeviceFaultSummary } from '@/lib/duty-api'
 import './duty-faults.css'
 
-export function DeviceFaultsPage() {
+export function DeviceFaultsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const session = useSession()
   const scope = JSON.stringify([session.generation, session.audience, session.scopeTenantIds, session.scopePlaceIds, session.scopeInitialized])
-  if (!session.user || session.user.must_change_password || !session.permissions.includes('device:read')) return <Empty title="当前账户无设备故障查看权限"/>
-  return <FaultsContent key={scope}/>
+  return session.audience === 'customer' ? <CustomerFaults key={scope}/> : <FaultsContent key={scope} embedded={embedded}/>
 }
 
-function FaultsContent() {
+function CustomerFaults() {
+  const session = useSession(), revision = useObjectRevision('events')
+  const tenantId = session.user?.tenant_id
+  const unitName = useLegacyUnits()?.data?.find(unit => unit.id === tenantId)?.name
+  const [system, setSystem] = useState(''), [page, setPage] = useState(1), [size, setSize] = useState(10)
+  const [draft, setDraft] = useState(emptyAlarmDraft), [applied, setApplied] = useState({ keyword: '', from: '', to: '' })
+  const [error, setError] = useState<unknown>(), [selected, setSelected] = useState<FaultEvent | null>(null)
+  const scoped = session.scopeTenantIds.length > 0 || session.scopePlaceIds.length > 0
+  const enabled = !!tenantId && session.scopeInitialized && scoped && session.permissions.includes('device:read')
+  const data = useResource(`customer-incident-faults:${JSON.stringify([tenantId, session.scopeTenantIds, session.scopePlaceIds, page, size, system, applied, revision])}`, signal =>
+    queryFaults(page, applied.keyword, applied.from, applied.to, signal, { size, systemType: system }).then(result => {
+      if (result.page !== page || result.size !== size || result.items.some(event => event.tenant_id !== tenantId))
+        throw new Error('故障分页或所属单位未确认')
+      return result
+    }), enabled)
+  if (!enabled) return <Empty title="当前无可读取的故障范围"/>
+  return <section className="legacy-record-page legacy-incident-page" aria-label="故障监控">
+    <CustomerSystemTabs system={system} onSystem={next => { setSystem(next); setPage(1); setSelected(null) }}/>
+    <CustomerRecordsSearch field="故障设备 / 位置" keyword={draft.keyword} onKeyword={keyword => setDraft(current => ({ ...current, keyword }))}
+      onSearch={event => {
+        event.preventDefault()
+        try {
+          const filters = compileAlarmDraft(draft)
+          if (page === 1 && filters.keyword === applied.keyword && (filters.occurred_from ?? '') === applied.from && (filters.occurred_to ?? '') === applied.to) data.refresh()
+          setApplied({ keyword: filters.keyword, from: filters.occurred_from ?? '', to: filters.occurred_to ?? '' })
+          setPage(1); setSelected(null); setError(undefined)
+        } catch (cause) { setError(cause) }
+      }}
+      onReset={() => { setDraft(emptyAlarmDraft); setApplied({ keyword: '', from: '', to: '' }); setPage(1); setSelected(null); setError(undefined) }}>
+      <CustomerDateRange from={draft.occurred_from} to={draft.occurred_to}
+        onFrom={occurred_from => setDraft(current => ({ ...current, occurred_from }))}
+        onTo={occurred_to => setDraft(current => ({ ...current, occurred_to }))}/>
+    </CustomerRecordsSearch>
+    {error != null && <ErrorNotice error={error}/>}
+    <CustomerRecordTable name="故障监控" columns={['故障设备名称', '所属单位', '警情点位置', '警情类型', '处理结果', '警情时间', '操作']}
+      loading={data.loading} error={data.error} retry={data.refresh} rows={(data.data?.items ?? []).map(event => ({
+        key: event.id, cells: [event.device_name, unitName, event.device_address, event.fault_label, event.handling?.handled ? '已处置' : '未处置',
+          event.observed_at ? dateTime(event.observed_at) : '观察时间未知',
+          event.device_id && <button type="button" className="legacy-device-link" onClick={() => setSelected(event)}>详情</button>],
+      }))}/>
+    {data.data && <CustomerRecordPager page={data.data.page} size={data.data.size} total={data.data.total} onPage={setPage}
+      onSize={next => { setSize(next); setPage(1) }}/>}
+    {session.permissions.includes('exports:write') && <details className="legacy-incident-tools"><summary>导出记录</summary>
+      {system && <p>此处导出保留关键词和日期条件，不按系统分类筛选。</p>}
+      <DataTransferActions kind="FAULTS" label={system ? '导出全部系统的匹配记录' : '导出故障记录'} tenantId={tenantId}
+        filters={{ unit_ids: session.scopeTenantIds.join(','), place_ids: session.scopePlaceIds.join(','), ...applied }}/>
+    </details>}
+    {selected?.device_id && <FaultDeviceDrawer key={selected.id} device={{
+      device_id: selected.device_id, tenant_id: selected.tenant_id, device_name: selected.device_name, device_address: selected.device_address,
+    }} initialEvent={selected} onClose={() => setSelected(null)}/>}
+  </section>
+}
+
+function FaultsContent({ embedded }: { embedded: boolean }) {
   const session = useSession()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState(''), [from, setFrom] = useState(''), [to, setTo] = useState('')
@@ -46,6 +102,9 @@ function FaultsContent() {
     setFilterError(''); setPage(1); setSelected(null)
     setApplied({ keyword: keyword.trim(), from: start?.toISOString() ?? '', to: end?.toISOString() ?? '' })
   }
+  function resetFilters() {
+    setKeyword(''); setFrom(''); setTo(''); setApplied({ keyword: '', from: '', to: '' }); setPage(1); setFilterError(''); setSelected(null)
+  }
 
   const columns: TableColumnsType<DeviceFaultSummary> = [
     { title: '设备', dataIndex: 'device_name', key: 'device', width: 210, ellipsis: true, render: (value, device) => <Typography.Text title={device.device_id}>{value ?? device.device_id}</Typography.Text> },
@@ -61,42 +120,47 @@ function FaultsContent() {
   ]
 
   return <section className="duty-fault-page">
-    <PageHeading eyebrow="运行中心 / 故障" title="设备故障" description="筛选发生故障的设备、来源事件及人工处置。">
+    {!embedded && <PageHeading eyebrow="运行中心 / 故障" title="设备故障" description="筛选发生故障的设备、来源事件及人工处置。">
       <PageHelp title="故障状态口径"><div className="form-stack"><p>只包含已报告的持久化故障；设备离线另行统计。来源观察时间未知时不使用接收时间补齐。</p><p>来源恢复与本地人工处置是独立事实；人工处置不会自动恢复设备物理状态。</p></div></PageHelp>
-      <Button variant="outline" onClick={result.refresh}>刷新</Button>
-      {enabled && <DataTransferActions kind="FAULTS" tenantId={session.audience === 'customer' ? session.user?.tenant_id ?? undefined : undefined} filters={filters}/>}
-    </PageHeading>
-    <details className="secondary-controls"><summary>筛选故障设备{(applied.keyword || applied.from || applied.to) && ' · 已启用筛选'}</summary>
-    <Card size="small">
-      <form className="device-workbench-grid" onSubmit={applyFilters}>
+    </PageHeading>}
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>有故障记录的设备</h2>
+        <div className="list-toolbar management-list-actions">
+          <Button variant="outline" onClick={result.refresh}>刷新</Button>
+          {enabled && <DataTransferActions kind="FAULTS" filters={filters}/>}
+        </div>
+      </div>
+      <form className="device-workbench-grid management-query-form" aria-label="筛选故障设备" onSubmit={applyFilters}>
         <div className="field"><Label htmlFor="fault-keyword">设备、地址或故障来源</Label><Input id="fault-keyword" value={keyword} onChange={event => setKeyword(event.target.value)} placeholder="输入设备名、地址或来源方法"/></div>
         <div className="field"><Label htmlFor="fault-from">观察时间从</Label><Input id="fault-from" type="datetime-local" value={from} onChange={event => setFrom(event.target.value)}/></div>
         <div className="field"><Label htmlFor="fault-to">至</Label><Input id="fault-to" type="datetime-local" value={to} onChange={event => setTo(event.target.value)}/></div>
-        <Space><Button type="submit">筛选</Button><Button variant="outline" onClick={() => { setKeyword(''); setFrom(''); setTo(''); setApplied({ keyword: '', from: '', to: '' }); setPage(1); setFilterError(''); setSelected(null) }}>重置</Button></Space>
+        <div className="management-query-actions">
+          <Button type="submit">筛选</Button><Button type="button" variant="outline" onClick={resetFilters}>重置</Button>
+        </div>
       </form>
-      
-      {filterError && <Alert type="error" title={filterError} showIcon/>}
-    </Card>
-    </details>
-    {!session.scopeInitialized ? <Loading/> : empty ? <Empty title="当前范围未选择"/> : result.loading ? <Loading/> : result.error != null ? <ErrorNotice error={result.error} retry={result.refresh}/> : result.data ? <>
-      <Row gutter={[16, 16]} style={{ margin: '0 0 16px' }}>
-        <Col span={12}><Card size="small"><Statistic title="匹配故障设备" value={result.data.total}/></Card></Col>
-        <Col span={12}><Card size="small"><Statistic title="本页来源事件" value={result.data.items.reduce((total, device) => total + device.event_count, 0)}/></Card></Col>
-      </Row>
-      <Card title="有故障记录的设备" size="small">
-        <Table<DeviceFaultSummary> rowKey={device => JSON.stringify([device.tenant_id, device.device_id])} size="small" columns={columns} dataSource={result.data.items} scroll={{ x: 1290 }} locale={{ emptyText: '当前筛选没有已报告的故障' }} pagination={{ current: result.data.page, pageSize: result.data.size, total: result.data.total, showSizeChanger: false, onChange: setPage }}/>
-      </Card>
-    </> : <div className="notice" role="alert">未确认设备故障查询结果。</div>}
+    {filterError && <Alert type="error" title={filterError} showIcon/>}
+    {empty ? <Empty title="当前范围未选择"/> : <>
+      {result.error != null && <ErrorNotice error={result.error} retry={result.refresh}/>}
+      {result.data && <dl className="management-list-counts">
+        <div><dt>匹配故障设备</dt><dd>{result.data.total}</dd></div>
+        <div><dt>本页来源事件</dt><dd>{result.data.items.reduce((total, device) => total + device.event_count, 0)}</dd></div>
+      </dl>}
+        <Table<DeviceFaultSummary> rowKey={device => JSON.stringify([device.tenant_id, device.device_id])} size="small" columns={columns} dataSource={result.data?.items ?? []} loading={result.loading} scroll={{ x: 1290 }} locale={{ emptyText: enabled ? '当前筛选没有已报告的故障' : '范围正在确认' }} pagination={{ current: result.data?.page ?? page, pageSize: result.data?.size ?? 20, total: result.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}/>
+    </>}
+    </CardContent></Card>
     {selected && <FaultDeviceDrawer key={JSON.stringify([selected.tenant_id, selected.device_id])} device={selected} onClose={() => setSelected(null)}/>}
   </section>
 }
 
-function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; onClose: () => void }) {
+export function FaultDeviceDrawer({ device, initialEvent, onClose }: {
+  device: Pick<DeviceFaultSummary, 'tenant_id' | 'device_id' | 'device_name' | 'device_address'>; initialEvent?: FaultEvent; onClose: () => void
+}) {
   const session = useSession()
-  const [page, setPage] = useState(1), [tab, setTab] = useState('history')
-  const [selected, setSelected] = useState<FaultEvent | null>(null)
+  const [page, setPage] = useState(1), [tab, setTab] = useState(initialEvent ? 'detail' : 'history')
+  const [selected, setSelected] = useState<FaultEvent | null>(initialEvent ?? null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [note, setNote] = useState(''), [notice, setNotice] = useState('')
+  const [note, setNote] = useState(initialEvent?.handling?.note ?? ''), [notice, setNotice] = useState('')
   const action = useMutationAction()
   const canHandle = session.permissions.includes('faults:handle')
   const scopeKey = JSON.stringify([session.scopeTenantIds, session.scopePlaceIds])
@@ -134,7 +198,6 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
     { title: '版本', dataIndex: 'revision', width: 70 },
     { title: '处置', dataIndex: 'handled', width: 90, render: value => value ? '已处置' : '未处置' },
     { title: '操作时间', dataIndex: 'updated_at', width: 175, render: dateTime },
-    { title: '处理人', dataIndex: 'updated_by', width: 160, render: value => value || '未记录' },
     { title: '说明', dataIndex: 'note', render: value => value || '未填写' },
   ]
   return <Drawer open destroyOnHidden size="min(1040px, 100vw)" title={device.device_name ?? device.device_id} onClose={onClose}>
@@ -144,7 +207,8 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
       <Tabs activeKey={tab} onChange={key => { if (!action.busy) setTab(key) }} items={[
         { key: 'history', label: '全部来源故障历史', children: <>
           <div className="list-toolbar"><Button variant="outline" onClick={events.refresh}>刷新历史</Button><DataTransferActions kind="FAULTS" tenantId={session.audience === 'customer' ? session.user?.tenant_id ?? undefined : undefined} filters={filters} selectedIds={selectedIds}/></div>
-          {events.loading ? <Loading/> : events.error != null ? <ErrorNotice error={events.error} retry={events.refresh}/> : !events.data ? <div className="notice" role="alert">未确认本设备来源故障记录。</div> : <Table<FaultEvent> rowKey="id" size="small" columns={eventColumns} dataSource={events.data.items} scroll={{ x: 940 }} locale={{ emptyText: '本页没有来源故障事件' }} rowSelection={{ selectedRowKeys: selectedIds, onChange: keys => setSelectedIds(keys.map(String)), preserveSelectedRowKeys: true }} pagination={{ current: events.data.page, pageSize: events.data.size, total: events.data.total, showSizeChanger: false, onChange: setPage }}/>}
+          {events.error != null && <ErrorNotice error={events.error} retry={events.refresh}/>}
+          <Table<FaultEvent> rowKey="id" size="small" columns={eventColumns} dataSource={events.data?.items ?? []} loading={events.loading} scroll={{ x: 940 }} rowSelection={{ selectedRowKeys: selectedIds, onChange: keys => setSelectedIds(keys.map(String)), preserveSelectedRowKeys: true }} pagination={{ current: events.data?.page ?? page, pageSize: events.data?.size ?? 20, total: events.data?.total ?? 0, showSizeChanger: false, onChange: setPage }}/>
         </> },
         { key: 'detail', label: '事件详情与处置', disabled: !selected, children: selected && <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
           <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered items={[
@@ -167,7 +231,8 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
           </details>
           <details className="secondary-controls" style={{ width: '100%' }}>
             <summary>本地处置历史</summary>
-            {history.loading ? <Loading/> : history.error != null ? <ErrorNotice error={history.error} retry={history.refresh}/> : !history.data ? <div className="notice" role="alert">未确认本地处置历史。</div> : <Table<FaultHandling> rowKey="revision" size="small" columns={handlingColumns} dataSource={history.data} locale={{ emptyText: '没有本地处置历史' }} pagination={false} scroll={{ x: 700 }}/>}
+            {history.error != null && <ErrorNotice error={history.error} retry={history.refresh}/>}
+            <Table<FaultHandling> rowKey="revision" size="small" columns={handlingColumns} dataSource={history.data ?? []} loading={history.loading} pagination={false} scroll={{ x: 600 }}/>
           </details>
           {selected.device_id && <ConvertFaultToWorkOrder key={selected.id} faultId={selected.id} deviceId={selected.device_id} tenantId={selected.tenant_id} defaultTitle={selected.fault_label || undefined}/>}
           <Alert type="info" showIcon title="人工处置不等于设备恢复" description="这里只记录本地处置与审计，不改写来源故障、观察时间或设备物理状态，不向设备发送指令。"/>
@@ -176,7 +241,7 @@ function FaultDeviceDrawer({ device, onClose }: { device: DeviceFaultSummary; on
             {action.error != null && <ErrorNotice error={action.error}/>}
             <Button type="submit" disabled={action.busy}>{action.busy ? '保存中…' : selected.handling?.handled ? '重新打开本地处置' : '记录本地处置'}</Button>
           </form>}
-          {tab === 'detail' && !events.loading && events.error == null && selected.kind === 'FAULT' && selected.tenant_id === device.tenant_id && selected.device_id === device.device_id && <AlarmConfigVoice tenantId={selected.tenant_id} deviceId={device.device_id} sourceId={selected.id} eventType="FAULT" occurredAt={selected.observed_at ? dateTime(selected.observed_at) : '来源观察时间未知'}/>}
+          {session.audience === 'management' && session.permissions.includes('alarm-base:read') && <AlarmConfigVoice tenantId={selected.tenant_id} sourceId={selected.id} eventType="FAULT" occurredAt={selected.observed_at ?? '来源未提供发生时间'}/>}
         </Space> },
       ]}/>
     </Space>

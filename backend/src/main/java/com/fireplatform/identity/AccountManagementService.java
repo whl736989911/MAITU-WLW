@@ -20,13 +20,37 @@ public class AccountManagementService {
     @Transactional public IdentityQueries.ManagedUser createPlatform(AuthService.Identity actor,String key,ManagementInputs.CreatePlatform in,String requestId) {
         return create(actor,"PLATFORM",null,key,in.username(),in.name(),in.initialPassword(),in.permissions(),in.tenantIds(),requestId);
     }
+
+    @Transactional public IdentityQueries.ManagedUser createClientPlatformOperator(
+            AuthService.Identity actor,String key,ManagementInputs.CreateClientPlatformOperator in,String requestId) {
+        guard.begin(actor,"platform-users:write",null,"management");
+        if(!"bootstrap-admin".equals(actor.user().id())) throw ApiError.forbidden("仅平台根账号可创建客户端平台管理员");
+        if(!Limits.validPassword(in.initialPassword())) throw ApiError.bad("目标密码不符合策略");
+        String target=AuthService.CLIENT_PLATFORM_OPERATOR_ID;
+        String operation="client-platform-operator-create";
+        var permissions=PermissionCatalog.CUSTOMER_KEYS.stream().sorted().toList();
+        String hash=commands.hashBusiness(key,List.of(in.username(),in.name(),permissions));
+        var replay=commands.replay(actor.user().id(),operation,key,hash,in.initialPassword(),IdentityQueries.ManagedUser.class);
+        if(replay!=null) return replay;
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM app_users WHERE id=?",Long.class,target)!=0)
+            throw ApiError.conflict("CLIENT_PLATFORM_OPERATOR_EXISTS","客户端平台管理员已存在");
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM app_users WHERE username=?",Long.class,in.username())!=0)
+            throw ApiError.conflict("USERNAME_CONFLICT","用户名已被使用");
+        jdbc.update("INSERT INTO app_users(id,username,display_name,user_type,password_hash,must_change_password,enabled,revision,is_protected) VALUES (?,?,?,'PLATFORM',?,TRUE,TRUE,0,TRUE)",
+                target,in.username(),in.name(),encoder.encode(in.initialPassword()));
+        assign(target,permissions,List.of());
+        var result=queries.target(target,"PLATFORM",null,false);
+        audit.record(actor.user().id(),null,"CREATE_CLIENT_PLATFORM_OPERATOR",target,"SUCCESS",requestId);
+        commands.save(actor.user().id(),operation,key,hash,in.initialPassword(),result);
+        return result;
+    }
     private IdentityQueries.ManagedUser create(AuthService.Identity actor,String type,String tenant,String key,String username,String name,String initial,List<String> permissions,List<String> grants,String requestId) {
         String operation=type.equals("PLATFORM") ? "platform-create" : "customer-create";
         guard.begin(actor,type.equals("PLATFORM") ? "platform-users:write" : "users:write",tenant,type.equals("PLATFORM") ? "management" : null);
         var allowed=catalog.validate(type,permissions,auth.permissions(actor.user().id())); var delegated=type.equals("PLATFORM") ? guard.grants(actor.user().id(),grants) : List.<String>of();
-        if(!Limits.validPassword(initial)) throw ApiError.bad("目标密码不符合策略");
         String hash=commands.hashBusiness(key,List.of(type,tenant==null ? "" : tenant,username,name,allowed,delegated));
         var replay=commands.replay(actor.user().id(),operation,key,hash,initial,IdentityQueries.ManagedUser.class); if(replay!=null) return replay;
+        if(!Limits.validPassword(initial)) throw ApiError.bad(Limits.PASSWORD_REQUIREMENTS);
         if(jdbc.queryForObject("SELECT COUNT(*) FROM app_users WHERE username=?",Long.class,username)!=0) throw ApiError.conflict("USERNAME_CONFLICT","用户名已被使用");
         String id=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO app_users(id,username,display_name,user_type,tenant_id,password_hash,must_change_password,enabled,revision,is_protected) VALUES (?,?,?,?,?,?,TRUE,TRUE,0,FALSE)",id,username,name,type,tenant,encoder.encode(initial));
@@ -62,9 +86,9 @@ public class AccountManagementService {
         String operation=type.equals("PLATFORM") ? "platform-reset" : "customer-reset";
         guard.begin(actor,type.equals("PLATFORM") ? "platform-users:reset-password" : "users:reset-password",tenant,type.equals("PLATFORM") ? "management" : null);
         var target=queries.target(id,type,tenant,true); bounds.protect(actor,target); bounds.check(actor,target);
-        if(!Limits.validPassword(in.newPassword())) throw ApiError.bad("目标密码不符合策略");
         String hash=commands.hashBusiness(key,List.of(type,tenant==null ? "" : tenant,id,in.expectedRevision()));
         var replay=commands.replay(actor.user().id(),operation,key,hash,in.newPassword(),IdentityQueries.ManagedUser.class); if(replay!=null) return replay;
+        if(!Limits.validPassword(in.newPassword())) throw ApiError.bad(Limits.PASSWORD_REQUIREMENTS);
         if(target.revision()!=in.expectedRevision()) throw ApiError.conflict("REVISION_CONFLICT","账号已更新，请刷新");
         jdbc.update("UPDATE app_users SET password_hash=?,must_change_password=TRUE,revision=revision+1 WHERE id=?",encoder.encode(in.newPassword()),id); revoke(id);
         var result=queries.target(id,type,tenant,false); audit.record(actor.user().id(),tenant,operation.toUpperCase(java.util.Locale.ROOT),id,"SUCCESS",requestId); commands.save(actor.user().id(),operation,key,hash,in.newPassword(),result); return result;

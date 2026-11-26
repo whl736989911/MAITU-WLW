@@ -29,6 +29,9 @@ public class RequestSecurity extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain) throws ServletException,IOException {
         String path=UrlPathHelper.defaultInstance.getPathWithinApplication(request);
         try {
+            if (path.equals("/api/auth/customer-session") && request.getMethod().equals("POST")) {
+                chain.doFilter(request,response); return;
+            }
             if (!path.startsWith("/api/") || (path.equals("/api/health") && request.getMethod().equals("GET")) || (path.equals("/api/auth/login") && request.getMethod().equals("POST")) || (request.getMethod().equals("POST") && path.matches("/api/hooks/hikvision/[0-9a-f]{64}")) || (request.getMethod().equals("POST") && path.matches("/api/ingest/[A-Za-z0-9_-]{1,64}/messages")) || (request.getMethod().equals("POST") && path.matches("/api/notify/v1/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_]{1,32}/telemetry")) || (request.getMethod().equals("POST") && path.equals("/api/payments/wechat/native/notify")) || (request.getMethod().equals("POST") && path.matches("/api/ingest/(ttl|cat1)(/.*)?")) || (request.getMethod().equals("GET") && path.equals("/api/wechat/oauth/callback")) || ((request.getMethod().equals("GET") || request.getMethod().equals("POST")) && path.equals("/api/wechat/callback"))) { chain.doFilter(request,response); return; }
             // Video media GETs carry an HttpOnly SameSite cookie, never a bearer/query token: the media
             // controller re-validates the session's current user, permission, device scope and expiry.
@@ -73,7 +76,7 @@ public class RequestSecurity extends OncePerRequestFilter {
     public String tenant(HttpServletRequest request) {
         var identity=identity(request); if(identity.user().userType().equals("CUSTOMER")) return identity.user().tenantId();
         String tenant=request.getHeader("X-Tenant-Id"); if(tenant==null || tenant.isBlank() || tenant.length()>64) throw ApiError.bad("管理租户业务必须选择已授权的X-Tenant-Id");
-        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenant);
+        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM effective_user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenant);
         if(count==null || count==0) throw ApiError.forbidden("未授权访问此租户");
         if(!auth.tenantEnabled(tenant)) throw new ApiError(403,"UNIT_DISABLED","单位已停用"); return tenant;
     }
@@ -82,7 +85,7 @@ public class RequestSecurity extends OncePerRequestFilter {
         if(tenantId==null || tenantId.isBlank()) return null;
         var identity=identity(request); if(identity.user().userType().equals("CUSTOMER")) return identity.user().tenantId();
         if(tenantId.length()>64) throw ApiError.bad("租户ID无效");
-        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenantId);
+        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM effective_user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenantId);
         if(count==null || count==0) throw ApiError.forbidden("未授权访问此租户");
         if(!auth.tenantEnabled(tenantId)) throw new ApiError(403,"UNIT_DISABLED","单位已停用"); return tenantId;
     }
@@ -98,7 +101,7 @@ public class RequestSecurity extends OncePerRequestFilter {
         var result=new java.util.LinkedHashSet<String>();
         for(String tenantId:tenantIds) {
             if(tenantId==null || tenantId.isBlank() || tenantId.length()>64) throw ApiError.bad("单位ID无效");
-            Long count=jdbc.queryForObject("SELECT COUNT(*) FROM user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenantId);
+            Long count=jdbc.queryForObject("SELECT COUNT(*) FROM effective_user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenantId);
             if(count==null || count==0) throw ApiError.forbidden("未授权访问此单位");
             if(!auth.tenantEnabled(tenantId)) throw new ApiError(403,"UNIT_DISABLED","单位已停用");
             result.add(tenantId);
@@ -111,7 +114,7 @@ public class RequestSecurity extends OncePerRequestFilter {
         var identity=identity(request); if(identity.user().userType().equals("CUSTOMER")) return identity.user().tenantId();
         String tenant=request.getHeader("X-Tenant-Id"); if(tenant==null || tenant.isBlank()) return null;
         if(tenant.length()>64) throw ApiError.bad("租户ID无效");
-        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenant);
+        Long count=jdbc.queryForObject("SELECT COUNT(*) FROM effective_user_tenant_grants WHERE user_id=? AND tenant_id=?",Long.class,identity.user().id(),tenant);
         if(count==null || count==0) throw ApiError.forbidden("未授权访问此租户");
         if(!auth.tenantEnabled(tenant)) throw new ApiError(403,"UNIT_DISABLED","单位已停用"); return tenant;
     }
@@ -124,7 +127,7 @@ public class RequestSecurity extends OncePerRequestFilter {
         for (String place : places) {
             Long count = actor.user().userType().equals("CUSTOMER")
                 ? jdbc.queryForObject("SELECT COUNT(*) FROM places p JOIN tenants t ON t.id=p.tenant_id WHERE p.id=? AND p.tenant_id=? AND t.enabled=TRUE", Long.class, place, actor.user().tenantId())
-                : jdbc.queryForObject("SELECT COUNT(*) FROM places p JOIN tenants t ON t.id=p.tenant_id JOIN user_tenant_grants g ON g.tenant_id=t.id WHERE p.id=? AND g.user_id=? AND t.enabled=TRUE", Long.class, place, actor.user().id());
+                : jdbc.queryForObject("SELECT COUNT(*) FROM places p JOIN tenants t ON t.id=p.tenant_id JOIN effective_user_tenant_grants g ON g.tenant_id=t.id WHERE p.id=? AND g.user_id=? AND t.enabled=TRUE", Long.class, place, actor.user().id());
             if (count == null || count == 0) throw ApiError.forbidden("未授权访问此位置范围");
         }
         String selected = request.getParameter("scope_selected");

@@ -6,11 +6,8 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fireplatform.alarm.AlarmLifecycle;
-import com.fireplatform.deviceservice.AdapterRevisionDigests;
 import com.fireplatform.deviceservice.DeviceRegistrationSourceLinked;
 import com.fireplatform.identity.CoordinationFence;
-import com.fireplatform.integration.BusinessFactPublisher;
-import com.fireplatform.integration.NormalizedBusinessFact;
 import com.fireplatform.legacyingest.LegacyEventSink;
 import com.fireplatform.legacyingest.LegacyNormalizedEvent;
 import java.math.BigDecimal;
@@ -18,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -46,13 +42,10 @@ public class HikvisionIngestion {
     private final AlarmLifecycle alarms;
     private final CoordinationFence coordination;
     private final HikvisionConfigService configuration;
-    private final BusinessFactPublisher facts;
-    private final AdapterRevisionDigests adapters;
     public HikvisionIngestion(JdbcTemplate jdbc,ObjectMapper json,HikvisionCatalog catalog,LegacyEventSink sink,
-            AlarmLifecycle alarms,CoordinationFence coordination,HikvisionConfigService configuration,
-            BusinessFactPublisher facts,AdapterRevisionDigests adapters) {
+            AlarmLifecycle alarms,CoordinationFence coordination,HikvisionConfigService configuration) {
         this.jdbc=jdbc;this.json=json;this.catalog=catalog;this.sink=sink;this.alarms=alarms;this.coordination=coordination;
-        this.configuration=configuration;this.facts=facts;this.adapters=adapters;
+        this.configuration=configuration;
         this.sourceJson=json.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
     }
 
@@ -62,25 +55,21 @@ public class HikvisionIngestion {
     }
     @Transactional
     public void accept(HikvisionClient.Stream stream,JsonNode records,OffsetDateTime received) {
-        accept(stream,records,received,configuration.refreshRuntime().modelScope(),"HIKVISION_POLL",true);
+        accept(stream,records,received,configuration.refreshRuntime().modelScope(),"HIKVISION_POLL");
     }
     @Transactional
     public void accept(HikvisionClient.Stream stream,JsonNode records,OffsetDateTime received,String modelScope) {
-        accept(stream,records,received,modelScope,"HIKVISION_POLL",true);
+        accept(stream,records,received,modelScope,"HIKVISION_POLL");
     }
     @Transactional
     public void accept(HikvisionClient.Stream stream,JsonNode records,OffsetDateTime received,String modelScope,String ingress) {
-        accept(stream,records,received,modelScope,ingress,true);
-    }
-    @Transactional
-    public void accept(HikvisionClient.Stream stream,JsonNode records,OffsetDateTime received,String modelScope,String ingress,boolean externalEffectsAllowed) {
         // Alarm, fault, monitor and native event facts share the same creation order fence; the fence is
         // transaction-local and reentrant for the callback worker that already holds it.
         if(stream==HikvisionClient.Stream.ALARM||stream==HikvisionClient.Stream.FAULT||stream==HikvisionClient.Stream.DEVICE_EVENT
             ||stream==HikvisionClient.Stream.MONITOR||stream==HikvisionClient.Stream.HISTORY_MONITOR) coordination.lock();
-        for(JsonNode record:records) store(stream,record,received,modelScope,ingress,externalEffectsAllowed);
+        for(JsonNode record:records) store(stream,record,received,modelScope,ingress);
     }
-    private void store(HikvisionClient.Stream stream,JsonNode record,OffsetDateTime received,String modelScope,String ingress,boolean externalEffectsAllowed) {
+    private void store(HikvisionClient.Stream stream,JsonNode record,OffsetDateTime received,String modelScope,String ingress) {
         boolean monitor=stream==HikvisionClient.Stream.MONITOR||stream==HikvisionClient.Stream.HISTORY_MONITOR;
         boolean flat=monitor&&flatMonitor(record);
         String resource=text(record,stream==HikvisionClient.Stream.DEVICE||stream==HikvisionClient.Stream.STATUS||stream==HikvisionClient.Stream.DEVICE_EVENT?"deviceID":stream==HikvisionClient.Stream.SENSOR?"sensorID":"resourceID");
@@ -122,7 +111,7 @@ public class HikvisionIngestion {
         }
         // The flat monitor shape is documented for push only; it is never inferred for polling payloads.
         if(flat&&!"HIKVISION_PUSH".equals(ingress)){error(rawId,"FLAT_MONITOR_REQUIRES_PUSH");return;}
-        apply(rawId,stream,record,resource,observed,received,ingress,externalEffectsAllowed);
+        apply(rawId,stream,record,resource,observed,received,ingress);
     }
     private boolean inConfiguredModelScope(HikvisionClient.Stream stream,JsonNode record,String resource,String required) {
         if(stream==HikvisionClient.Stream.UNIT)return true;
@@ -151,13 +140,13 @@ public class HikvisionIngestion {
                 text(record,sensor?"sensorSerial":"deviceSerial"),name,text(record,"deviceModel"),text(record,sensor?"sensorType":"deviceType"),text(record,"systemType"),text(record,"deviceStatus"),timestamp(record,"updateTime"),payload,received,id);
         } else jdbc.update("UPDATE hikvision_discovered_devices SET last_seen_at=? WHERE external_id=?",received,id);
     }
-    private void apply(String rawId,HikvisionClient.Stream stream,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress,boolean externalEffectsAllowed) {
+    private void apply(String rawId,HikvisionClient.Stream stream,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress) {
         if(stream==HikvisionClient.Stream.UNIT||stream==HikvisionClient.Stream.DEVICE||stream==HikvisionClient.Stream.SENSOR||stream==HikvisionClient.Stream.STATUS)return;
         if(resource==null){error(rawId,"RESOURCE_ID_MISSING");return;}
-        if(stream==HikvisionClient.Stream.DEVICE_EVENT){event(rawId,record,resource,observed,received,externalEffectsAllowed);return;}
-        if(stream==HikvisionClient.Stream.ALARM){alarm(rawId,record,resource,observed,received,ingress,externalEffectsAllowed);return;}
-        if(stream==HikvisionClient.Stream.FAULT){fault(rawId,record,resource,observed,received,ingress,externalEffectsAllowed);return;}
-        monitor(rawId,record,resource,observed,received,stream==HikvisionClient.Stream.MONITOR,ingress,externalEffectsAllowed);
+        if(stream==HikvisionClient.Stream.DEVICE_EVENT){event(rawId,record,resource,observed,received);return;}
+        if(stream==HikvisionClient.Stream.ALARM){alarm(rawId,record,resource,observed,received,ingress);return;}
+        if(stream==HikvisionClient.Stream.FAULT){fault(rawId,record,resource,observed,received,ingress);return;}
+        monitor(rawId,record,resource,observed,received,stream==HikvisionClient.Stream.MONITOR,ingress);
     }
     private Device currentOwner(String resource,boolean lock) {
         var linked=jdbc.query("SELECT d.id,d.tenant_id,d.name,d.address FROM hikvision_discovered_devices h JOIN devices d ON d.id=h.local_device_id WHERE h.external_id=? AND d.is_simulated=FALSE"+(lock?" FOR UPDATE":""),
@@ -197,7 +186,7 @@ public class HikvisionIngestion {
                 AND h.local_device_id=devices.id AND (h.event_history_from IS NULL OR h.event_history_from<=?))
             """,observed,owner.id(),owner.tenant(),observed,resource,observed);
     }
-    private void fault(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress,boolean externalEffectsAllowed) {
+    private void fault(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress) {
         String id=text(record,"faultID"),code=text(record,"faultType");if(id==null||code==null){error(rawId,"FAULT_ID_OR_TYPE_MISSING");return;}
         if(observed==null){error(rawId,"FAULT_SOURCE_TIME_MISSING");return;}
         String state=text(record,"faultState");
@@ -226,7 +215,7 @@ public class HikvisionIngestion {
         String event=null;
         if(prior==null) {
             ObjectNode params=json.createObjectNode();params.put("source","HIKVISION_FIRECLOUD").put("source_event_id",id).put("code",code).put("fault_label",catalog.faultLabel(code));
-            writeEvent(rawId,device,resource,"FAULT","HIKVISION_FAULT",params,observed,received,null,externalEffectsAllowed);
+            writeEvent(rawId,device,resource,"FAULT","HIKVISION_FAULT",params,observed,received);
             var events=jdbc.queryForList("SELECT id FROM legacy_ingest_events WHERE message_id=? AND kind='FAULT'",String.class,rawId);
             if(!events.isEmpty())event=events.getFirst();
             jdbc.update("INSERT INTO hikvision_fault_state(source_fault_id,external_device_id,normalized_event_id,source_code,source_label,source_start_time,source_stop_time,source_recovered,latest_raw_id,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -245,7 +234,7 @@ public class HikvisionIngestion {
         jdbc.update("UPDATE hikvision_fault_state SET "+String.join(",",sets)+" WHERE source_fault_id=?",args.toArray());
         appliedTo(rawId,device,received);
     }
-    private void alarm(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress,boolean externalEffectsAllowed) {
+    private void alarm(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,String ingress) {
         String id=text(record,"alarmID"),code=text(record,"alarmType");
         if(id==null||code==null){error(rawId,"ALARM_ID_OR_TYPE_MISSING");return;}
         if(catalog.simulatedAlarm(code)){error(rawId,"SOURCE_SIMULATED_ALARM");return;}
@@ -271,7 +260,7 @@ public class HikvisionIngestion {
         if(alarm==null) {
             alarm=alarms.fire(device.tenant(),device.id(),device.name(),device.address(),observed);
             ObjectNode params=json.createObjectNode();params.put("source","HIKVISION_FIRECLOUD").put("source_event_id",id).put("source_alarm_type",code).put("source_alarm_label",catalog.alarmLabel(code));
-            writeEvent(rawId,device,resource,"ALARM","HIKVISION_ALARM",params,observed,received,alarm,externalEffectsAllowed);
+            writeEvent(rawId,device,resource,"ALARM","HIKVISION_ALARM",params,observed,received);
             jdbc.update("INSERT INTO hikvision_alarm_state(source_alarm_id,external_device_id,local_alarm_id,source_code,source_start_time,source_stop_time,latest_raw_id,updated_at) VALUES(?,?,?,?,?,?,?,?)",id,resource,alarm,code,observed,stopped,rawId,received);
         }
         long occurrences=record.path("alarmNum").canConvertToLong()?record.path("alarmNum").asLong():1;
@@ -284,7 +273,7 @@ public class HikvisionIngestion {
         jdbc.update("UPDATE devices SET physical_state=? WHERE id=?",alarms.hasActiveFire(device.tenant(),device.id())?"FIRE":"NORMAL",device.id());
         if(prior==null) { if(observed==null) appliedTo(rawId,device,received); else applied(rawId,device,received); } else appliedTo(rawId,device,received);
     }
-    private void monitor(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,boolean currentSnapshot,String ingress,boolean externalEffectsAllowed) {
+    private void monitor(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,boolean currentSnapshot,String ingress) {
         boolean flat=flatMonitor(record);
         if(flat&&!"HIKVISION_PUSH".equals(ingress)){error(rawId,"FLAT_MONITOR_REQUIRES_PUSH");return;}
         if(observed==null){error(rawId,"MONITOR_SOURCE_TIME_MISSING");return;}
@@ -313,7 +302,7 @@ public class HikvisionIngestion {
               AND applied.payload_sha256=raw.payload_sha256 AND applied.ingress<>raw.ingress
               WHERE raw.id=? AND applied.applied_device_id=?)
             """,Boolean.class,rawId,device.id())){applied(rawId,device,received);return;}
-        writeEvent(rawId,device,resource,history?"PARAM":"OTHER",history?"HIKVISION_MONITOR":"HIKVISION_CURRENT_MONITOR",params,observed,received,null,externalEffectsAllowed);
+        writeEvent(rawId,device,resource,history?"PARAM":"OTHER",history?"HIKVISION_MONITOR":"HIKVISION_CURRENT_MONITOR",params,observed,received);
         // Snapshots and historical measurements are separate projections, never double-counted.
         if(params.has("battery")&&"%".equals(params.path("source_metrics").path("battery").path("unit").asText())) {
             BigDecimal percent=params.path("battery").decimalValue();
@@ -357,7 +346,7 @@ public class HikvisionIngestion {
         return metrics.size()>recorded.size();
     }
     private static String circuit(String value){return value==null||value.isBlank()||"0".equals(value)?null:value;}
-    private void event(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received,boolean externalEffectsAllowed) {
+    private void event(String rawId,JsonNode record,String resource,OffsetDateTime observed,OffsetDateTime received) {
         String occurrence=jdbc.queryForObject("SELECT external_key FROM hikvision_raw_records WHERE id=?",String.class,rawId);
         var recorded=jdbc.query("SELECT applied_device_id FROM hikvision_raw_records WHERE stream_kind='DEVICE_EVENT' AND external_key=? AND applied_device_id IS NOT NULL ORDER BY received_at,id LIMIT 1",
             (r,n)->r.getString(1),occurrence);
@@ -378,32 +367,16 @@ public class HikvisionIngestion {
             .put("resource_serial",Objects.toString(text(record,"resourceSerial"),""));
         String state=text(record,"state");
         if(state!=null)params.put("source_state",state);
-        writeEvent(rawId,device,resource,"OTHER","HIKVISION_DEVICE_EVENT",params,observed,received,null,externalEffectsAllowed);
+        writeEvent(rawId,device,resource,"OTHER","HIKVISION_DEVICE_EVENT",params,observed,received);
         applied(rawId,device,received);
     }
-    private void writeEvent(String rawId,Device device,String resource,String kind,String method,ObjectNode params,OffsetDateTime observed,OffsetDateTime received,String alarmId,boolean externalEffectsAllowed) {
+    private void writeEvent(String rawId,Device device,String resource,String kind,String method,ObjectNode params,OffsetDateTime observed,OffsetDateTime received) {
         RawPayload source=jdbc.queryForObject("SELECT payload_json,ingress FROM hikvision_raw_records WHERE id=?",(r,n)->new RawPayload(r.getString(1),r.getString(2)),rawId);
         String payload=source.payload(),ingress=source.ingress();
         if(jdbc.queryForObject("SELECT COUNT(*) FROM legacy_ingest_messages WHERE id=?",Long.class,rawId)==0)
             jdbc.update("INSERT INTO legacy_ingest_messages(id,tenant_id,ingress,vendor_platform,external_key,vendor_device_id,device_id,payload_raw,payload_sha256,payload_bytes,received_at,observed_at,state,duplicate_count) VALUES(?,?,?,'hikvision_firecloud',?,?,?,?,?,?,?,?,'NORMALIZED',0)",rawId,device.tenant(),ingress,rawId,resource,device.id(),payload,hash(payload),payload.getBytes(StandardCharsets.UTF_8).length,received,observed);
         String measurementKind="HIKVISION_CURRENT_MONITOR".equals(method)?"PARAM":kind;
         sink.accept(rawId,new LegacyNormalizedEvent(device.tenant(),device.id(),resource,"hikvision_firecloud",measurementKind,observed,null,false,List.of(new LegacyNormalizedEvent.LegacyEvent(kind,method,params.toString(),observed))));
-        if(externalEffectsAllowed) publishHikFact(rawId,device,resource,kind,method,params,observed,received,alarmId,payload);
-    }
-    /** Exactly one immutable application fact per written Hik source occurrence; replay/reparse never reach here. */
-    private void publishHikFact(String rawId,Device device,String resource,String kind,String method,ObjectNode params,OffsetDateTime observed,OffsetDateTime received,String alarmId,String payload) {
-        if(facts==null)return;
-        var versions=jdbc.query("SELECT d.product_version_id,pv.legacy_product_id FROM devices d LEFT JOIN product_versions pv ON pv.id=d.product_version_id WHERE d.id=? AND d.tenant_id=?",(r,n)->new String[]{r.getString(1),r.getString(2)},device.id(),device.tenant());
-        String productVersionId=versions.isEmpty()?null:versions.getFirst()[0],legacyProductId=versions.isEmpty()?null:versions.getFirst()[1];
-        var models=jdbc.queryForList("SELECT COALESCE(h.model,p.model) FROM hikvision_discovered_devices h LEFT JOIN hikvision_discovered_devices p ON p.external_id=h.parent_external_id WHERE h.external_id=?",String.class,resource);
-        String vendorModel=models.isEmpty()?null:models.getFirst();
-        String eventType="RECOVERY".equals(method)?"RECOVERY":"ALARM".equals(kind)?"FIRE":"HIKVISION_CURRENT_MONITOR".equals(method)?"PARAM":kind;
-        byte[] raw=payload.getBytes(StandardCharsets.UTF_8);
-        String rawBase64=raw.length==0||raw.length>1_048_576?null:Base64.getEncoder().encodeToString(raw);
-        facts.publish(new NormalizedBusinessFact("HIK:"+rawId,device.tenant(),device.id(),productVersionId,legacyProductId,
-            "hikvision_firecloud",vendorModel==null?null:NormalizedBusinessFact.VENDOR_MODEL,vendorModel,
-            "HIKVISION_FIRECLOUD",adapters==null?null:adapters.digestFor("HIKVISION_FIRECLOUD"),
-            rawId,eventType,observed,received,alarmId,params.toString(),rawBase64,"application/json",false,true));
     }
     private void signal(JsonNode reading,ObjectNode params,ObjectNode metadata,OffsetDateTime received) {
         JsonNode remark=reading.get("remark");if(remark==null)return;
@@ -433,7 +406,7 @@ public class HikvisionIngestion {
             JsonNode payload;try{payload=sourceJson.readTree((String)record[2]);}catch(com.fasterxml.jackson.core.JsonProcessingException e){error((String)record[0],"INVALID_STORED_PAYLOAD");continue;}
             HikvisionClient.Stream stream=HikvisionClient.Stream.valueOf((String)record[1]);
             // Reuse the stored source time and provenance; replay never invents either.
-            apply((String)record[0],stream,payload,resource,(OffsetDateTime)record[3],(OffsetDateTime)record[4],(String)record[5],false);
+            apply((String)record[0],stream,payload,resource,(OffsetDateTime)record[3],(OffsetDateTime)record[4],(String)record[5]);
         }
     }
     /** FireCloud's actual response uses enventID; retain eventID compatibility for documented payloads. */

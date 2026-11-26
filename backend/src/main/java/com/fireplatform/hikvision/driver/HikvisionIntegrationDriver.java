@@ -9,6 +9,7 @@ import com.fireplatform.deviceservice.VendorLifecycleDriver;
 import com.fireplatform.hikvision.HikvisionClient;
 import com.fireplatform.hikvision.HikvisionConfigSecrets;
 import com.fireplatform.hikvision.HikvisionConfigService;
+import com.fireplatform.shared.ApiError;
 import java.util.HashSet;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -29,6 +30,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
     public static final String PARAMETERS_WRITE = "parameters.write";
     public static final String CONTROL_OPERATE = "control.operate";
     public static final String HIK_V1_SILENCE = "hik.v1.silence";
+    public static final String RESET = "hik.v2.reset";
     public static final String CLOUD_DELETE = "cloud.delete";
     private static final int LOOKUP_PAGE_SIZE = 10;
     private static final int MAX_LOOKUP_PAGES = 100;
@@ -47,7 +49,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         this.configuration = configuration;
         this.secrets = secrets;
         this.json = json;
-        this.services = List.of(parametersRead(), parametersWrite(), controlOperate(), silenceV1Service(), cloudDelete());
+        this.services = List.of(parametersRead(), parametersWrite(), controlOperate(), silenceV1Service(), resetService(), cloudDelete());
     }
 
     @Override public String key() { return KEY; }
@@ -96,6 +98,7 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
                 case PARAMETERS_WRITE -> parametersWrite(call, external);
                 case CONTROL_OPERATE -> controlOperate(call, external);
                 case HIK_V1_SILENCE -> silenceV1(call, external);
+                case RESET -> sendControl(external, json.createObjectNode().put("operateType", 7), null, null);
                 case CLOUD_DELETE -> cloudDelete(call, external);
                 default -> DriverOutcome.blocked("OPERATION_NOT_IMPLEMENTED", "该操作没有实现的海康适配器，未发起外部请求");
             };
@@ -203,10 +206,12 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         ObjectNode operateParam = json.createObjectNode().put("operateType", type.asInt());
         JsonNode value = arguments.get("value");
         if (value != null && value.isTextual()) operateParam.put("value", value.asText());
-        ObjectNode body = json.createObjectNode().put("deviceID", external).put("operateParam", operateParam.toString());
-        JsonNode sensorId = arguments.get("sensorId");
-        if (sensorId != null && sensorId.isTextual() && !sensorId.asText().isBlank()) body.put("sensorID", sensorId.asText());
-        JsonNode channelAbility = arguments.get("channelAbility");
+        return sendControl(external, operateParam, arguments.path("sensorId").textValue(), arguments.path("channelAbility"));
+    }
+
+    private DriverOutcome sendControl(String external, ObjectNode operation, String sensorId, JsonNode channelAbility) {
+        ObjectNode body = json.createObjectNode().put("deviceID", external).put("operateParam", operation.toString());
+        if (sensorId != null && !sensorId.isBlank()) body.put("sensorID", sensorId);
         if (channelAbility != null && channelAbility.isBoolean()) body.put("channelAbility", channelAbility.booleanValue());
         HikvisionClient.VendorResult result = client.write("/api/device/v2/operate", body);
         if (!"0".equals(result.code())) return vendorRejection(result);
@@ -280,10 +285,34 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
 
     // ---------------- vendor lifecycle ----------------
 
+    // First supported enrollment model, from the FireCloud device dictionary.
+    private static boolean supportedEnrollment(CloudRegistration registration) {
+        return "800235".equals(registration.deviceModel())
+            && Integer.valueOf(600002).equals(registration.deviceType())
+            && Integer.valueOf(900002).equals(registration.communicationType());
+    }
+
+    @Override
+    public void validateRegistration(CloudRegistration registration, JsonNode vendorPayload) {
+        if (!supportedEnrollment(registration)) throw ApiError.bad("海康设备型号、设备类型和通信方式不匹配或未支持");
+    }
+
     @Override
     public CloudResult register(CloudRegistration registration, String verificationCode) {
-        if (!configuration().configured())
-            return new CloudResult("BLOCKED", configuration().code(), null, null, "海康真实接入未启用或凭证未配置，未发起任何外部请求");
+        HikvisionConfigService.Runtime runtime;
+        try {
+            runtime = configuration.refreshRuntime();
+        } catch (RuntimeException unavailable) {
+            return new CloudResult("BLOCKED", "CONFIGURATION_UNAVAILABLE", null, null, "海康接入配置不可用，未发起任何外部请求");
+        }
+        if (!runtime.session().configured() || !runtime.enabled())
+            return new CloudResult("BLOCKED", runtime.enabled() ? "NOT_CONFIGURED" : "DISABLED", null, null, "海康真实接入未启用或凭证未配置，未发起任何外部请求");
+        if (runtime.registrationUnitId() == null)
+            return new CloudResult("BLOCKED", "HIKVISION_REGISTRATION_UNIT_REQUIRED", null, null,
+                "请在「设备与接入 → 海康云接入」配置统一的海康云单位，尚未提交云端");
+        if (!supportedEnrollment(registration))
+            return new CloudResult("BLOCKED", "HIKVISION_ENROLLMENT_MODEL_UNSUPPORTED", null, null,
+                "登记的型号、设备类型或通信方式不受支持，尚未提交云端");
         ObjectNode body = json.createObjectNode();
         body.put("deviceName", registration.deviceName());
         body.put("deviceSerial", registration.deviceSerial());
@@ -295,11 +324,11 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
         if (registration.productModelId() != null) body.put("productModelID", registration.productModelId());
         if (registration.location() != null && !registration.location().isBlank()) body.put("location", registration.location());
         if (registration.autoAddChannel() != null) body.put("autoAddChannel", registration.autoAddChannel());
-        if (registration.vendorUnitId() != null && !registration.vendorUnitId().isBlank()) body.put("unitID", registration.vendorUnitId());
+        body.put("unitID", runtime.registrationUnitId());
         if (registration.latitude() != null) body.put("lat", registration.latitude());
         if (registration.longitude() != null) body.put("lon", registration.longitude());
         try {
-            HikvisionClient.VendorResult result = client.write("/api/device/v2/add", body);
+            HikvisionClient.VendorResult result = runtime.session().write("/api/device/v2/add", body);
             if (!"0".equals(result.code()))
                 return new CloudResult("REJECTED", result.code(), null, bounded(result.data()), "厂商拒绝注册：" + result.msg());
             String deviceId = result.data().path("deviceID").asText("");
@@ -501,6 +530,13 @@ public class HikvisionIntegrationDriver implements IntegrationDriver, VendorLife
             evidence("https://open.hikfirecloud.com/artemis-portal/document/85",
                 "V1 operate operateType=1；data true=指令下发接受，false=拒绝；无终端回执"),
             "UNVERIFIED", true);
+    }
+
+    private DriverServiceDescriptor resetService() {
+        return service(RESET, "设备复位", "CONTROL", "ENGINEERING", "COMMAND", schema(),
+            applicability("仅在当前型号已有复位能力证据时可下发"),
+            evidence("https://open.hikfirecloud.com/artemis-portal/document/65 与 /document/85",
+                "设备操作命令 7=复位；接受不是终端复位回执"), "UNVERIFIED");
     }
 
     private DriverServiceDescriptor cloudDelete() {

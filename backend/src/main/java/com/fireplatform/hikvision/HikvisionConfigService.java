@@ -18,11 +18,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class HikvisionConfigService {
     public record View(boolean configured, boolean enabled, String endpoint, String appKeyMasked,
         boolean secretConfigured, int pollIntervalSeconds, String modelScope, long revision,
-        String configurationSource, boolean secretStorageReady) { }
+        String configurationSource, boolean secretStorageReady, String registrationUnitId) { }
     public record Runtime(String endpoint, String appKey, String appSecret, boolean enabled,
-        int pollIntervalSeconds, String modelScope, boolean databaseConfigured, long revision, HikvisionClient.Session session) { }
-    private record Row(String endpoint,String appKey,String appKeyMasked,String secretCipher,String secretNonce,
-        String accountFingerprint,boolean enabled,int interval,String modelScope,long revision) { }
+        int pollIntervalSeconds, String modelScope, boolean databaseConfigured, long revision,
+        HikvisionClient.Session session, String registrationUnitId) { }
+    private record Row(String endpoint,String appKey,String secretCipher,String secretNonce,
+        String accountFingerprint,boolean enabled,int interval,String modelScope,long revision,String registrationUnitId) { }
     private final JdbcTemplate jdbc; private final HikvisionClient client; private final HikvisionConfigSecrets secrets;
     private final ManagementGuard guard; private final AuditService audit; private final IdempotencyStore idem; private final Clock clock;
     private final org.springframework.transaction.support.TransactionTemplate transactions;
@@ -36,20 +37,20 @@ public class HikvisionConfigService {
         this.jdbc=jdbc;this.client=client;this.secrets=secrets;this.guard=guard;this.audit=audit;this.idem=idem;this.clock=clock;this.transactions=transactions;
         if(interval<10000||interval>3600000)throw new IllegalStateException("Invalid Hikvision polling interval");
         envEnabled=enabled;envInterval=interval/1000;
-        runtime=new Runtime("https://open.hikfirecloud.com",envKey,envSecret,enabled,interval/1000,"800235",false,0,client.session());
+        runtime=new Runtime("https://open.hikfirecloud.com",envKey,envSecret,enabled,interval/1000,"800235",false,0,client.session(),null);
     }
     @jakarta.annotation.PostConstruct
     public void loadDatabaseConfiguration() {
-        List<Row> rows=jdbc.query("SELECT endpoint,app_key,app_key_masked,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,revision FROM hikvision_config WHERE id=1",(r,n)->new Row(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getString(6),r.getBoolean(7),r.getInt(8),r.getString(9),r.getLong(10)));
+        List<Row> rows=readRows(false);
         if(!rows.isEmpty())apply(rows.getFirst());
     }
     private synchronized void apply(Row row) {
         String secret=secrets.reveal(row.secretCipher(),row.secretNonce());
         client.configure(row.endpoint(),row.appKey(),secret);
-        runtime=new Runtime(row.endpoint(),row.appKey(),secret,row.enabled(),row.interval(),row.modelScope(),true,row.revision(),client.session());
+        runtime=new Runtime(row.endpoint(),row.appKey(),secret,row.enabled(),row.interval(),row.modelScope(),true,row.revision(),client.session(),row.registrationUnitId());
     }
     public synchronized Runtime refreshRuntime(){
-        List<Row> rows=readRows();
+        List<Row> rows=readRows(false);
         if(rows.isEmpty())return runtime;
         Row row=rows.getFirst();
         if(!runtime.databaseConfigured()||runtime.revision()!=row.revision())apply(row);
@@ -59,19 +60,25 @@ public class HikvisionConfigService {
     public View get() {
         Runtime current=refreshRuntime();
         if(!current.databaseConfigured())return new View(current.session().configured(),current.enabled(),null,null,
-            !current.appKey().isBlank()&&!current.appSecret().isBlank(),current.pollIntervalSeconds(),current.modelScope(),0,"ENVIRONMENT",secrets.ready());
+            !current.appKey().isBlank()&&!current.appSecret().isBlank(),current.pollIntervalSeconds(),current.modelScope(),0,"ENVIRONMENT",secrets.ready(),null);
         return new View(current.session().configured(),current.enabled(),current.endpoint(),HikvisionConfigSecrets.mask(current.appKey()),true,
-            current.pollIntervalSeconds(),current.modelScope(),current.revision(),"DATABASE",secrets.ready());
+            current.pollIntervalSeconds(),current.modelScope(),current.revision(),"DATABASE",secrets.ready(),current.registrationUnitId());
     }
-    private List<Row> readRows(){return jdbc.query("SELECT endpoint,app_key,app_key_masked,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,revision FROM hikvision_config WHERE id=1",(r,n)->new Row(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getString(6),r.getBoolean(7),r.getInt(8),r.getString(9),r.getLong(10)));}
+    private List<Row> readRows(boolean lock){
+        return jdbc.query("SELECT endpoint,app_key,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,revision,registration_unit_id FROM hikvision_config WHERE id=1"+(lock?" FOR UPDATE":""),
+            (r,n)->new Row(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getBoolean(6),r.getInt(7),r.getString(8),r.getLong(9),r.getString(10)));
+    }
     @Transactional
     public View update(AuthService.Identity actor,String key,HikvisionConfigInputs.Write input,String requestId) {
         guard.begin(actor,"integrations:write",null,"management");
         idem.validateKey(key);
-        List<Row> rows=jdbc.query("SELECT endpoint,app_key,app_key_masked,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,revision FROM hikvision_config WHERE id=1 FOR UPDATE",(r,n)->new Row(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getString(5),r.getString(6),r.getBoolean(7),r.getInt(8),r.getString(9),r.getLong(10)));
+        List<Row> rows=readRows(true);
         Row old=rows.isEmpty()?null:rows.getFirst();long revision=old==null?0:old.revision();
         Runtime current=refreshRuntime();
         String endpoint=endpoint(input.endpoint());String model=scope(input.modelScope());
+        String unit=input.registrationUnitId()==null?null:input.registrationUnitId().trim();
+        if(unit!=null&&unit.isEmpty())unit=null;
+        if(unit!=null&&!unit.matches("[\\x21-\\x7e]{1,64}"))throw ApiError.bad("海康云单位标识必须为1–64位可见 ASCII 字符");
         String suppliedKey=input.appKey()==null?"":input.appKey().trim();
         String appKey=suppliedKey.isEmpty()?(old!=null?old.appKey():current.appKey()):suppliedKey;
         if(appKey==null||!appKey.matches("[A-Za-z0-9._-]{1,200}"))throw ApiError.bad("App Key 格式无效");
@@ -95,19 +102,19 @@ public class HikvisionConfigService {
             String baseline=old==null?(current.session().configured()?secrets.fingerprint(current.endpoint()+"\n"+current.appKey()):null):old.accountFingerprint();
             if(baseline==null||!baseline.equals(identity))throw ApiError.conflict("HIKVISION_ACCOUNT_BOUND","已有海康来源事实，不能原位切换账号；需先完成受控切换");
         }
-        var fingerprint=idem.fingerprint(new Object[]{input.expectedRevision(),endpoint,appKey,secret,input.enabled(),input.pollIntervalSeconds(),model});
+        var fingerprint=idem.fingerprint(new Object[]{input.expectedRevision(),endpoint,appKey,secret,input.enabled(),input.pollIntervalSeconds(),model,unit});
         var replay=idem.replay(actor.user().id(),"hikvision-config",key,fingerprint,View.class);if(replay!=null)return replay;
         if(input.expectedRevision()!=revision)throw ApiError.conflict("REVISION_CONFLICT","海康配置已更新，请刷新后重试");
         String cipher,nonce,masked;
         if(secret.isEmpty()){cipher=old.secretCipher();nonce=old.secretNonce();masked=HikvisionConfigSecrets.mask(appKey);}
         else {var protectedSecret=secrets.protect(secret);cipher=protectedSecret.cipher();nonce=protectedSecret.nonce();masked=HikvisionConfigSecrets.mask(appKey);}
-        if(old==null)jdbc.update("INSERT INTO hikvision_config(id,endpoint,app_key,app_key_masked,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,revision,updated_at,updated_by) VALUES(1,?,?,?,?,?,?,?,?,?,1,?,?)",endpoint,appKey,masked,cipher,nonce,identity,input.enabled(),input.pollIntervalSeconds(),model,OffsetDateTime.now(clock),actor.user().id());
-        else jdbc.update("UPDATE hikvision_config SET endpoint=?,app_key=?,app_key_masked=?,secret_cipher=?,secret_nonce=?,account_fingerprint=?,enabled=?,poll_interval_seconds=?,model_scope=?,revision=revision+1,updated_at=?,updated_by=? WHERE id=1",endpoint,appKey,masked,cipher,nonce,identity,input.enabled(),input.pollIntervalSeconds(),model,OffsetDateTime.now(clock),actor.user().id());
-        Row saved=readRows().getFirst();
+        if(old==null)jdbc.update("INSERT INTO hikvision_config(id,endpoint,app_key,app_key_masked,secret_cipher,secret_nonce,account_fingerprint,enabled,poll_interval_seconds,model_scope,registration_unit_id,revision,updated_at,updated_by) VALUES(1,?,?,?,?,?,?,?,?,?,?,1,?,?)",endpoint,appKey,masked,cipher,nonce,identity,input.enabled(),input.pollIntervalSeconds(),model,unit,OffsetDateTime.now(clock),actor.user().id());
+        else jdbc.update("UPDATE hikvision_config SET endpoint=?,app_key=?,app_key_masked=?,secret_cipher=?,secret_nonce=?,account_fingerprint=?,enabled=?,poll_interval_seconds=?,model_scope=?,registration_unit_id=?,revision=revision+1,updated_at=?,updated_by=? WHERE id=1",endpoint,appKey,masked,cipher,nonce,identity,input.enabled(),input.pollIntervalSeconds(),model,unit,OffsetDateTime.now(clock),actor.user().id());
+        Row saved=readRows(false).getFirst();
         org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
             @Override public void afterCommit() { apply(saved); }
         });
-        View view=new View(true,input.enabled(),endpoint,masked,true,input.pollIntervalSeconds(),model,revision+1,"DATABASE",secrets.ready());
+        View view=new View(true,input.enabled(),endpoint,masked,true,input.pollIntervalSeconds(),model,revision+1,"DATABASE",secrets.ready(),unit);
         audit.record(actor.user().id(),null,"HIKVISION_CONFIG_UPDATE","hikvision-config","SUCCESS",requestId);
         idem.save(actor.user().id(),"hikvision-config",key,fingerprint,view);return view;
     }

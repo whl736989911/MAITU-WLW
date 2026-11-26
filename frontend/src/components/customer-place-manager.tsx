@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Card, Descriptions, Tree, Typography } from 'antd'
-import { MoveRight, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Alert, Card, Descriptions } from 'antd'
 import { useSession } from '@/lib/store'
 import { useResource } from '@/lib/use-resource'
 import { customerAssetsApi, customerPlaceCreateMutation, customerPlaceDeleteMutation, customerPlaceUpdateMutation } from '@/lib/customer-assets'
-import { placeBranchIds, placePath, placeTreeOptions, type PlaceTreeOption } from '@/lib/place-tree'
+import { placeBranchIds, placePath } from '@/lib/place-tree'
 import { previewPlaceMove, usePlaceMove } from '@/lib/place-move'
 import type { PlaceNode } from '@/lib/types'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
-import { ErrorNotice, Loading } from './common'
+import { ErrorNotice } from './common'
 import { CustomerWriteGate } from './customer-asset-write'
 import { DataTransferActions } from './data-transfer-actions'
 import { PageHelp, RowActions } from './page-tools'
+import { CustomerRecordPager, CustomerRecordsSearch, CustomerRecordTable } from './customer-records'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from './ui/sheet'
 
 type Editor =
@@ -35,6 +35,7 @@ export function CustomerPlaceManager() {
   const [editor, setEditor] = useState<Editor>(null)
   const [notice, setNotice] = useState('')
   const [draft, setDraft] = useState(''), [keyword, setKeyword] = useState('')
+  const [page, setPage] = useState(1)
   const places = useResource(`customer-places:${user?.tenant_id ?? 'none'}:${user?.tenant_id ?? ''}`, signal => customerAssetsApi.places(signal), canRead)
   const rows = places.data ?? []
   const byId = useMemo(() => new Map(rows.map(place => [place.id, place])), [rows])
@@ -43,16 +44,6 @@ export function CustomerPlaceManager() {
     if (!needle) return rows
     return rows.filter(place => placePath(place, rows).toLowerCase().includes(needle))
   }, [rows, keyword])
-  const tree = useMemo(() => {
-    const nodes = placeTreeOptions(rows)
-    if (!keyword) return nodes
-    const matches = new Set(visible.map(place => place.id))
-    const filter = (branch: PlaceTreeOption[]): PlaceTreeOption[] => branch.flatMap(node => {
-      const children = filter(node.children)
-      return matches.has(node.key) || children.length ? [{ ...node, children }] : []
-    })
-    return filter(nodes)
-  }, [rows, visible, keyword])
   const childCount = (id: string) => rows.filter(place => place.parent_id === id).length
   function refresh() { setNotice(''); places.refresh() }
   function saved(message: string) { setEditor(null); setNotice(message); places.refresh(); useSession.getState().refreshScopeTree() }
@@ -60,28 +51,26 @@ export function CustomerPlaceManager() {
   return <section className="unit-settings-grid">
     <div className="identity-row-actions"><PageHelp title="位置树与操作说明"><p>位置名称、上级和路径均来自本单位服务端位置树，不需要手工输入位置 ID。搜索保留匹配项的上级路径，不将子位置冒充为顶级位置。</p><p>整枝移动会先由服务端展开全部子位置和设备，并显示实际影响数量。删除仅允许空位置，服务端会再次检查；不会删除设备、报警或历史。跨单位移交不在此开放。</p></PageHelp></div>
     {notice && <Alert type="success" showIcon title={notice}/>}
-    <Card title="本单位位置" extra={<Button type="button" variant="outline" size="sm" onClick={refresh}><RefreshCw size={14}/>刷新</Button>}>
-      <div className="list-toolbar">
-        <form className="search-form" onSubmit={event => { event.preventDefault(); setKeyword(draft.trim()) }}><div className="input-icon"><Input aria-label="搜索位置名称或完整路径" value={draft} onChange={event => setDraft(event.target.value)} placeholder="按位置名称或完整路径搜索"/></div><Button type="submit" variant="outline">查询</Button>{keyword && <Button type="button" variant="ghost" onClick={() => { setDraft(''); setKeyword('') }}>清除</Button>}</form>
-        <div className="identity-row-actions"><DataTransferActions kind="PLACES" tenantId={user?.tenant_id ?? undefined} filters={keyword ? { place_ids: visible.map(place => place.id).join(',') } : undefined} onCompleted={result => { if ('plan_id' in result) { places.refresh(); setNotice('位置导入已提交，请查看逐行结果；未成功行不会自动当作已导入。') } }}/>{canWrite && <Button type="button" onClick={() => setEditor({ mode: 'create' })}><Plus size={15}/>新建位置</Button>}</div>
-      </div>
-      {places.loading ? <Loading/> : places.error != null ? <ErrorNotice error={places.error} retry={places.refresh}/> : tree.length ? <>
-        {keyword && <p className="muted-note">匹配 {visible.length} 个位置，保留其上级作为路径上下文；导出仍只使用明确匹配的范围。</p>}
-        <Tree key={keyword} className="customer-place-tree" blockNode selectable={false} defaultExpandAll treeData={tree} titleRender={node => {
-          const place = byId.get(String(node.key))
-          if (!place) return node.title
-          const path = placePath(place, rows), children = childCount(place.id)
-          return <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, minWidth: 0, paddingBlock: 6, color: 'var(--ant-color-text)' }}>
-            <div style={{ minWidth: 0, flex: 1 }}><strong style={{ overflowWrap: 'anywhere' }}>{node.title}</strong><div className="muted-note">设备 {place.device_count} · 子位置 {children}</div><Typography.Text type="secondary" ellipsis={{ tooltip: path }} style={{ display: 'block', maxWidth: '100%', fontSize: 12 }}>{path}</Typography.Text></div>
-            {canWrite && <RowActions label={`位置操作 · ${path}`} text="操作">
-              <Button type="button" variant="ghost" size="sm" onClick={() => setEditor({ mode: 'edit', place })}><Pencil size={14}/>编辑</Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setEditor({ mode: 'move', place })}><MoveRight size={14}/>移动整枝</Button>
-              <Button type="button" variant="ghost" size="sm" disabled={place.device_count > 0 || children > 0} onClick={() => setEditor({ mode: 'delete', place })}><Trash2 size={14}/>删除</Button>
-            </RowActions>}
-          </div>
-        }}/>
-      </> : <p className="muted-note">{keyword ? '没有匹配的位置，请调整名称或完整路径。' : '当前单位暂无位置；新建位置后才能登记设备。'}</p>}
-    </Card>
+    <CustomerRecordsSearch field="名称或路径" searchLabel="搜索位置名称或完整路径" keyword={draft} onKeyword={setDraft}
+      onSearch={event => { event.preventDefault(); setKeyword(draft.trim()); setPage(1) }}
+      onReset={() => { setDraft(''); setKeyword(''); setPage(1) }}
+      actions={<>
+        {canWrite && <button type="button" className="legacy-device-button" onClick={() => setEditor({ mode: 'create' })}>添加位置</button>}
+        <DataTransferActions kind="PLACES" tenantId={user?.tenant_id ?? undefined} filters={keyword ? { place_ids: visible.map(place => place.id).join(',') } : undefined}
+          onCompleted={result => { if ('plan_id' in result) refresh() }}/>
+      </>}/>
+    <CustomerRecordTable name="位置管理" columns={['名称', '所属位置', '设备数', '操作']}
+      loading={places.loading} error={places.error} retry={refresh} rows={visible.slice((page - 1) * 10, page * 10).map(place => {
+        const path = placePath(place, rows), children = childCount(place.id)
+        return { key: place.id, cells: [place.name, place.parent_id ? byId.get(place.parent_id)?.name : '顶级位置', place.device_count,
+          canWrite && <RowActions label={`位置操作 · ${path}`} text="操作">
+            <button type="button" className="legacy-device-link" onClick={() => setEditor({ mode: 'edit', place })}>编辑</button>
+            <button type="button" className="legacy-device-link" onClick={() => setEditor({ mode: 'move', place })}>移动整枝</button>
+            <button type="button" className="legacy-device-link" disabled={place.device_count > 0 || children > 0} onClick={() => setEditor({ mode: 'delete', place })}>删除</button>
+          </RowActions>,
+        ] }
+      })}/>
+    {places.data && <CustomerRecordPager page={page} size={10} total={visible.length} onPage={setPage}/>}
     <Sheet open={editor !== null} onOpenChange={open => { if (!open) setEditor(null) }}><SheetContent className="review-sheet sm:max-w-2xl">
       {editor && editor.mode !== 'move' && <PlaceMetadataEditor key={`${editor.mode}:${editor.mode === 'create' ? 'new' : editor.place.id}`} editor={editor} places={rows} close={() => setEditor(null)} saved={saved}/>}
       {editor?.mode === 'move' && <PlaceSubtreeMover key={editor.place.id} place={editor.place} places={rows} byId={byId} close={() => setEditor(null)} saved={saved}/>}
@@ -96,8 +85,8 @@ function parentOptions(places: PlaceNode[], exceptId?: string) {
 
 function PlaceMetadataEditor({ editor, places, close, saved }: { editor: Exclude<Editor, null | { mode: 'move' }>; places: PlaceNode[]; close: () => void; saved: (message: string) => void }) {
   const place = editor.mode === 'create' ? null : editor.place
-  const [name, setName] = useState(place?.name ?? ''), [parentId, setParentId] = useState('')
-  const options = editor.mode === 'create' ? parentOptions(places) : []
+  const [name, setName] = useState(place?.name ?? ''), [parentId, setParentId] = useState(place?.parent_id ?? '')
+  const options = parentOptions(places, place?.id)
   if (editor.mode === 'delete') return <><SheetHeader className="review-header"><SheetTitle>删除位置 · 影响预览</SheetTitle></SheetHeader><div className="review-body">
     <Descriptions column={1} size="small" items={[
       { key: 'path', label: '完整路径', children: placePath(editor.place, places) },
@@ -109,18 +98,19 @@ function PlaceMetadataEditor({ editor, places, close, saved }: { editor: Exclude
     <CustomerWriteGate store={customerPlaceDeleteMutation} title="确认删除空位置" submitLabel="确认删除" warning="删除只影响当前空位置；不会删除设备、报警、历史或云端资源。" summary={<><p>{placePath(editor.place, places)}</p><p>expected_revision：{editor.place.revision}</p></>} buildRequest={() => ({ path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'DELETE', body: { expected_revision: editor.place.revision }, display: `删除空位置 ${placePath(editor.place, places)}` })} onSaved={() => saved('位置已归档；设备与历史未改变。')}><div/></CustomerWriteGate>
     <Button type="button" variant="ghost" onClick={close}>取消</Button>
   </div></>
-  return <><SheetHeader className="review-header"><SheetTitle>{editor.mode === 'create' ? '新建本单位位置' : '修改位置名称'}</SheetTitle></SheetHeader><div className="review-body">
+  return <><SheetHeader className="review-header"><SheetTitle>{editor.mode === 'create' ? '新建本单位位置' : '编辑本单位位置'}</SheetTitle></SheetHeader><div className="review-body">
     {editor.mode === 'create' ? <CustomerWriteGate store={customerPlaceCreateMutation} title="新建位置" submitLabel="确认新建" warning="位置创建只写入本单位真实位置树；不会自动创建或移动设备。" summary={<><p>名称：{name.trim() || '未填写'}</p><p>上级：{parentId ? options.find(item => item.id === parentId)?.label : '顶级位置'}</p></>} buildRequest={() => {
       if (!name.trim()) throw new Error('请填写位置名称')
       return { path: '/places', method: 'POST', body: { name: name.trim(), parent_place_id: parentId || null }, display: `新建位置 ${name.trim()}` }
     }} onSaved={() => saved('位置已新建；可在设备或位置设置中继续使用。')}>
       <div className="field"><Label htmlFor="customer-place-name">位置名称</Label><Input id="customer-place-name" required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></div>
       <div className="field"><Label htmlFor="customer-place-parent">上级位置</Label><select id="customer-place-parent" className="native-select" value={parentId} onChange={event => setParentId(event.target.value)}><option value="">顶级位置</option>{options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select><p className="muted-note">按完整路径选择，不需要输入位置ID。</p></div>
-    </CustomerWriteGate> : <CustomerWriteGate store={customerPlaceUpdateMutation} title="位置名称" submitLabel="保存名称" warning="保存名称不改变上级位置。要更改上级，请使用「移动整枝」。" summary={<p>当前位置：{placePath(editor.place, places)}</p>} buildRequest={() => {
+    </CustomerWriteGate> : <CustomerWriteGate store={customerPlaceUpdateMutation} title="编辑位置" submitLabel="确认保存" warning="只修改名称和上级关系；本位置下的设备与历史不会被删除或改写。" summary={<><p>当前：{placePath(editor.place, places)}</p><p>名称：{name.trim() || '未填写'} · 上级：{parentId ? options.find(item => item.id === parentId)?.label : '顶级位置'}</p><p>expected_revision：{editor.place.revision}</p></>} buildRequest={() => {
       if (!name.trim()) throw new Error('请填写位置名称')
-      return { path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'PUT', body: { name: name.trim(), parent_place_id: editor.place.parent_id, expected_revision: editor.place.revision }, display: `修改位置名称 ${editor.place.name}` }
-    }} onSaved={() => saved('位置名称已保存，上级位置未改变。')} disabled={!name.trim() || name.trim() === editor.place.name}>
+      return { path: `/places/${encodeURIComponent(editor.place.id)}`, method: 'PUT', body: { name: name.trim(), parent_place_id: parentId || null, expected_revision: editor.place.revision }, display: `编辑位置 ${editor.place.name}` }
+    }} onSaved={() => saved('位置已保存；服务端 revision 已更新。')}>
       <div className="field"><Label htmlFor="customer-place-edit-name">位置名称</Label><Input id="customer-place-edit-name" required maxLength={200} value={name} onChange={event => setName(event.target.value)}/></div>
+      <div className="field"><Label htmlFor="customer-place-edit-parent">上级位置</Label><select id="customer-place-edit-parent" className="native-select" value={parentId} onChange={event => setParentId(event.target.value)}><option value="">顶级位置</option>{options.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
     </CustomerWriteGate>}
     <Button type="button" variant="ghost" onClick={close}>取消</Button>
   </div></>

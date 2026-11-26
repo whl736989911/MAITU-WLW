@@ -18,6 +18,8 @@ import { Badge } from '@/components/ui/badge'
 import { Empty, ErrorNotice, Loading, PageHeading, Pager, RefreshButton } from '@/components/common'
 import { listDeviceChannels } from '@/lib/device-channels'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { CustomerDeviceBack, CustomerDeviceCard, CustomerDeviceSearch, CustomerDeviceTable, CustomerDeviceTools } from '@/components/customer-device-ledger'
+import { CustomerSystemTabs } from '@/components/customer-records'
 
 const PAGE = 'topology'
 
@@ -48,8 +50,10 @@ function Credentials({ write, disabled = false }: { write: DomainWrite; disabled
 function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
   tenantId: string; canWrite: boolean; canReadDevices: boolean; canReadPlaces: boolean
 }) {
+  const legacy = useSession(s => s.audience === 'customer')
+  const [size, setSize] = useState(10)
   const [keyword, setKeyword] = useState(''), [draft, setDraft] = useState(''), [page, setPage] = useState(1)
-  const gateways = useResource(`topology-gateways:${tenantId}:${page}:${keyword}`, signal => topologyApi.gateways(tenantId, page, keyword, signal))
+  const gateways = useResource(`topology-gateways:${tenantId}:${page}:${keyword}:${legacy ? size : ''}`, signal => topologyApi.gateways(tenantId, page, keyword, signal, legacy ? size : undefined))
   const [selectedId, setSelectedId] = useState('')
   const selected = gateways.data?.items.find(item => item.id === selectedId) ?? null
   const tree = useResource(`topology-tree:${tenantId}:${selectedId}`, signal => topologyApi.tree(tenantId, selectedId, signal), !!selectedId)
@@ -104,6 +108,24 @@ function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
   const treeData: GatewayTree | undefined = tree.data
 
   return <>
+    {legacy ? <section className="legacy-device-ledger" aria-label="网关设备信息">
+      {selected ? <div className="legacy-device-detail">
+        <CustomerDeviceBack onClick={() => setSelectedId('')}/>
+        <CustomerDeviceCard title="网关设备信息"><dl className="legacy-device-fields">
+          <div><dt>网关MAC</dt><dd>{selected.address}</dd></div><div><dt>网关名称</dt><dd>{selected.name}</dd></div>
+          <div><dt>接入协议</dt><dd>{selected.protocol}</dd></div><div><dt>关联设备</dt><dd>{selected.device_name ?? '—'}</dd></div>
+        </dl></CustomerDeviceCard>
+      </div> : <>
+        <CustomerSystemTabs/>
+        <CustomerDeviceSearch fields={[['keyword', '网关MAC / 名称']]} draft={draft} onDraft={setDraft}
+          onSearch={(_field, value) => { setKeyword(value); setPage(1) }} onReset={() => { setDraft(''); setKeyword(''); setPage(1) }}>
+          <CustomerDeviceTools kind="网关设备"/>
+        </CustomerDeviceSearch>
+        <CustomerDeviceTable gateway page={page} size={size} list={{ ...gateways, data: gateways.data && { ...gateways.data,
+          items: rows.map(row => ({ id: row.id, eui: row.address, name: row.name })) } }}
+          open={row => setSelectedId(row.id)} setPage={setPage} setSize={value => { setPage(1); setSize(value) }}/>
+      </>}
+    </section> : <>
     <PageHeading eyebrow="设备与产品 · 网关拓扑" title="网关与测点拓扑"
       description="只登记真实网关到设备/测点的承载关系；人工声明、旧MQTT事件观察和人工核验分开展示。未知来源不绘图。">
       <PageHelp title="拓扑事实说明">
@@ -113,12 +135,17 @@ function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
           <p>读取按当前设备范围过滤；范围外的子节点不会出现，也不会显示其数量。</p>
         </div>
       </PageHelp>
-      <RefreshButton onClick={reload}/>
-      {canWrite && <DataTransferActions kind="TOPOLOGY_LINKS" tenantId={tenantId} filters={{ unit_ids: tenantId, place_ids: '' }}/>}
     </PageHeading>
 
-    <Card><CardContent>
-      <div className="list-toolbar"><h2>网关台账</h2>{canWrite && <Button type="button" onClick={() => { setEditing(null); setAddress(''); setName(''); setProtocol('LEGACY_TURMASS_MQTT'); setGatewayDevice(undefined); setCreateOpen(true); write.reset() }}>登记网关</Button>}</div>
+    <Card className="list-card management-list-panel"><CardContent>
+      <div className="management-list-bar">
+        <h2>网关台账</h2>
+        <div className="list-toolbar management-list-actions">
+          {canWrite && <DataTransferActions kind="TOPOLOGY_LINKS" tenantId={tenantId} filters={{ unit_ids: tenantId, place_ids: '' }}/>}
+          <RefreshButton onClick={reload}/>
+          {canWrite && <Button type="button" onClick={() => { setEditing(null); setAddress(''); setName(''); setProtocol('LEGACY_TURMASS_MQTT'); setGatewayDevice(undefined); setCreateOpen(true); write.reset() }}>登记网关</Button>}
+        </div>
+      </div>
       <form className="search-form" onSubmit={search}>
         <Input aria-label="搜索网关" value={draft} maxLength={100} onChange={event => setDraft(event.target.value)} placeholder="网关地址 / 名称"/>
         <Button type="submit" variant="outline">查询</Button>
@@ -138,6 +165,7 @@ function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
         {gateways.data?.scope_limited && <p className="muted-note">当前读取范围较窄：只显示范围内子节点可被看到的网关，子节点计数也仅统计可见记录。</p>}
       </>}
     </CardContent></Card>
+    </>}
 
     {createOpen && <Card><CardContent><form onSubmit={submitGateway}>
       <h2>{editing ? '编辑网关' : '登记网关'}</h2>
@@ -236,6 +264,7 @@ function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
       </form>}
     </SheetContent></Sheet>
 
+    {(!legacy || !!selected) && <>
     <Card><CardContent>
       <div className="list-toolbar"><h2>关系记录</h2><span className="muted-note">含已撤销历史；按当前设备范围过滤。</span></div>
       <div className="form-grid">
@@ -254,5 +283,6 @@ function Content({ tenantId, canWrite, canReadDevices, canReadPlaces }: {
         <Pager page={links.data?.page ?? 1} size={links.data?.size ?? 20} total={links.data?.total ?? 0} onChange={setLinkPage}/>
       </>}
     </CardContent></Card>
+    </>}
   </>
 }

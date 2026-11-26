@@ -36,8 +36,11 @@ export function setFaultHandling(event:FaultEvent,body:{expected_revision:number
   return request<FaultHandling>(`/${session.audience}/duty/faults/${encodeURIComponent(event.id)}/handling`,{tenantScoped:true,tenantId:event.tenant_id,method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify(body),signal,decode:text=>JSON.parse(text) as FaultHandling})
 }
 function scopeArgs() { const session = useSession.getState(); return [session.scopeTenantIds, session.scopePlaceIds] as const }
-export function queryFaults(page: number, keyword: string, from: string, to: string, signal?: AbortSignal) {
+export function queryFaults(page: number, keyword: string, from: string, to: string, signal?: AbortSignal, options?: { size?: number; systemType?: string; activeOnly?: boolean }) {
   const session = useSession.getState(), query = new URLSearchParams({ page: String(page) })
+  if (options?.size !== undefined) query.set('size', String(options.size))
+  if (options?.systemType) query.set('system_type', options.systemType)
+  if (options?.activeOnly) query.set('handling_state', 'ACTIVE')
   if (keyword) query.set('keyword', keyword)
   if (from) query.set('from', from)
   if (to) query.set('to', to)

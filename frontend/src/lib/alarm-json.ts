@@ -1,9 +1,11 @@
 import type { Alarm, AlarmCoverage, AlarmHistory, AlarmTraceEntry, AlarmTraceState, Audience, Paginated, AlarmWorkbench, AlarmWorkbenchFilters, AlarmWorkbenchMetrics, AlarmMetricDefinitions } from './types'
-const alarmKeys = ['id', 'tenant_id', 'device_id', 'device_name', 'address', 'event_type', 'occurred_at', 'physical_state', 'response_state', 'conclusion', 'revision', 'is_simulated', 'time_quality', 'recorded_at'] as const
+const alarmKeys = ['id', 'tenant_id', 'device_id', 'device_name', 'address', 'event_type', 'occurred_at', 'physical_state', 'response_state', 'conclusion', 'revision', 'is_simulated', 'time_quality', 'recorded_at', 'latest_alarm_at', 'recovered_at'] as const
 const entryKeys = ['id', 'alarm_id', 'action', 'revision_before', 'revision_after', 'occurred_at', 'recorded_at', 'actor_kind', 'actor_label', 'is_self', 'remark', 'origin'] as const
 const customerLabels = ['本人', '平台人员', '单位人员', '系统处理', '历史未知'] as const
 function pick<T>(value: Record<string, unknown>, keys: readonly string[]): T { return Object.fromEntries(keys.filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]])) as T }
-function alarmMetadata(value: Record<string, unknown>): Alarm { return pick<Alarm>(value, alarmKeys) }
+function alarmMetadata(value: Record<string, unknown>): Alarm {
+  return { ...pick<Alarm>(value, alarmKeys), device_eui: typeof value.device_eui === 'string' ? value.device_eui : null }
+}
 function stateMetadata(value: Record<string, unknown>): AlarmTraceState { return pick<AlarmTraceState>(value, ['physical_state', 'response_state', 'conclusion']) }
 export function alarmResponse(text: string): Alarm { return alarmMetadata(JSON.parse(text)) }
 export function alarmsResponse(text: string): Paginated<Alarm> { const parsed = JSON.parse(text); return { items: parsed.items.map(alarmMetadata), total: parsed.total, page: parsed.page, size: parsed.size } }

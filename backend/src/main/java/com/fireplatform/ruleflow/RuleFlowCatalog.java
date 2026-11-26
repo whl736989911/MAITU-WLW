@@ -87,9 +87,8 @@ public final class RuleFlowCatalog {
         new RuleFlowModels.NodeType(LINKAGE, "资源联动引用", "REFERENCE", "REFERENCE", false, 0, 4, true,
             "仅登记对既有资源联动规则的引用并核对其真实版本；规则流不改写、不启用联动规则，硬件动作仍由有权人员在联动页面单独维护。",
             "引用：资源联动规则（只读核对）。"),
-        new RuleFlowModels.NodeType(MQTT, "数据输出引用", "REFERENCE", "REFERENCE", false, 0, 4, true,
-            "仅登记对已有启用MQTT输出的已发布数据输出应用的引用；HTTPS输出不能被当作MQTT引用。规则流不新建外发、不写端点、不代发数据。",
-            "引用：开放应用MQTT数据输出（只读核对）。")
+        new RuleFlowModels.NodeType(MQTT, "历史数据输出引用（已退役）", "REFERENCE", "REFERENCE", false, 0, 4, false,
+            "已退役，不可新增或发布。历史定义保留原引用。", "第三方数据输出不再执行。")
     );
 
     public static RuleFlowModels.NodeType type(String type) {

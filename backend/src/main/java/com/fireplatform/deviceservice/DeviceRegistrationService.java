@@ -149,13 +149,8 @@ public class DeviceRegistrationService {
         }
         if ("NEW_VENDOR".equals(input.mode())) {
             if (lifecycle == null) throw ApiError.conflict("DRIVER_LIFECYCLE_UNSUPPORTED", "该驱动没有可用的云端登记操作");
-            if (importedLedger) {
-                lifecycle.validateRegistration(vendorRegistration(input), input.vendorPayload());
-            } else {
-                requiredVendorFields(input);
-                if (input.vendorUnitId() == null || input.vendorUnitId().isBlank())
-                    throw ApiError.bad("官方未定义unitID省略时的默认归属；新增登记必须明确厂商unitID，不能推断未归属或默认单元");
-            }
+            if (!importedLedger) requiredVendorFields(input);
+            lifecycle.validateRegistration(vendorRegistration(input), input.vendorPayload());
             if (customer && !driver.configuration().configured())
                 throw ApiError.conflict("VENDOR_NOT_CONFIGURED", "厂商接入未启用或凭证不可用，客户不能发起新增登记");
         }
@@ -173,11 +168,12 @@ public class DeviceRegistrationService {
         }
         String vendorPayloadHash = input.vendorPayload() == null || input.vendorPayload().isNull()
             ? "none" : Digests.sha256(input.vendorPayload().toString());
+        // Preserve the retired per-registration unit slot in fingerprints of existing non-Hikvision requests.
         List<String> fingerprintParts = new ArrayList<>(List.of(input.mode(), input.driverKey(), input.externalSerial(),
             String.valueOf(input.externalDeviceId()), vendorPayloadHash,
             String.valueOf(input.deviceName()), String.valueOf(input.deviceModel()), String.valueOf(input.deviceType()),
             String.valueOf(input.communicationType()), String.valueOf(input.accessMode()), String.valueOf(input.producterId()),
-            String.valueOf(input.productModelId()), String.valueOf(input.vendorUnitId()), String.valueOf(input.tenantId()),
+            String.valueOf(input.productModelId()), "null", String.valueOf(input.tenantId()),
             String.valueOf(input.placeId()), String.valueOf(input.productVersionId())));
         if ("NEW_VENDOR".equals(input.mode()) && "HIKVISION_FIRECLOUD".equals(input.driverKey())) {
             String verificationHash = input.verificationCode() == null ? "none" : Digests.sha256(input.verificationCode());
@@ -204,11 +200,11 @@ public class DeviceRegistrationService {
         String account = driver.accountFingerprint();
         OffsetDateTime now = OffsetDateTime.now(clock);
         try {
-            jdbc.update("INSERT INTO device_registrations(id,driver_key,mode,status,revision,tenant_id,place_id,product_version_id,external_device_id,external_serial,device_name,device_model,device_type,communication_type,access_mode,producter_id,product_model_id,vendor_unit_id,verification_cipher,verification_nonce,vendor_payload_cipher,location,latitude,longitude,auto_add_channel,account_fingerprint,cloud_state,local_state,created_by,created_at,updated_at) VALUES(?,?,?,'DRAFT',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'NOT_READY',?,?,?)",
+            jdbc.update("INSERT INTO device_registrations(id,driver_key,mode,status,revision,tenant_id,place_id,product_version_id,external_device_id,external_serial,device_name,device_model,device_type,communication_type,access_mode,producter_id,product_model_id,verification_cipher,verification_nonce,vendor_payload_cipher,location,latitude,longitude,auto_add_channel,account_fingerprint,cloud_state,local_state,created_by,created_at,updated_at) VALUES(?,?,?,'DRAFT',0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'NOT_READY',?,?,?)",
                 id, input.driverKey(), input.mode(), tenant, blank(input.placeId()), blank(input.productVersionId()),
                 blank(input.externalDeviceId()), input.externalSerial(), blank(input.deviceName()), blank(input.deviceModel()),
                 input.deviceType(), input.communicationType(), input.accessMode(), input.producterId(), input.productModelId(),
-                blank(input.vendorUnitId()), verification == null ? null : verification.ciphertext(),
+                verification == null ? null : verification.ciphertext(),
                 verification == null ? null : verification.nonce(), vendorPayload, blank(input.location()),
                 input.latitude(), input.longitude(), input.autoAddChannel(), account, cloudState, actor.user().id(), now, now);
         } catch (DuplicateKeyException race) {
@@ -1055,7 +1051,7 @@ public class DeviceRegistrationService {
         return new VendorLifecycleDriver.CloudRegistration(input.deviceName(), input.externalSerial(),
             input.deviceModel(), input.deviceType(), input.communicationType(), input.verificationCode(),
             input.producterId(), input.productModelId(), input.location(), input.autoAddChannel(),
-            input.vendorUnitId(), input.latitude(), input.longitude(), input.vendorPayload());
+            null, input.latitude(), input.longitude(), input.vendorPayload());
     }
 
     private String cloudJson(VendorLifecycleDriver.CloudResult cloud) {

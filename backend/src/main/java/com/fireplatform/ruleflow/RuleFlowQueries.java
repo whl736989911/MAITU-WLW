@@ -222,7 +222,7 @@ public class RuleFlowQueries {
                     binding.consumerId(), 0, true, "引用的数据输出应用已不存在", Map.of());
                 long revision = ((Number) rows.getFirst()[0]).longValue();
                 return new RuleFlowModels.ConsumerReadback(binding.consumerKind(), binding.scopeKey(), binding.consumerId(), revision,
-                    revision != binding.consumerRevision(), "只读引用（规则流不启停外发）",
+                    revision != binding.consumerRevision(), "第三方输出已退役（仅保留历史引用）",
                     Map.of("name", rows.getFirst()[1], "status", rows.getFirst()[2]));
             }
             default -> {
@@ -272,21 +272,11 @@ public class RuleFlowQueries {
                 linkageRules.add(new RuleFlowModels.LinkageOption(rule.id(), rule.name(), rule.kind(), rule.enabled(), controllers));
             }
         }
-        List<RuleFlowModels.ApplicationOption> applications = new ArrayList<>();
-        if (permissions.contains("applications:read")) {
-            jdbc.query("SELECT a.id,a.name,a.status,"
-                    + "(SELECT COUNT(*) FROM application_outputs o WHERE o.application_id=a.id AND o.enabled=TRUE),"
-                    + "(SELECT COUNT(*) FROM application_outputs o WHERE o.application_id=a.id AND o.enabled=TRUE"
-                    + " AND o.protocol='MQTT_TLS_3_1_1')"
-                    + " FROM output_applications a WHERE a.tenant_id=? AND a.status='ACTIVE' ORDER BY a.name LIMIT 200",
-                (rs, n) -> { applications.add(new RuleFlowModels.ApplicationOption(rs.getString(1), rs.getString(2),
-                    rs.getString(3), rs.getInt(4), rs.getInt(5))); return null; }, tenant);
-        }
         List<RuleFlowModels.ChannelSupport> support = new ArrayList<>();
         for (String channel : List.of("SMS", "VOICE", "WECHAT"))
             support.add(new RuleFlowModels.ChannelSupport(channel, channels.supported().contains(channel), channels.rationale(channel)));
         return new RuleFlowModels.Catalog(RuleFlowCatalog.TYPES, List.copyOf(support), List.copyOf(systemTypes), List.copyOf(places),
-            List.copyOf(devices), List.copyOf(contacts), List.copyOf(linkageRules), List.copyOf(applications),
+            List.copyOf(devices), List.copyOf(contacts), List.copyOf(linkageRules), List.of(),
             RuleFlowCatalog.LINKAGE_EVENT_CODES, RuleFlowCatalog.LINKAGE_ACTIONS, true);
     }
 

@@ -3,18 +3,16 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
+function TableViewport({ className, label, children }: { className?: string; label?: string; children: React.ReactNode }) {
+  return <div data-slot="table-container" className={cn("relative w-full min-w-0 overflow-x-auto", className)}
+    role={label ? "region" : undefined} aria-label={label} tabIndex={label ? 0 : undefined}>{children}</div>
+}
+
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
-    <div
-      data-slot="table-container"
-      className="relative w-full min-w-0 overflow-x-auto"
-    >
-      <table
-        data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
-        {...props}
-      />
-    </div>
+    <TableViewport label={props["aria-label"] ? `${props["aria-label"]} · 表格区域` : undefined}>
+      <table data-slot="table" className={cn("w-full caption-bottom text-sm", className)} {...props}/>
+    </TableViewport>
   )
 }
 
@@ -105,6 +103,7 @@ function TableCaption({
 
 export {
   Table,
+  TableViewport,
   TableHeader,
   TableBody,
   TableFooter,

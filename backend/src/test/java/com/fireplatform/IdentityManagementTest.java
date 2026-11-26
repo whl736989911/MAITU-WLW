@@ -66,6 +66,45 @@ class IdentityManagementTest {
     }
     long revision(String id) { return jdbc.queryForObject("SELECT revision FROM app_users WHERE id=?",Long.class,id); }
     Map<String,Object> platformUpdate(String name,boolean enabled,List<String> permissions,List<String> grants,long revision) { return Map.of("name",name,"enabled",enabled,"permissions",permissions,"tenant_ids",grants,"expected_revision",revision); }
+    @Test void bothPortalsKeepExistingPasswordsAndValidateNewPasswords() throws Exception {
+        for (String audience : List.of("management", "customer")) {
+            String username = audience.equals("management") ? "admin" : "customer-a";
+            jdbc.update("UPDATE app_users SET password_hash=? WHERE username=?", encoder.encode("123456"), username);
+            String token = login(username, "123456", audience);
+            for (String rejected : List.of("a1234", "123456", "aBcDeF", "12345 ", "!!!!!!")) {
+                call(HttpMethod.POST, "/api/auth/change-password", token, null, null,
+                    Map.of("current_password", "123456", "new_password", rejected)).andExpect(status().isBadRequest());
+            }
+            String next = audience.equals("management") ? "Ab1234" : "23456!";
+            call(HttpMethod.POST, "/api/auth/change-password", token, null, null,
+                Map.of("current_password", "123456", "new_password", next)).andExpect(status().isNoContent());
+            call(HttpMethod.GET, "/api/auth/me", token, null, null, null).andExpect(status().isUnauthorized());
+            login(username, next, audience);
+        }
+    }
+
+    @Test void creatingAndResettingUserPasswordsUseTheSamePolicy() throws Exception {
+        String owner = root();
+        for (boolean platform : List.of(false, true)) {
+            String path = "/api/management/" + (platform ? "platform-users" : "users");
+            String tenant = platform ? null : "tenant-a";
+            String username = platform ? "policy-admin" : "policy-customer";
+            Map<String,Object> create = new HashMap<>(Map.of("username",username,"name",username,"permissions",List.of()));
+            if (platform) create.put("tenant_ids",List.of());
+            create.put("initial_password","abcdefghijk");
+            call(HttpMethod.POST,path,owner,tenant,username+"-weak-create",create).andExpect(status().isBadRequest());
+            create.put("initial_password","Ab1234");
+            var account = body(call(HttpMethod.POST,path,owner,tenant,username+"-create",create).andExpect(status().isOk()));
+            String reset = path+"/"+account.get("id").asText()+"/reset-password";
+            call(HttpMethod.POST,reset,owner,tenant,username+"-weak-reset",
+                Map.of("new_password","123456789012","expected_revision",account.get("revision").asLong())).andExpect(status().isBadRequest());
+            call(HttpMethod.POST,reset,owner,tenant,username+"-reset",
+                Map.of("new_password","abcde!","expected_revision",account.get("revision").asLong()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.must_change_password").value(true));
+            login(username,"abcde!",platform ? "management" : "customer");
+        }
+    }
+
     @Test void freshUnitAndAccountDoNotRequireDemoAndCreatorSessionSurvives() throws Exception {
         String root=root();
         N04TestScopes.clear(jdbc);
@@ -101,7 +140,7 @@ class IdentityManagementTest {
     @Test void catalogIsAudienceFilteredAndDelegationIsIntersection() throws Exception {
         String root=root(); String basic=activate("customer-a",INITIAL,UPDATED,"customer");
         JsonNode catalog=body(call(HttpMethod.GET,"/api/auth/permission-catalog",basic,null,null,null).andExpect(status().isOk()));
-        assertThat(catalog.get("password_policy").get("min_length").asInt()).isEqualTo(12);
+        assertThat(catalog.get("password_policy").get("min_length").asInt()).isEqualTo(6);
         for(JsonNode item:catalog.get("items")) assertThat(PermissionCatalog.CUSTOMER_KEYS).contains(item.get("key").asText());
         assertThat(catalog.get("items").toString()).doesNotContain("settings:write").doesNotContain("platform-users:");
         var permissions=List.of("users:read","users:write","platform-users:read","platform-users:write","platform-users:reset-password","units:read");

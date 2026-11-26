@@ -12,7 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class DeviceQueryService {
-    public record DeviceRow(String id,String tenantId,String tenantName,String name,String deviceEui,String model,String address,String connectivity,String physicalState,OffsetDateTime lastMessageAt,java.math.BigDecimal batteryPercent,boolean isSimulated,String productId,String productVersionId,String productName,Long versionNumber,long revision,String integrationState,String placeId,String placeName,String systemType,String deviceCategory,ParameterModels.Effective offlinePolicy,BatteryThresholdModels.Observation batteryPolicy,DeviceStatusComposer.Status statusDisplay) { }
+    public record DeviceRow(String id,String tenantId,String tenantName,String name,String deviceEui,String model,String address,String connectivity,String physicalState,OffsetDateTime lastMessageAt,java.math.BigDecimal batteryPercent,boolean isSimulated,String productId,String productVersionId,String productName,Long versionNumber,long revision,String integrationState,String placeId,String placeName,String systemType,String deviceCategory,ParameterModels.Effective offlinePolicy,BatteryThresholdModels.Observation batteryPolicy,DeviceStatusComposer.Status statusDisplay,String sourceModelCode) { }
     public record Summary(long deviceTotal,long online,long offline,long unactivated,long unknownConnectivity,long todayAlarms,long unhandledAlarms,long lowBattery) { }
     public record Detail(OffsetDateTime asOf,String timezone,String consumer,DeviceRow device) { }
     public record PlaceHistory(String id,String action,String fromPlaceId,String fromPlaceName,String toPlaceId,String toPlaceName,Long revisionBefore,long revisionAfter,String actorId,OffsetDateTime occurredAt) { }
@@ -54,6 +54,10 @@ public class DeviceQueryService {
     public WorkbenchResult workbench(String actor,String tenant,int page,Integer size,DeviceWorkbenchFilter filter) { return workbench(actor,tenant,page,size,filter,ScopeFilter.Selection.all()); }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public WorkbenchResult workbench(String actor,String tenant,int page,Integer size,DeviceWorkbenchFilter filter,ScopeFilter.Selection selection) {
+        return workbench(actor,tenant,page,size,filter,selection,DeviceListOrder.BY_ID);
+    }
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    WorkbenchResult workbench(String actor,String tenant,int page,Integer size,DeviceWorkbenchFilter filter,ScopeFilter.Selection selection,DeviceListOrder order) {
         transactions.repeatableReadOnly();
         var p=Pagination.of(page,size,settings.defaultPageSize());
         var asOf=time.now().withOffsetSameInstant(ZoneOffset.UTC);
@@ -65,7 +69,7 @@ public class DeviceQueryService {
         String counts="SELECT COUNT(*),COALESCE(SUM(CASE WHEN q.computed_connectivity='ONLINE' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_connectivity='OFFLINE' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_connectivity='UNACTIVATED' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_connectivity='UNKNOWN' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.physical_state='FIRE' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.physical_state='NORMAL' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.physical_state='UNKNOWN' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_battery_status='LOW' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_battery_status='NORMAL' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_battery_status='NOT_CONFIGURED' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN q.computed_battery_status='NO_DATA' THEN 1 ELSE 0 END),0)";
         var metrics=jdbc.queryForObject(counts+fromWhere,(rs,n)->new WorkbenchMetrics(rs.getLong(1),rs.getLong(2),rs.getLong(3),rs.getLong(4),rs.getLong(5),rs.getLong(6),rs.getLong(7),rs.getLong(8),rs.getLong(9),rs.getLong(10),rs.getLong(11),rs.getLong(12)),bound.toArray());
         bound.add(p.size());bound.add(p.offset());
-        var items=jdbc.query("SELECT q.*"+fromWhere+" ORDER BY q.id LIMIT ? OFFSET ?",(rs,n)->row(rs),bound.toArray());
+        var items=jdbc.query("SELECT q.*"+fromWhere+order.sql()+" LIMIT ? OFFSET ?",(rs,n)->row(rs),bound.toArray());
         return new WorkbenchResult(items,metrics.deviceTotal(),p.page(),p.size(),asOf,"Asia/Shanghai",filter,metrics,WORKBENCH_DEFINITIONS);
     }
     private String fromClause() {
@@ -78,7 +82,7 @@ public class DeviceQueryService {
     }
     private String select() {
         String batteryStatus=batteryStatus("d");
-        return "SELECT CAST(? AS TIMESTAMP WITH TIME ZONE) AS battery_policy_evaluated_at,d.*,p.name AS place_name,t.name AS tenant_name,"+policy.columns()+","+policy.connectivity()+" AS computed_connectivity,dbo.comparator AS battery_override_comparator,dbo.threshold AS battery_override_threshold,COALESCE(dbo.revision,0) AS battery_override_revision,pv.battery_low_comparator AS version_battery_comparator,pv.battery_low_threshold AS version_battery_threshold,COALESCE(pv.revision,0) AS version_battery_revision,"+batteryStatus+" AS computed_battery_status"+statuses.columns()+" "+fromClause();
+        return "SELECT CAST(? AS TIMESTAMP WITH TIME ZONE) AS battery_policy_evaluated_at,d.*,"+DeviceModelDisplay.SQL+" AS display_model,p.name AS place_name,t.name AS tenant_name,"+policy.columns()+","+policy.connectivity()+" AS computed_connectivity,dbo.comparator AS battery_override_comparator,dbo.threshold AS battery_override_threshold,COALESCE(dbo.revision,0) AS battery_override_revision,pv.battery_low_comparator AS version_battery_comparator,pv.battery_low_threshold AS version_battery_threshold,COALESCE(pv.revision,0) AS version_battery_revision,"+batteryStatus+" AS computed_battery_status"+statuses.columns()+" "+fromClause();
     }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ) public Page<DeviceRow> devices(String actor,String tenant,int page,Integer requestedSize,String keyword) {
         return devices(actor,tenant,page,requestedSize,keyword,null,null);
@@ -97,18 +101,17 @@ public class DeviceQueryService {
     }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,ScopeFilter.Selection selection) {
-        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,selection,DeviceListFilter.parse(null,null,null,null,null));
+        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,selection,DeviceListFilter.parse(null,null,null,null,null),DeviceListOrder.BY_ID);
     }
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
-    public Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,ScopeFilter.Selection selection,DeviceListFilter statusFilter) {
+    public Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,ScopeFilter.Selection selection,DeviceListFilter statusFilter,DeviceListOrder order) {
         if(selection.empty()) { var p=Pagination.of(page,requestedSize,settings.value("default_page_size")); return new Page<>(List.of(),0,p.page(),p.size()); }
-        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,selection.tenantIds(),selection.placeIds(),statusFilter);
+        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,selection.tenantIds(),selection.placeIds(),statusFilter,order);
     }
     public Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,List<String> scopeTenantIds,List<String> scopePlaceIds) {
-        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,scopeTenantIds,scopePlaceIds,DeviceListFilter.parse(null,null,null,null,null));
+        return devices(actor,tenant,tenantFilter,page,requestedSize,keyword,batteryStatus,field,placeId,scopeTenantIds,scopePlaceIds,DeviceListFilter.parse(null,null,null,null,null),DeviceListOrder.BY_ID);
     }
-    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
-    public Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,List<String> scopeTenantIds,List<String> scopePlaceIds,DeviceListFilter statusFilter) {
+    private Page<DeviceRow> devices(String actor,String tenant,String tenantFilter,int page,Integer requestedSize,String keyword,String batteryStatus,String field,String placeId,List<String> scopeTenantIds,List<String> scopePlaceIds,DeviceListFilter statusFilter,DeviceListOrder order) {
         transactions.repeatableReadOnly();
         if(batteryStatus!=null && !batteryStatus.isBlank() && !Set.of("LOW","NORMAL","NO_DATA","NOT_CONFIGURED").contains(batteryStatus)) throw ApiError.bad("电量状态筛选未确认");
         var p=Pagination.of(page,requestedSize,settings.value("default_page_size")); if(keyword==null) keyword=""; if(keyword.length()>Limits.MAX_KEYWORD_LENGTH) throw ApiError.bad("搜索关键字过长");
@@ -117,9 +120,9 @@ public class DeviceQueryService {
         String fieldSql = switch (field == null ? "" : field) {
             case "eui" -> "LOWER(d.device_eui) LIKE ? ESCAPE '!'";
             case "name" -> "LOWER(d.name) LIKE ? ESCAPE '!'";
-            case "model" -> "LOWER(d.model) LIKE ? ESCAPE '!'";
+            case "model" -> "LOWER("+DeviceModelDisplay.SQL+") LIKE ? ESCAPE '!'";
             case "address" -> "LOWER(d.address) LIKE ? ESCAPE '!'";
-            case "" -> "(LOWER(d.name) LIKE ? ESCAPE '!' OR LOWER(d.device_eui) LIKE ? ESCAPE '!' OR LOWER(d.address) LIKE ? ESCAPE '!')";
+            case "" -> "(LOWER(d.name) LIKE ? ESCAPE '!' OR LOWER(d.device_eui) LIKE ? ESCAPE '!' OR LOWER(d.address) LIKE ? ESCAPE '!' OR LOWER("+DeviceModelDisplay.SQL+") LIKE ? ESCAPE '!')";
             default -> throw ApiError.bad("设备搜索字段无效");
         };
         String effectiveTenant=tenant!=null?tenant:tenantFilter;
@@ -134,10 +137,18 @@ public class DeviceQueryService {
         if(statusFilter.deviceCategory()!=null)where+=" AND d.device_category=?";
         var evaluated=time.now().withOffsetSameInstant(ZoneOffset.UTC);
         boolean filtered=(batteryStatus!=null&&!batteryStatus.isBlank())||statusFilter.connectivity()!=null;
-        boolean allFields=field==null||field.isBlank();var countArgs=new ArrayList<Object>();if(filtered) countArgs.add(evaluated);if(effectiveTenant!=null)countArgs.add(effectiveTenant);countArgs.addAll(scope.bindings());countArgs.add(query);if(allFields){countArgs.add(query);countArgs.add(query);}if(placeId!=null&&!placeId.isBlank())countArgs.add(placeId);countArgs.addAll(scoped.bindings());addStatusBindings(countArgs,statusFilter);
-        long total=jdbc.queryForObject("SELECT COUNT(*) "+(filtered?fromClause():"FROM devices d ")+where,Long.class,countArgs.toArray());
-        var args=new ArrayList<Object>();args.add(evaluated);args.add(evaluated);if(effectiveTenant!=null)args.add(effectiveTenant);args.addAll(scope.bindings());args.add(query);if(allFields){args.add(query);args.add(query);}if(placeId!=null&&!placeId.isBlank())args.add(placeId);args.addAll(scoped.bindings());addStatusBindings(args,statusFilter);args.add(p.size());args.add(p.offset());
-        var items=jdbc.query(select()+where+" ORDER BY d.id LIMIT ? OFFSET ?",(rs,n)->row(rs),args.toArray()); return new Page<>(items,total,p.page(),p.size());
+        boolean allFields=field==null||field.isBlank();var filterArgs=new ArrayList<Object>();if(effectiveTenant!=null)filterArgs.add(effectiveTenant);filterArgs.addAll(scope.bindings());filterArgs.add(query);if(allFields){filterArgs.add(query);filterArgs.add(query);filterArgs.add(query);}if(placeId!=null&&!placeId.isBlank())filterArgs.add(placeId);filterArgs.addAll(scoped.bindings());addStatusBindings(filterArgs,statusFilter);
+        var customerStatuses=statusFilter.customerStatuses();
+        String fromProjection=" FROM ("+select()+where+") q"+DeviceStatusComposer.customerStatusWhere(customerStatuses);
+        var countArgs=new ArrayList<Object>();
+        if(!customerStatuses.isEmpty())countArgs.add(evaluated);
+        if(filtered||!customerStatuses.isEmpty())countArgs.add(evaluated);
+        countArgs.addAll(filterArgs);
+        countArgs.addAll(customerStatuses);
+        long total=jdbc.queryForObject("SELECT COUNT(*) "+(customerStatuses.isEmpty()?(filtered?fromClause():"FROM devices d ")+where:fromProjection),Long.class,countArgs.toArray());
+        var args=new ArrayList<Object>();args.add(evaluated);args.add(evaluated);args.addAll(filterArgs);args.addAll(customerStatuses);args.add(p.size());args.add(p.offset());
+        var items=jdbc.query("SELECT q.*"+fromProjection+order.sql()+" LIMIT ? OFFSET ?",(rs,n)->row(rs),args.toArray());
+        return new Page<>(items,total,p.page(),p.size());
     }
     private static void addStatusBindings(List<Object> args,DeviceListFilter filter) {
         if(filter.connectivity()!=null)args.add(filter.connectivity());
@@ -149,7 +160,8 @@ public class DeviceQueryService {
     private DeviceRow row(java.sql.ResultSet rs) throws java.sql.SQLException {
         var evaluated=rs.getObject("battery_policy_evaluated_at",OffsetDateTime.class);
         var display=statuses.compose(DeviceStatusComposer.Code.valueOf(rs.getString("computed_connectivity")),rs.getBoolean("pending_alarm"),rs.getBoolean("notification_shielded"),rs.getString("pending_faults"));
-        return new DeviceRow(rs.getString("id"),rs.getString("tenant_id"),rs.getString("tenant_name"),rs.getString("name"),rs.getString("device_eui"),rs.getString("model"),rs.getString("address"),rs.getString("computed_connectivity"),rs.getString("physical_state"),rs.getObject("last_message_at",OffsetDateTime.class),rs.getBigDecimal("battery_percent"),rs.getBoolean("is_simulated"),rs.getString("product_id"),rs.getString("product_version_id"),rs.getString("product_name"),rs.getObject("version_number",Long.class),rs.getLong("revision"),rs.getString("integration_state"),rs.getString("place_id"),rs.getString("place_name"),rs.getString("system_type"),rs.getString("device_category"),policy.effective(rs,rs.getString("tenant_id"),rs.getString("id")),BatteryThresholdQueries.observation(rs,evaluated),display);
+        String model=rs.getString("display_model"),storedModel=rs.getString("model");
+        return new DeviceRow(rs.getString("id"),rs.getString("tenant_id"),rs.getString("tenant_name"),rs.getString("name"),rs.getString("device_eui"),model,rs.getString("address"),rs.getString("computed_connectivity"),rs.getString("physical_state"),rs.getObject("last_message_at",OffsetDateTime.class),rs.getBigDecimal("battery_percent"),rs.getBoolean("is_simulated"),rs.getString("product_id"),rs.getString("product_version_id"),rs.getString("product_name"),rs.getObject("version_number",Long.class),rs.getLong("revision"),rs.getString("integration_state"),rs.getString("place_id"),rs.getString("place_name"),rs.getString("system_type"),rs.getString("device_category"),policy.effective(rs,rs.getString("tenant_id"),rs.getString("id")),BatteryThresholdQueries.observation(rs,evaluated),display,Objects.equals(model,storedModel)?null:storedModel);
     }
     public DeviceRow device(String actor,String tenant,String id,boolean lock) {
         // Never FOR UPDATE the policy JOIN: only device may be locked, before a nonlocking policy read.

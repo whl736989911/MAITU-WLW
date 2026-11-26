@@ -26,7 +26,7 @@ public class PlaceQueries {
         var rows = jdbc.query(
             "SELECT p.id,p.tenant_id,t.name AS tenant_name,p.name,p.parent_place_id,p.legacy_place_id,p.revision,COUNT(d.id) AS device_count " +
             "FROM places p JOIN tenants t ON t.id=p.tenant_id LEFT JOIN devices d ON d.place_id=p.id AND d.tenant_id=p.tenant_id AND d.archived_at IS NULL " + deviceClause.and() +
-            " WHERE p.archived_at IS NULL AND " + clause.sql() + " GROUP BY p.id,p.tenant_id,t.name,p.name,p.parent_place_id,p.legacy_place_id,p.revision ORDER BY t.name,t.id,p.name,p.id",
+            " WHERE p.archived_at IS NULL AND " + clause.sql() + " GROUP BY p.id,p.tenant_id,t.name,p.name,p.parent_place_id,p.legacy_place_id,p.revision ORDER BY t.name,p.tenant_id,p.name,p.id",
             (rs, n) -> row(rs), args.toArray());
         if (rows.size() > 5000) throw ApiError.bad("位置数量超过单次读取上限");
         Map<String, PlaceNode> byId = new HashMap<>();

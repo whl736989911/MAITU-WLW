@@ -24,7 +24,11 @@ export function ConfigurationUnitTarget({ children, label = '配置目标单位'
   }, [tree.data, selected])
   const target = units.find(unit => unit.id === selected)
   return <>
-    <div className="field"><Label htmlFor="configuration-target-unit">{label}</Label><select id="configuration-target-unit" className="native-select" value={target?.id ?? ''} onChange={event => setSelected(event.target.value)}><option value="">请选择已授权单位</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.id}</option>)}</select></div>
+    <div className="field configuration-target-bar">
+      <Label htmlFor="configuration-target-unit">{label}</Label>
+      <select id="configuration-target-unit" className="native-select" value={target?.id ?? ''} onChange={event => setSelected(event.target.value)}><option value="">请选择已授权单位</option>{units.map(unit => <option key={unit.id} value={unit.id}>{unit.name} · {unit.id}</option>)}</select>
+      {target && <p className="muted-note">只应用于本页，不改变左侧读取范围。</p>}
+    </div>
     {tree.loading && !tree.data ? <Loading/> : tree.error != null ? <ErrorNotice error={tree.error} retry={tree.refresh}/> : target ? <section key={target.id}>{children(target.id)}</section> : <Empty title="请选择目标单位">多个单位可同时浏览，但本次操作必须明确目标；选择只影响本页，不改变单位/位置筛选或其他操作。</Empty>}
   </>
 }

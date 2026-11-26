@@ -29,6 +29,8 @@ public class DutyTelemetryQueries {
         Map.entry("sinr","SINR"));
     private static final Set<String> METRICS=LABELS.keySet();
     private static final Set<String> NUMERIC_STRING_METRICS=Set.of("rsrp","sinr");
+    private static final String LEGACY_NUMBER="LEGACY_NUMBER";
+    private static final Set<String> NUMERIC_TYPES=Set.of("NUMBER","NUMERIC","DECIMAL","INTEGER","INT","FLOAT","DOUBLE","LONG",LEGACY_NUMBER);
     public static final String GENERIC_BATTERY_PREFIX="GENERIC_BATTERY:";
     private static final String TELEMETRY_SOURCE="(SELECT e.id,e.tenant_id,e.device_id,e.kind,e.method,e.params_json,e.observed_at,e.created_at,COALESCE(m.received_at,rm.received_at) AS received_at,COALESCE(m.vendor_platform,e.source_platform) AS vendor_platform FROM legacy_ingest_events e LEFT JOIN legacy_ingest_messages m ON m.id=e.message_id AND m.tenant_id=e.tenant_id LEFT JOIN raw_messages rm ON rm.id=e.raw_message_id AND rm.tenant_id=e.tenant_id UNION ALL SELECT '"+GENERIC_BATTERY_PREFIX+"'||o.id,o.tenant_id,o.device_id,'PARAM','GENERIC_BATTERY',('{\"battery\":'||o.battery_percent||'}'),o.observed_at,o.recorded_at,NULL,'GENERIC_INGEST' FROM real_device_battery_observations o WHERE o.source_kind='GENERIC_INGEST')";
     private static final String REAL_DEVICE=" AND EXISTS(SELECT 1 FROM devices real_device WHERE real_device.id=e.device_id AND real_device.tenant_id=e.tenant_id AND real_device.is_simulated=FALSE)";
@@ -62,7 +64,7 @@ public class DutyTelemetryQueries {
         if(!validKey(metric))throw ApiError.bad("监测指标无效");
         if(METRICS.contains(metric))return;
         if(jdbc.queryForObject("SELECT COUNT(*) FROM hikvision_metric_catalog WHERE metric_key=?",Long.class,metric)>0)return;
-        if(jdbc.queryForObject("SELECT COUNT(*) FROM product_version_attributes WHERE attribute_key=? AND UPPER(data_type) IN ('NUMBER','NUMERIC','DECIMAL','INTEGER','INT','FLOAT','DOUBLE','LONG')",Long.class,metric)>0)return;
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM product_version_attributes WHERE attribute_key=? AND UPPER(data_type) IN ('NUMBER','NUMERIC','DECIMAL','INTEGER','INT','FLOAT','DOUBLE','LONG','LEGACY_NUMBER')",Long.class,metric)>0)return;
         if(measurements.declares(metric))return;
         throw ApiError.bad("监测指标无效");
     }
@@ -114,8 +116,8 @@ public class DutyTelemetryQueries {
             String version=rs.getString(3),platform=rs.getString(4);boolean generic="GENERIC_INGEST".equals(platform);
             var definition=version==null?null:declared.getOrDefault(version,Map.of()).get(metric);
             if(isBatterySentinel(metric,value))return;
-            String type=definition==null?"NUMBER":definition.valueType();boolean numeric;BigDecimal numericValue=null;
-            if("NUMBER".equals(type)){numericValue=metricNumber(metric,value);if(numericValue==null)return;numeric=true;}
+            String type=displayType(definition);boolean numeric;BigDecimal numericValue=null;
+            if("NUMBER".equals(type)){numericValue=metricNumber(metric,value,legacyNumber(definition));if(numericValue==null)return;numeric=true;}
             else if("STRING".equals(type)){if(!value.isTextual())return;numeric=false;}
             else {if(!value.isBoolean())return;numeric=false;}
             String unit=generic&&"battery".equals(metric)?"%":source(platform,root)?sourceUnit(root,metric):definition==null?null:definition.unit();
@@ -205,12 +207,17 @@ public class DutyTelemetryQueries {
         var result=new HashMap<String,Map<String,ProductMeasurementProjection.Declared>>();
         var args=new ArrayList<Object>(versions);var placeholders=String.join(",",Collections.nCopies(versions.size(),"?"));
         jdbc.query("SELECT product_version_id,attribute_key,name,unit,data_type FROM product_version_attributes WHERE product_version_id IN ("+placeholders+")",(RowCallbackHandler)rs->{
-            String key=rs.getString("attribute_key"),type=rs.getString("data_type");if(validKey(key)&&numericType(type))result.computeIfAbsent(rs.getString("product_version_id"),x->new HashMap<>()).putIfAbsent(key,new ProductMeasurementProjection.Declared(key,rs.getString("name"),nonblank(rs.getString("unit")),"NUMBER"));
+            String key=rs.getString("attribute_key"),type=rs.getString("data_type");
+            if(validKey(key)&&numericType(type)) result.computeIfAbsent(rs.getString("product_version_id"),x->new HashMap<>())
+                .putIfAbsent(key,new ProductMeasurementProjection.Declared(key,rs.getString("name"),nonblank(rs.getString("unit")),
+                    LEGACY_NUMBER.equalsIgnoreCase(type)?LEGACY_NUMBER:"NUMBER"));
         },args.toArray());
         measurements.forVersions(versions).forEach((version,declared)->{var target=result.computeIfAbsent(version,x->new HashMap<>());declared.forEach(target::putIfAbsent);});
         return result;
     }
-    private static boolean numericType(String type){if(type==null)return false;var t=type.toUpperCase(Locale.ROOT);return Set.of("NUMBER","NUMERIC","DECIMAL","INTEGER","INT","FLOAT","DOUBLE","LONG").contains(t);}
+    private static boolean numericType(String type){return type!=null&&NUMERIC_TYPES.contains(type.toUpperCase(Locale.ROOT));}
+    private static boolean legacyNumber(ProductMeasurementProjection.Declared definition){return definition!=null&&LEGACY_NUMBER.equals(definition.valueType());}
+    private static String displayType(ProductMeasurementProjection.Declared definition){return definition==null||legacyNumber(definition)?"NUMBER":definition.valueType();}
     private static Raw raw(ResultSet rs)throws SQLException{return new Raw(rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),rs.getString(6),rs.getString(7),rs.getObject(8,OffsetDateTime.class),rs.getObject(9,OffsetDateTime.class),rs.getObject(10,OffsetDateTime.class),rs.getString(11));}
     private static String nonblank(String value){return value==null||value.isBlank()?null:value;}
     private JsonNode parseParams(String value){try{return sourceJson.readTree(value);}catch(com.fasterxml.jackson.core.JsonProcessingException e){return null;}}
@@ -221,10 +228,10 @@ public class DutyTelemetryQueries {
         try{return new BigDecimal(value.asText()).compareTo(BigDecimal.valueOf(255))==0;}
         catch(NumberFormatException ignored){return false;}
     }
-    private static BigDecimal metricNumber(String metric,JsonNode value){
+    private static BigDecimal metricNumber(String metric,JsonNode value,boolean legacyNumber){
         BigDecimal number;
         if(value!=null&&value.isNumber())number=value.decimalValue();
-        else if(value!=null&&value.isTextual()&&NUMERIC_STRING_METRICS.contains(metric)&&value.textValue().length()<=64){
+        else if(value!=null&&value.isTextual()&&(legacyNumber||NUMERIC_STRING_METRICS.contains(metric))&&value.textValue().length()<=64){
             try{number=new BigDecimal(value.textValue());}catch(NumberFormatException ignored){return null;}
         } else return null;
         if(number.precision()>64||Math.abs((long)number.scale())>64)return null;
@@ -235,8 +242,8 @@ public class DutyTelemetryQueries {
         if(root!=null){var fields=root.fields();while(fields.hasNext()){var field=fields.next();String key=field.getKey();JsonNode value=field.getValue();if(!validKey(key)||(metric!=null&&!metric.equals(key)))continue;
             var definition=declared.get(key);if(!METRICS.contains(key)&&definition==null&&!(source&&root.path("source_metrics").has(key)))continue;
             if(isBatterySentinel(key,value))continue;
-            String type=definition==null?"NUMBER":definition.valueType(),text;
-            if("NUMBER".equals(type)){BigDecimal number=metricNumber(key,value);if(number==null)continue;text=number.toPlainString();}
+            String type=displayType(definition),text;
+            if("NUMBER".equals(type)){BigDecimal number=metricNumber(key,value,legacyNumber(definition));if(number==null)continue;text=number.toPlainString();}
             else if("STRING".equals(type)){if(!value.isTextual()||value.textValue().length()>com.fireplatform.product.ProductLimits.MAX_RAW_STRING)continue;text=value.textValue();}
             else {if(!value.isBoolean())continue;text=Boolean.toString(value.booleanValue());}
             boolean genericBattery="GENERIC_INGEST".equals(r.platform())&&"battery".equals(key);

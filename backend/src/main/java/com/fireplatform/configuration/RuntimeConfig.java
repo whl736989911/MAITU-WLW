@@ -25,8 +25,6 @@ public class RuntimeConfig {
     private final int alarmChangePollMs,alarmChangeBatchSize;
     private final int hikvisionCallbackPollMs,hikvisionCallbackBatchSize;
     private final boolean genericMessageWorkerEnabled;
-    private final boolean applicationOutputEnabled;
-    private final int applicationOutputPollMs,applicationOutputBatchSize;
 
     private final boolean videoCaptureWorkerEnabled;
     public RuntimeConfig(Environment env) {
@@ -50,10 +48,7 @@ public class RuntimeConfig {
             throw new IllegalStateException("PostgreSQL storage requires a PostgreSQL JDBC URL");
         roles = Arrays.stream(env.getProperty("app.roles", "all").split(",", -1)).map(String::trim).distinct().toList();
         genericMessageWorkerEnabled=genericIngestEnabled&&(roles.contains("all")||roles.contains("worker"));
-        applicationOutputEnabled=env.getProperty("app.application-output-enabled",Boolean.class,env.getProperty("APP_APPLICATION_OUTPUT_ENABLED",Boolean.class,false));
-        applicationOutputPollMs=alarmChangeBound(env,"app.application-output-poll-ms","APP_APPLICATION_OUTPUT_POLL_MS",1000,250,60000);
         videoCaptureWorkerEnabled=roles.contains("all")||roles.contains("worker");
-        applicationOutputBatchSize=alarmChangeBound(env,"app.application-output-batch-size","APP_APPLICATION_OUTPUT_BATCH_SIZE",5,1,50);
         if (roles.isEmpty() || roles.stream().anyMatch(r -> !Set.of("all", "api", "ingest", "worker").contains(r))
             || (roles.contains("all") && roles.size() != 1)) throw new IllegalStateException("Invalid APP_ROLES");
     }
@@ -67,10 +62,6 @@ public class RuntimeConfig {
     public int hikvisionCallbackPollMs(){return hikvisionCallbackPollMs;}
     public int hikvisionCallbackBatchSize(){return hikvisionCallbackBatchSize;}
     public boolean genericMessageWorkerEnabled(){return genericMessageWorkerEnabled;}
-    /** Application output delivery is deployment-gated and OFF unless explicitly enabled for a worker role. */
-    public boolean applicationOutputWorkerEnabled(){return applicationOutputEnabled&&(roles.contains("all")||roles.contains("worker"));}
-    public int applicationOutputPollMs(){return applicationOutputPollMs;}
-    public int applicationOutputBatchSize(){return applicationOutputBatchSize;}
     public boolean reparseWorkerEnabled() { return reparseEnabled && (roles.contains("all") || roles.contains("worker")); }
     public int taskPollMs() { return taskPollMs; }
     public String storage() { return storage; }

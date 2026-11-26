@@ -28,7 +28,8 @@ public class LegacyTerminalSpreadsheetPreview {
     private static final List<String> HEADERS = List.of("所属系统", "应用", "平台", "产品", "设备名称", "所属位置", "设备编号",
         "入网模式", "imei", "频点", "AppKey", "AppEUI", "NwkSKey", "AppSKey", "DevAddr", "安装人", "安装人电话", "安装位置", "GPS坐标");
     record Place(String id, String name, String parent) { }
-    private record Terminal(int line, String product, String name, String place, String serial, String address) { }
+    private record ProductReference(String name, String platform) { }
+    private record Terminal(int line, ProductReference product, String name, String place, String serial, String address) { }
     public record Preview(List<VendorDeviceBulkInputs.Row> rows) { }
 
     private final JdbcTemplate jdbc;
@@ -48,14 +49,14 @@ public class LegacyTerminalSpreadsheetPreview {
         var places = readPlaces(jdbc, tenant);
         var rows = new ArrayList<VendorDeviceBulkInputs.Row>(terminals.size());
         var seen = new HashMap<String, Integer>();
-        var profiles = new HashMap<String, String>();
+        var profiles = new HashMap<ProductReference, String>();
         var placeIds = new HashMap<String, String>();
         for (var terminal : terminals) {
             int line = terminal.line();
             Integer prior = seen.putIfAbsent(terminal.serial(),line);
             if (prior != null) throw bad(line,"设备编号","与第"+prior+"行重复");
             String profile;
-            try { profile = profiles.computeIfAbsent(terminal.product(), name -> legacy.terminalProfile(name,input.legacyProfileId())); }
+            try { profile = profiles.computeIfAbsent(terminal.product(), ref -> legacy.terminalProfile(ref.name(),ref.platform(),input.legacyProfileId())); }
             catch (ApiError e) { throw field(line,"产品",e); }
             String place = placeIds.computeIfAbsent(terminal.place(), name -> resolvePlace(places,name,line));
             try { legacy.requireNewTerminalIdentity(terminal.serial()); }
@@ -93,7 +94,9 @@ public class LegacyTerminalSpreadsheetPreview {
                         populated = true;
                     }
                     if (!populated) continue;
-                    String product = required(text(row,3,line),line,3,200);
+                    String platform = text(row,2,line);
+                    if (platform.length()>200) throw bad(line,HEADERS.get(2),"最多200字符");
+                    var product = new ProductReference(required(text(row,3,line),line,3,200),platform);
                     String name = required(text(row,4,line),line,4,200);
                     String place = required(text(row,5,line),line,5,500);
                     String serial = text(row,6,line);

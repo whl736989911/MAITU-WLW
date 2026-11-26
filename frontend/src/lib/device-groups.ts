@@ -11,7 +11,7 @@ export interface GroupMemberPage { group: DeviceGroup; items: GroupDevice[]; tot
 export interface GroupCandidatePage { group: DeviceGroup; items: GroupCandidate[]; total: number; page: number; size: number }
 export interface GroupQuery { page: number; keyword: string; size?: number }
 export type GroupCommand = { kind: 'create'; tenant_id: string; name: string; description: string } | { kind: 'edit'; group: DeviceGroup; name: string; description: string } | { kind: 'add' | 'remove'; group: DeviceGroup; device_id: string }
-export class GroupWriteUnconfirmed extends ApiError { constructor(status = 0) { super(status, 'DEVICE_GROUP_WRITE_UNCONFIRMED', '本次提交结果未确认，不是失败。保留当前表单并再次提交会沿用原业务键；取消不会撤销已提交业务。') } }
+export class GroupWriteUnconfirmed extends ApiError { constructor(status = 0) { super(status, 'DEVICE_GROUP_WRITE_UNCONFIRMED', '本次提交结果未确认，不是失败；密码已清，人工重试须沿原业务键。取消不会撤销已提交业务。') } }
 const invalid = (): never => { throw new ApiError(400, 'DEVICE_GROUP_INPUT_INVALID', '分组输入未确认，请核对文本、目标和当前版本。') }
 const unreadable = (): never => { throw new ApiError(200, 'DEVICE_GROUP_READ_UNCONFIRMED', '分组读取未确认；不保留旧数据、不推断空集合或0。') }
 export function validGroupText(value: unknown): value is string { return typeof value === 'string' && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value) }
@@ -73,7 +73,7 @@ async function exchange<T>(path: string, signal: AbortSignal, live: () => boolea
   try { response = await fetch(`/api/${before.audience}/device-groups${path}`, { method: write?.method ?? 'GET', headers, signal, credentials: 'omit', cache: 'no-store', redirect: 'error', ...(write ? { body: JSON.stringify(write.body) } : {}) }) } catch { if (!current()) return cancelled(); if (write) throw new GroupWriteUnconfirmed(); throw new ApiError(0, 'DEVICE_GROUP_READ_UNCONFIRMED', '分组网络读取未确认，请显式刷新。') }
   if (!current()) return cancelled(); const status = response.status; if (!current()) return cancelled()
   if (status === 401) { useSession.getState().clear('登录已失效，请重新登录。'); throw new ApiError(401, 'DEVICE_GROUP_SESSION_EXPIRED', '登录已失效，请重新登录。') }
-  if (status !== 200) { if (write && (status >= 500 || status >= 200 && status < 300)) throw new GroupWriteUnconfirmed(status); throw new ApiError(status, status === 409 ? 'DEVICE_GROUP_CONFLICT' : 'DEVICE_GROUP_READ_UNCONFIRMED', status === 409 ? '分组提交冲突：可能是本单位已有同名分组，或记录已变更。请刷新后重新打开表单。' : '当前分组操作未获核验；不保留旧组、成员或候选，请显式刷新。') }
+  if (status !== 200) { if (write && (status >= 500 || status >= 200 && status < 300)) throw new GroupWriteUnconfirmed(status); throw new ApiError(status, status === 409 ? 'DEVICE_GROUP_CONFLICT' : 'DEVICE_GROUP_READ_UNCONFIRMED', status === 409 ? '提交冲突，需刷新重开；密码已清，不得沿旧版本直接再提交。' : '当前分组操作未获核验；不保留旧组、成员或候选，请显式刷新。') }
   if (!current()) return cancelled(); let raw: string
   try { raw = await response.text() } catch { if (!current()) return cancelled(); if (write) throw new GroupWriteUnconfirmed(status); return unreadable() }
   if (!current()) return cancelled(); let result: T
